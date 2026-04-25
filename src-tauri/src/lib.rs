@@ -10,6 +10,9 @@ use url::Url;
 const TOOLBAR_HEIGHT: f64 = 50.0;
 const HOME_URL: &str = "https://duckduckgo.com/";
 
+/// 内蔵アドブロッカー（uBO 相当の最小実装）。view webview の初期化スクリプトとして注入。
+const ADBLOCK_SCRIPT: &str = include_str!("../adblock.js");
+
 /// View Webview の URL を変更する。
 #[tauri::command]
 fn browser_navigate(window: tauri::Window, url: String) -> Result<(), String> {
@@ -108,6 +111,7 @@ pub fn run() {
 "#;
             window.add_child(
                 WebviewBuilder::new("view", WebviewUrl::External(home))
+                    .initialization_script(ADBLOCK_SCRIPT)
                     .initialization_script(URL_WATCH_SCRIPT)
                     .on_navigation(move |url| {
                         let _ = app_handle.emit_to("ui", "view-navigated", url.to_string());
