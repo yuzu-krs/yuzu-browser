@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>yuzu-browser</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <header class="toolbar">
+      <button id="back" class="nav-btn" type="button" title="戻る">←</button>
+      <button id="forward" class="nav-btn" type="button" title="進む">→</button>
+      <button id="reload" class="nav-btn" type="button" title="再読み込み">
+        ⟳
+      </button>
+      <form id="address-form" class="address-form">
+        <input
+          id="address"
+          class="address-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="URLを入力 または DuckDuckGo で検索"
+        />
+      </form>
+    </header>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #1a1a1a;
+  color: #f0f0f0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #232323;
+  border-bottom: 1px solid #333;
+  flex: 0 0 auto;
+}
+
+.nav-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #3a3a3a;
+  background: #2a2a2a;
+  color: #f0f0f0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
+}
+
+.nav-btn:hover { background: #353535; }
+.nav-btn:active { background: #404040; }
+
+.address-form {
+  flex: 1 1 auto;
+  display: flex;
+}
+
+.address-input {
+  flex: 1 1 auto;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  border: 1px solid #3a3a3a;
+  background: #1a1a1a;
+  color: #f0f0f0;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.address-input:focus { border-color: #6aa9ff; }
+
+.view-container {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.view {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
