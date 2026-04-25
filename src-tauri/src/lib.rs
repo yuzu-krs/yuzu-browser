@@ -2,7 +2,7 @@
 // 1 つの Window に 2 つの Webview（UI 用 / コンテンツ表示用）を並置することで、
 // iframe では表示できないサイト（X-Frame-Options: DENY 等）も表示可能にする。
 
-use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent};
 use tauri::webview::WebviewBuilder;
 use tauri::window::WindowBuilder;
 use url::Url;
@@ -37,11 +37,18 @@ fn browser_history(window: tauri::Window, action: String) -> Result<(), String> 
     Ok(())
 }
 
+/// view webview 内で URL が変化した（pushState 等含む）ことを通知。
+#[tauri::command]
+fn browser_url_changed(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.emit_to("ui", "view-navigated", url)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![browser_navigate, browser_history])
+        .invoke_handler(tauri::generate_handler![browser_navigate, browser_history, browser_url_changed])
         .setup(|app| {
             let initial_w: f64 = 1100.0;
             let initial_h: f64 = 720.0;
@@ -60,9 +67,52 @@ pub fn run() {
             )?;
 
             // コンテンツ表示用 Webview。
+            // SPA (YouTube 等) の history.pushState/replaceState による URL 変化も検知するため
+            // 初期化スクリプトを注入し、変化があれば Rust の browser_url_changed を invoke する。
             let home: Url = HOME_URL.parse().expect("valid home url");
+            let app_handle = app.handle().clone();
+            const URL_WATCH_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuUrlWatchInstalled) return;
+  window.__yuzuUrlWatchInstalled = true;
+  let lastUrl = location.href;
+  function notify() {
+    const u = location.href;
+    if (u === lastUrl) return;
+    lastUrl = u;
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('browser_url_changed', { url: u });
+      }
+    } catch (e) { /* ignore */ }
+  }
+  const _push = history.pushState;
+  history.pushState = function () {
+    const r = _push.apply(this, arguments);
+    notify();
+    return r;
+  };
+  const _replace = history.replaceState;
+  history.replaceState = function () {
+    const r = _replace.apply(this, arguments);
+    notify();
+    return r;
+  };
+  window.addEventListener('popstate', notify);
+  window.addEventListener('hashchange', notify);
+  // フォールバック: SPA が独自に URL を変える場合に備えて軽くポーリング。
+  setInterval(notify, 1000);
+  // 初回通知。
+  notify();
+})();
+"#;
             window.add_child(
-                WebviewBuilder::new("view", WebviewUrl::External(home)),
+                WebviewBuilder::new("view", WebviewUrl::External(home))
+                    .initialization_script(URL_WATCH_SCRIPT)
+                    .on_navigation(move |url| {
+                        let _ = app_handle.emit_to("ui", "view-navigated", url.to_string());
+                        true
+                    }),
                 LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
                 LogicalSize::new(initial_w, (initial_h - TOOLBAR_HEIGHT).max(1.0)),
             )?;

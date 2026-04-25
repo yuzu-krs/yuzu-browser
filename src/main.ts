@@ -2,11 +2,13 @@
 // 表示は別 webview ("view") が担当し、こちらは Tauri の invoke で URL を渡すだけ。
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const HOME_URL = "https://duckduckgo.com/";
 const SEARCH_URL = "https://duckduckgo.com/?q=";
 
 let input: HTMLInputElement;
+let userTyping = false;
 
 /** 入力を URL に解決。URL らしくなければ DuckDuckGo 検索 URL にフォールバック。 */
 function resolveQuery(raw: string): string {
@@ -29,6 +31,13 @@ async function navigate(url: string): Promise<void> {
   }
 }
 
+/** view webview が遷移したらアドレスバーへ反映（ユーザーが入力編集中の場合のみスキップ）。 */
+function syncAddress(url: string): void {
+  if (!input) return;
+  if (userTyping) return;
+  input.value = url;
+}
+
 async function history(action: "back" | "forward" | "reload"): Promise<void> {
   try {
     await invoke("browser_history", { action });
@@ -46,9 +55,22 @@ window.addEventListener("DOMContentLoaded", () => {
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
+    userTyping = false;
     void navigate(resolveQuery(input.value));
   });
+  input.addEventListener("input", () => {
+    userTyping = true;
+  });
+  input.addEventListener("blur", () => {
+    userTyping = false;
+  });
+  input.addEventListener("focus", () => {
+    input.select();
+  });
 
+  void listen<string>("view-navigated", (event) => {
+    syncAddress(event.payload);
+  });
   backBtn.addEventListener("click", () => void history("back"));
   forwardBtn.addEventListener("click", () => void history("forward"));
   reloadBtn.addEventListener("click", () => void history("reload"));

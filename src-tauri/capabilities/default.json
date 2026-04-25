@@ -4,8 +4,5 @@
   "description": "Capability for the UI webview",
   "windows": ["main"],
   "webviews": ["ui"],
-  "permissions": [
-    "core:default",
-    "opener:default"
-  ]
+  "permissions": ["core:default", "core:event:default", "opener:default"]
 }
