@@ -474,6 +474,48 @@ window.addEventListener("DOMContentLoaded", () => {
   reloadBtn.addEventListener("click", () => void history("reload"));
   newTabBtn.addEventListener("click", () => void tabNew());
 
+  // タブバーへの URL ドラッグ&ドロップ → 新しいタブで開く。
+  const tabbar = document.querySelector(".tabbar") as HTMLElement | null;
+  if (tabbar) {
+    tabbar.addEventListener("dragover", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (!dt) return;
+      // URI または text を含むドラッグだけ受け付ける。
+      const types = Array.from(dt.types || []);
+      if (
+        types.includes("text/uri-list") ||
+        types.includes("text/plain") ||
+        types.includes("text/x-moz-url")
+      ) {
+        e.preventDefault();
+        dt.dropEffect = "copy";
+        tabbar.classList.add("drop-url");
+      }
+    });
+    tabbar.addEventListener("dragleave", (e) => {
+      // タブバーから完全に離れたときだけハイライト解除。
+      if (e.target === tabbar) tabbar.classList.remove("drop-url");
+    });
+    tabbar.addEventListener("drop", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (!dt) return;
+      e.preventDefault();
+      tabbar.classList.remove("drop-url");
+      const raw =
+        dt.getData("text/uri-list") ||
+        dt.getData("text/x-moz-url") ||
+        dt.getData("text/plain");
+      if (!raw) return;
+      // text/uri-list は複数行 (# はコメント) を含むことがある。先頭の有効行だけ採用。
+      const url = raw
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s && !s.startsWith("#"));
+      if (!url) return;
+      void tabNew(resolveQuery(url));
+    });
+  }
+
   // ズームコントロール
   zoomDisplayEl = document.getElementById(
     "zoom-display",

@@ -1426,8 +1426,11 @@ pub fn run() {
             // ビルド時に exe に焼き込まれ、Windows ではそれが自動的にウィンドウアイコンになる。
 
             // UI（アドレスバー＋タブバー）。
+            // disable_drag_drop_handler() で Tauri の OS ドラッグ&ドロップ横取りを止め、
+            // HTML5 の dragover/drop イベントを JS 側に届くようにする (タブバーへの URL ドロップ用)。
             window.add_child(
-                WebviewBuilder::new("ui", WebviewUrl::default()),
+                WebviewBuilder::new("ui", WebviewUrl::default())
+                    .disable_drag_drop_handler(),
                 LogicalPosition::new(0.0, 0.0),
                 LogicalSize::new(initial_w, CHROME_HEIGHT),
             )?;

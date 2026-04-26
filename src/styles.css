@@ -360,6 +360,12 @@ body {
 .tab.drop-after {
   box-shadow: inset -2px 0 0 0 #6aa9ff;
 }
+/* タブバーへ URL がドラッグされている間のハイライト。 */
+.tabbar.drop-url {
+  background: #2a3a55;
+  outline: 2px dashed #6aa9ff;
+  outline-offset: -2px;
+}
 
 .view-container {
   flex: 1 1 auto;
