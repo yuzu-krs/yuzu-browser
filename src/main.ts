@@ -311,6 +311,7 @@ function onTabsUpdated(next: TabInfo[]): void {
   if (active) {
     void syncControlsForTab(active.id);
   }
+  void refreshBookmarkStar();
 }
 
 /** 指定タブのズームをツールバー UI に反映。 */
@@ -462,6 +463,66 @@ window.addEventListener("DOMContentLoaded", () => {
     handleTabMenuAction(event.payload.action, event.payload.id);
   });
 
+  // ===== ブックマーク UI =====
+  bookmarkToggleBtn = document.getElementById(
+    "bookmark-toggle",
+  ) as HTMLButtonElement | null;
+  const bookmarksOpenBtn = document.getElementById(
+    "bookmarks-open",
+  ) as HTMLButtonElement | null;
+  bookmarksPanel = document.getElementById(
+    "bookmarks-panel",
+  ) as HTMLDivElement | null;
+  bookmarksListEl = document.getElementById(
+    "bookmarks-list",
+  ) as HTMLUListElement | null;
+  bookmarksEmptyEl = document.getElementById(
+    "bookmarks-empty",
+  ) as HTMLDivElement | null;
+  const bookmarksCloseBtn = document.getElementById(
+    "bookmarks-close",
+  ) as HTMLButtonElement | null;
+
+  if (bookmarkToggleBtn) {
+    bookmarkToggleBtn.addEventListener("click", () => void toggleCurrentBookmark());
+  }
+  if (bookmarksOpenBtn) {
+    bookmarksOpenBtn.addEventListener("click", () => void openBookmarksPanel());
+  }
+  if (bookmarksCloseBtn) {
+    bookmarksCloseBtn.addEventListener("click", () => void closeBookmarksPanel());
+  }
+
+  void listen<Bookmark[]>("bookmarks-updated", (event) => {
+    bookmarks = event.payload;
+    renderBookmarks();
+    void refreshBookmarkStar();
+  });
+
+  // ブックマーク用ショートカット: Ctrl+D で追加/削除、Ctrl+B で一覧表示
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (e.ctrlKey && !e.shiftKey && k === "d") {
+      e.preventDefault();
+      void toggleCurrentBookmark();
+    } else if (e.ctrlKey && !e.shiftKey && k === "b") {
+      e.preventDefault();
+      void (bookmarksPanelOpen ? closeBookmarksPanel() : openBookmarksPanel());
+    } else if (k === "escape" && bookmarksPanelOpen) {
+      e.preventDefault();
+      void closeBookmarksPanel();
+    }
+  });
+
+  // 初期ブックマークロード
+  void invoke<Bookmark[]>("bookmark_list")
+    .then((list) => {
+      bookmarks = list;
+      renderBookmarks();
+      void refreshBookmarkStar();
+    })
+    .catch((e) => console.error("bookmark_list failed:", e));
+
   // 初期タブリスト取得
   void invoke<TabInfo[]>("tab_list")
     .then(onTabsUpdated)
@@ -469,3 +530,134 @@ window.addEventListener("DOMContentLoaded", () => {
       console.error("tab_list failed:", e);
     });
 });
+
+// ===== ブックマーク =====
+
+interface Bookmark {
+  id: number;
+  url: string;
+  title: string;
+  favicon: string;
+}
+
+let bookmarks: Bookmark[] = [];
+let bookmarkToggleBtn: HTMLButtonElement | null = null;
+let bookmarksPanel: HTMLDivElement | null = null;
+let bookmarksListEl: HTMLUListElement | null = null;
+let bookmarksEmptyEl: HTMLDivElement | null = null;
+let bookmarksPanelOpen = false;
+
+async function toggleCurrentBookmark(): Promise<void> {
+  const a = activeTab();
+  if (!a) return;
+  const existing = bookmarks.find((b) => b.url === a.url);
+  try {
+    if (existing) {
+      await invoke("bookmark_remove", { id: existing.id });
+    } else {
+      await invoke("bookmark_add", {});
+    }
+  } catch (e) {
+    console.error("toggle bookmark failed:", e);
+  }
+}
+
+async function refreshBookmarkStar(): Promise<void> {
+  if (!bookmarkToggleBtn) return;
+  const a = activeTab();
+  const isMarked = !!a && bookmarks.some((b) => b.url === a.url);
+  bookmarkToggleBtn.textContent = isMarked ? "★" : "☆";
+  bookmarkToggleBtn.classList.toggle("is-bookmarked", isMarked);
+  bookmarkToggleBtn.title = isMarked
+    ? "このページのブックマークを削除 (Ctrl+D)"
+    : "このページをブックマーク (Ctrl+D)";
+}
+
+function renderBookmarks(): void {
+  if (!bookmarksListEl || !bookmarksEmptyEl) return;
+  bookmarksListEl.innerHTML = "";
+  if (bookmarks.length === 0) {
+    bookmarksEmptyEl.hidden = false;
+    return;
+  }
+  bookmarksEmptyEl.hidden = true;
+  for (const b of bookmarks) {
+    const li = document.createElement("li");
+    li.className = "bookmark-item";
+
+    const fav = document.createElement("img");
+    fav.className = "bookmark-favicon";
+    fav.alt = "";
+    fav.referrerPolicy = "no-referrer";
+    fav.src = b.favicon || faviconFallback(b.url);
+    fav.addEventListener("error", () => fav.removeAttribute("src"));
+    li.appendChild(fav);
+
+    const text = document.createElement("div");
+    text.className = "bookmark-text";
+    const title = document.createElement("span");
+    title.className = "bookmark-title";
+    title.textContent = b.title || b.url;
+    const url = document.createElement("span");
+    url.className = "bookmark-url";
+    url.textContent = b.url;
+    text.appendChild(title);
+    text.appendChild(url);
+    li.appendChild(text);
+
+    const rm = document.createElement("button");
+    rm.className = "bookmark-remove";
+    rm.type = "button";
+    rm.title = "削除";
+    rm.textContent = "×";
+    rm.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void invoke("bookmark_remove", { id: b.id }).catch((err) =>
+        console.error("bookmark_remove failed:", err),
+      );
+    });
+    li.appendChild(rm);
+
+    li.addEventListener("click", () => {
+      void closeBookmarksPanel().then(() => tabNew(b.url));
+    });
+    li.addEventListener("auxclick", (e) => {
+      // 中クリックで現在のタブを保ったまま新規タブで開く
+      if ((e as MouseEvent).button === 1) {
+        e.preventDefault();
+        void tabNew(b.url);
+      }
+    });
+
+    bookmarksListEl.appendChild(li);
+  }
+}
+
+async function openBookmarksPanel(): Promise<void> {
+  if (!bookmarksPanel) return;
+  try {
+    await invoke("ui_set_expanded", { expanded: true });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+  bookmarksPanel.hidden = false;
+  bookmarksPanelOpen = true;
+  // 最新を取得して描画
+  try {
+    bookmarks = await invoke<Bookmark[]>("bookmark_list");
+    renderBookmarks();
+  } catch (e) {
+    console.error("bookmark_list failed:", e);
+  }
+}
+
+async function closeBookmarksPanel(): Promise<void> {
+  if (!bookmarksPanel) return;
+  bookmarksPanel.hidden = true;
+  bookmarksPanelOpen = false;
+  try {
+    await invoke("ui_set_expanded", { expanded: false });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+}

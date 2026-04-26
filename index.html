@@ -25,6 +25,22 @@
           placeholder="URLを入力 または DuckDuckGo で検索"
         />
       </form>
+      <button
+        id="bookmark-toggle"
+        class="nav-btn bookmark-toggle-btn"
+        type="button"
+        title="このページをブックマーク (Ctrl+D)"
+      >
+        ☆
+      </button>
+      <button
+        id="bookmarks-open"
+        class="nav-btn bookmarks-open-btn"
+        type="button"
+        title="ブックマーク一覧 (Ctrl+B)"
+      >
+        ▤
+      </button>
       <div class="zoom-control" title="ズーム (Ctrl+ホイール / Ctrl+0 で 100%)">
         <button id="zoom-out" class="nav-btn zoom-btn" type="button">−</button>
         <span id="zoom-display" class="zoom-display">100%</span>
@@ -37,5 +53,15 @@
         ＋
       </button>
     </nav>
+    <div id="bookmarks-panel" class="bookmarks-panel" hidden>
+      <div class="bookmarks-header">
+        <span>ブックマーク</span>
+        <button id="bookmarks-close" class="bookmarks-close" type="button" title="閉じる">×</button>
+      </div>
+      <ul id="bookmarks-list" class="bookmarks-list"></ul>
+      <div id="bookmarks-empty" class="bookmarks-empty" hidden>
+        まだブックマークはありません。☆ボタンで追加できます。
+      </div>
+    </div>
   </body>
 </html>

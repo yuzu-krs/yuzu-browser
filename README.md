@@ -11,12 +11,15 @@ A lightweight, privacy-oriented desktop web browser built with **Tauri 2**, **Ru
 yuzu-browser is built around three core principles:
 
 ### 🪶 Lightweight
+
 No Electron, no heavy runtime. yuzu-browser is powered by **Tauri 2 + WebView2**, which means it uses the OS-native webview instead of bundling a full Chromium. The result is a small binary, low memory footprint, and fast startup — even on modest hardware.
 
 ### 🔒 Privacy-first
+
 By default, nothing is persisted. No browsing history, no cookies carried between sessions, no telemetry. The default search engine is **DuckDuckGo**. A built-in ad-blocking initialization script prevents common trackers from loading. The goal is a browser where anonymous, low-footprint browsing is the default — not an opt-in.
 
 ### 🛠️ Developer-focused
+
 yuzu-browser is designed to be **hackable**. The entire UI is plain TypeScript and CSS, the backend is straightforward Rust, and the architecture is intentionally minimal. Whether you want to add a custom userscript injector, a request interceptor, or a completely different UI, the codebase stays out of your way. It is also an ideal sandboxed environment for testing web applications during development.
 
 ---

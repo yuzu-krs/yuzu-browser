@@ -3,9 +3,10 @@
 // アクティブタブの view だけを表示エリアに置き、それ以外は画面外に退避。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::webview::WebviewBuilder;
 use tauri::window::WindowBuilder;
@@ -98,21 +99,22 @@ const TITLE_WATCH_SCRIPT: &str = r#"
 })();
 "#;
 
-/// 各 <audio>/<video> の音量を `window.__yuzuVolume` (0..1) で制御。
-/// バックエンド側に保持された音量を起動直後に取得して反映する。
+/// 各 <audio>/<video> のミュート状態を `window.__yuzuMuted` で制御。
+/// `el.volume` を上書きすると動画プレイヤーの音量スライダー操作が無視されてしまうため、
+/// ここでは `el.muted` のみを操作する（音量はサイト側に任せる）。
 const VOLUME_SCRIPT: &str = r#"
 (function () {
   if (window.__yuzuVolInstalled) return;
   window.__yuzuVolInstalled = true;
-  if (typeof window.__yuzuVolume !== 'number') window.__yuzuVolume = 1.0;
+  if (typeof window.__yuzuMuted !== 'boolean') window.__yuzuMuted = false;
   function apply() {
-    const v = Math.max(0, Math.min(1, window.__yuzuVolume));
+    var m = !!window.__yuzuMuted;
     document.querySelectorAll('audio,video').forEach(function (el) {
-      try { if (Math.abs(el.volume - v) > 0.001) el.volume = v; } catch (_) {}
+      try { if (el.muted !== m) el.muted = m; } catch (_) {}
     });
   }
   window.__yuzuApplyVolume = apply;
-  setInterval(apply, 500);
+  setInterval(apply, 800);
   function start() {
     if (!document.body) { setTimeout(start, 50); return; }
     new MutationObserver(apply).observe(document.body, { subtree: true, childList: true });
@@ -122,7 +124,7 @@ const VOLUME_SCRIPT: &str = r#"
   try {
     if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
       window.__TAURI_INTERNALS__.invoke('tab_get_volume').then(function (v) {
-        if (typeof v === 'number') { window.__yuzuVolume = v; apply(); }
+        if (typeof v === 'number') { window.__yuzuMuted = (v <= 0.0001); apply(); }
       }).catch(function () {});
     }
   } catch (_) {}
@@ -852,9 +854,10 @@ fn tab_set_volume(
         s.volumes.insert(id, v);
     }
     if let Some(view) = window.get_webview(&view_label(id)) {
+        let muted = v <= 0.0001;
         let _ = view.eval(&format!(
-            "window.__yuzuVolume={:.4};window.__yuzuApplyVolume&&window.__yuzuApplyVolume();",
-            v
+            "window.__yuzuMuted={};window.__yuzuApplyVolume&&window.__yuzuApplyVolume();",
+            if muted { "true" } else { "false" }
         ));
     }
     let _ = app.emit_to(
@@ -1030,11 +1033,166 @@ fn show_tab_context_menu(
     Ok(())
 }
 
+// ===== ブックマーク =====
+//
+// プライバシーを重視するため履歴は永続化しないが、ブックマークだけはユーザーが
+// 明示的に保存したものなので JSON ファイルに永続化する。
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Bookmark {
+    id: u64,
+    url: String,
+    title: String,
+    favicon: String,
+}
+
+#[derive(Default)]
+struct BookmarkStore {
+    next_id: u64,
+    items: Vec<Bookmark>,
+    path: Option<PathBuf>,
+}
+
+impl BookmarkStore {
+    fn load(path: PathBuf) -> Self {
+        let mut store = BookmarkStore { next_id: 0, items: Vec::new(), path: Some(path.clone()) };
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(items) = serde_json::from_str::<Vec<Bookmark>>(&text) {
+                store.next_id = items.iter().map(|b| b.id).max().unwrap_or(0);
+                store.items = items;
+            }
+        }
+        store
+    }
+
+    fn save(&self) -> Result<(), String> {
+        let path = match &self.path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(&self.items).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Default)]
+struct BookmarksState(Mutex<BookmarkStore>);
+
+#[tauri::command]
+fn bookmark_list(state: State<'_, BookmarksState>) -> Result<Vec<Bookmark>, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.items.clone())
+}
+
+#[tauri::command]
+fn bookmark_add(
+    app: AppHandle,
+    state: State<'_, BookmarksState>,
+    tab_state: State<'_, AppState>,
+    url: Option<String>,
+    title: Option<String>,
+    favicon: Option<String>,
+) -> Result<Bookmark, String> {
+    // 引数が無ければ active タブの情報を使う。
+    let (resolved_url, resolved_title, resolved_favicon) = {
+        let ts = tab_state.0.lock().map_err(|e| e.to_string())?;
+        let active = ts.active;
+        let u = url.or_else(|| active.and_then(|id| ts.urls.get(&id).cloned())).unwrap_or_default();
+        let t = title.or_else(|| active.and_then(|id| ts.titles.get(&id).cloned())).unwrap_or_default();
+        let f = favicon.or_else(|| active.and_then(|id| ts.favicons.get(&id).cloned())).unwrap_or_default();
+        (u, t, f)
+    };
+    if resolved_url.is_empty() {
+        return Err("URL is empty".to_string());
+    }
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    // 既に同じ URL が登録済みなら何もしない。
+    if let Some(existing) = s.items.iter().find(|b| b.url == resolved_url).cloned() {
+        return Ok(existing);
+    }
+    s.next_id += 1;
+    let bm = Bookmark {
+        id: s.next_id,
+        url: resolved_url,
+        title: resolved_title,
+        favicon: resolved_favicon,
+    };
+    s.items.push(bm.clone());
+    s.save()?;
+    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
+    Ok(bm)
+}
+
+#[tauri::command]
+fn bookmark_remove(
+    app: AppHandle,
+    state: State<'_, BookmarksState>,
+    id: u64,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.items.retain(|b| b.id != id);
+    s.save()?;
+    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
+    Ok(())
+}
+
+/// active タブが既にブックマークされているかを返す。
+#[tauri::command]
+fn bookmark_is_current(
+    state: State<'_, BookmarksState>,
+    tab_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let url = {
+        let ts = tab_state.0.lock().map_err(|e| e.to_string())?;
+        match ts.active.and_then(|id| ts.urls.get(&id).cloned()) {
+            Some(u) => u,
+            None => return Ok(false),
+        }
+    };
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.items.iter().any(|b| b.url == url))
+}
+
+/// UI webview をウィンドウ全面に広げる/通常サイズに戻す。
+/// ブックマーク一覧などのオーバーレイ UI を表示するときに使う。
+#[tauri::command]
+fn ui_set_expanded(
+    window: Window,
+    state: State<'_, AppState>,
+    expanded: bool,
+) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let w = size.width.max(1.0);
+    let h = size.height.max(1.0);
+    if expanded {
+        if let Some(ui) = window.get_webview("ui") {
+            let _ = ui.set_size(LogicalSize::new(w, h));
+        }
+        // active view も画面外に退避（クリックを UI 側だけで受け取る）。
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        if let Some(active_id) = s.active {
+            if let Some(view) = window.get_webview(&view_label(active_id)) {
+                let _ = view.set_position(LogicalPosition::new(OFFSCREEN_X, 0.0));
+                let _ = view.set_size(LogicalSize::new(1.0, 1.0));
+            }
+        }
+    } else {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&window, &s);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .manage(BookmarksState::default())
         .invoke_handler(tauri::generate_handler![
             tab_new,
             tab_close,
@@ -1059,8 +1217,23 @@ pub fn run() {
             browser_zoom_set,
             active_tab_zoom_delta,
             active_tab_zoom_set,
+            bookmark_list,
+            bookmark_add,
+            bookmark_remove,
+            bookmark_is_current,
+            ui_set_expanded,
         ])
         .setup(|app| {
+            // ブックマークを app data dir からロード。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let path = dir.join("bookmarks.json");
+                let store = BookmarkStore::load(path);
+                let state: State<'_, BookmarksState> = app.state();
+                if let Ok(mut s) = state.0.lock() {
+                    *s = store;
+                };
+            }
+
             let initial_w: f64 = 1100.0;
             let initial_h: f64 = 720.0;
 
