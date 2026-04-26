@@ -640,6 +640,12 @@ window.addEventListener("DOMContentLoaded", () => {
   bookmarksEmptyEl = document.getElementById(
     "bookmarks-empty",
   ) as HTMLDivElement | null;
+  bookmarksBarItemsEl = document.getElementById(
+    "bookmarks-bar-items",
+  ) as HTMLDivElement | null;
+  bookmarksBarEmptyEl = document.getElementById(
+    "bookmarks-bar-empty",
+  ) as HTMLDivElement | null;
   const bookmarksCloseBtn = document.getElementById(
     "bookmarks-close",
   ) as HTMLButtonElement | null;
@@ -712,6 +718,8 @@ let bookmarkToggleBtn: HTMLButtonElement | null = null;
 let bookmarksPanel: HTMLDivElement | null = null;
 let bookmarksListEl: HTMLUListElement | null = null;
 let bookmarksEmptyEl: HTMLDivElement | null = null;
+let bookmarksBarItemsEl: HTMLDivElement | null = null;
+let bookmarksBarEmptyEl: HTMLDivElement | null = null;
 let bookmarksPanelOpen = false;
 
 async function toggleCurrentBookmark(): Promise<void> {
@@ -752,7 +760,176 @@ function resolveBookmarkFavicon(b: Bookmark): string {
   return faviconFallback(b.url);
 }
 
+/** Chrome 風のブックマークバー (tabbar の下に常時表示) を描画。 */
+function renderBookmarksBar(): void {
+  if (!bookmarksBarItemsEl || !bookmarksBarEmptyEl) return;
+  bookmarksBarItemsEl.innerHTML = "";
+  if (bookmarks.length === 0) {
+    bookmarksBarEmptyEl.hidden = false;
+    return;
+  }
+  bookmarksBarEmptyEl.hidden = true;
+  for (let i = 0; i < bookmarks.length; i++) {
+    const b = bookmarks[i];
+    const el = document.createElement("div");
+    el.className = "bookmarks-bar-item";
+    el.dataset.id = String(b.id);
+    el.title = `${b.title || b.url}\n${b.url}`;
+
+    const fav = document.createElement("img");
+    fav.className = "bb-favicon";
+    fav.alt = "";
+    fav.referrerPolicy = "no-referrer";
+    fav.draggable = false;
+    setupCascadingFavicon(fav, resolveBookmarkFavicon(b), b.url);
+    el.appendChild(fav);
+
+    const title = document.createElement("span");
+    title.className = "bb-title";
+    title.textContent = b.title || urlToTitle(b.url);
+    el.appendChild(title);
+
+    // pointer event ベースのクリック/並び替え
+    el.addEventListener("pointerdown", (e) => {
+      const pe = e as PointerEvent;
+      if (pe.button !== 0) return;
+      e.preventDefault();
+      startBookmarkDrag(b.id, b.url, el, pe);
+    });
+    el.addEventListener("auxclick", (e) => {
+      if ((e as MouseEvent).button === 1) {
+        e.preventDefault();
+        void tabNew(b.url);
+      }
+    });
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (confirm(`このブックマークを削除しますか?\n\n${b.title || b.url}`)) {
+        void invoke("bookmark_remove", { id: b.id }).catch((err) =>
+          console.error("bookmark_remove failed:", err),
+        );
+      }
+    });
+
+    bookmarksBarItemsEl.appendChild(el);
+  }
+}
+
+/** ブックマークバー項目の pointerdown 時に呼ばれ、閾値超えで並び替え。 */
+function startBookmarkDrag(
+  bmId: number,
+  bmUrl: string,
+  el: HTMLDivElement,
+  downEvt: PointerEvent,
+): void {
+  const startX = downEvt.clientX;
+  const startY = downEvt.clientY;
+  const ctrlAtDown = downEvt.ctrlKey || downEvt.metaKey;
+  let dragging = false;
+
+  const clearMarkers = () => {
+    document
+      .querySelectorAll(
+        ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
+      )
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+  };
+
+  const setDropMarkers = (x: number) => {
+    clearMarkers();
+    const target = findBookmarkAtX(x, bmId);
+    if (!target) return;
+    const r = target.el.getBoundingClientRect();
+    const before = x < r.left + r.width / 2;
+    target.el.classList.toggle("drop-before", before);
+    target.el.classList.toggle("drop-after", !before);
+  };
+
+  const onMove = (ev: PointerEvent) => {
+    if (!dragging) {
+      if (
+        Math.abs(ev.clientX - startX) > 5 ||
+        Math.abs(ev.clientY - startY) > 5
+      ) {
+        dragging = true;
+        el.classList.add("dragging");
+      } else {
+        return;
+      }
+    }
+    setDropMarkers(ev.clientX);
+  };
+
+  const onUp = (ev: PointerEvent) => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    clearMarkers();
+    el.classList.remove("dragging");
+    if (!dragging) {
+      // 通常クリック → 開く
+      if (ctrlAtDown) {
+        void tabNew(bmUrl);
+      } else {
+        void navigate(bmUrl);
+      }
+      return;
+    }
+    // ドロップ → 並び替え
+    const target = findBookmarkAtX(ev.clientX, bmId);
+    if (!target) return;
+    const r = target.el.getBoundingClientRect();
+    const before = ev.clientX < r.left + r.width / 2;
+    const fromIdx = bookmarks.findIndex((x) => x.id === bmId);
+    if (fromIdx < 0) return;
+    let to = before ? target.index : target.index + 1;
+    if (fromIdx < to) to -= 1;
+    if (to === fromIdx) return;
+    void invoke("bookmark_reorder", { id: bmId, toIndex: to }).catch((err) =>
+      console.error("bookmark_reorder failed:", err),
+    );
+  };
+
+  const onCancel = () => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    clearMarkers();
+    el.classList.remove("dragging");
+  };
+
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", onCancel, true);
+}
+
+/** 与えられた x 座標に最も近いブックマーク項目 (自分以外) を返す。 */
+function findBookmarkAtX(
+  x: number,
+  selfId: number,
+): { el: HTMLDivElement; index: number } | null {
+  if (!bookmarksBarItemsEl) return null;
+  const els = Array.from(
+    bookmarksBarItemsEl.querySelectorAll<HTMLDivElement>(".bookmarks-bar-item"),
+  );
+  let best: { el: HTMLDivElement; index: number; dist: number } | null = null;
+  for (let i = 0; i < els.length; i++) {
+    const e = els[i];
+    if (Number(e.dataset.id) === selfId) continue;
+    const r = e.getBoundingClientRect();
+    let dist: number;
+    if (x < r.left) dist = r.left - x;
+    else if (x > r.right) dist = x - r.right;
+    else dist = 0;
+    if (best === null || dist < best.dist) {
+      best = { el: e, index: i, dist };
+    }
+  }
+  return best ? { el: best.el, index: best.index } : null;
+}
+
 function renderBookmarks(): void {
+  renderBookmarksBar();
   if (!bookmarksListEl || !bookmarksEmptyEl) return;
   bookmarksListEl.innerHTML = "";
   if (bookmarks.length === 0) {

@@ -18,7 +18,8 @@ use url::Url;
 
 const TOOLBAR_HEIGHT: f64 = 50.0;
 const TABBAR_HEIGHT: f64 = 36.0;
-const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + TABBAR_HEIGHT;
+const BOOKMARKS_BAR_HEIGHT: f64 = 30.0;
+const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + TABBAR_HEIGHT + BOOKMARKS_BAR_HEIGHT;
 const HOME_URL: &str = "https://duckduckgo.com/";
 const OFFSCREEN_X: f64 = -20000.0;
 
@@ -1275,6 +1276,26 @@ fn bookmark_remove(
     Ok(())
 }
 
+#[tauri::command]
+fn bookmark_reorder(
+    app: AppHandle,
+    state: State<'_, BookmarksState>,
+    id: u64,
+    to_index: usize,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let from = match s.items.iter().position(|b| b.id == id) {
+        Some(i) => i,
+        None => return Ok(()),
+    };
+    let item = s.items.remove(from);
+    let dest = to_index.min(s.items.len());
+    s.items.insert(dest, item);
+    s.save()?;
+    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
+    Ok(())
+}
+
 /// active タブが既にブックマークされているかを返す。
 #[tauri::command]
 fn bookmark_is_current(
@@ -1398,6 +1419,7 @@ pub fn run() {
             bookmark_list,
             bookmark_add,
             bookmark_remove,
+            bookmark_reorder,
             bookmark_is_current,
             ui_set_expanded,
             view_set_fullscreen,

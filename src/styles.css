@@ -116,10 +116,86 @@ body {
   color: #ffd54a;
 }
 
+/* ===== ブックマークバー (tabbar の下に常時表示) ===== */
+.bookmarks-bar {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  background: #1f1f1f;
+  border-bottom: 1px solid #2c2c2c;
+  overflow: hidden;
+  user-select: none;
+}
+.bookmarks-bar-items {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.bookmarks-bar-items::-webkit-scrollbar {
+  height: 6px;
+}
+.bookmarks-bar-items::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 3px;
+}
+.bookmarks-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: #d8d8d8;
+  font-size: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  max-width: 200px;
+  white-space: nowrap;
+}
+.bookmarks-bar-item:hover {
+  background: #2a2a2a;
+}
+.bookmarks-bar-item.dragging {
+  opacity: 0.5;
+}
+.bookmarks-bar-item.drop-before {
+  box-shadow: inset 2px 0 0 0 #6aa9ff;
+}
+.bookmarks-bar-item.drop-after {
+  box-shadow: inset -2px 0 0 0 #6aa9ff;
+}
+.bookmarks-bar-item .bb-favicon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+.bookmarks-bar-item .bb-favicon.is-fallback {
+  background: #555;
+  border-radius: 3px;
+}
+.bookmarks-bar-item .bb-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.bookmarks-bar-empty {
+  color: #888;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
 /* ===== ブックマーク一覧パネル ===== */
 .bookmarks-panel {
   position: fixed;
-  top: 86px; /* TOOLBAR_HEIGHT + TABBAR_HEIGHT */
+  top: 116px; /* TOOLBAR_HEIGHT + TABBAR_HEIGHT + BOOKMARKS_BAR_HEIGHT */
   left: 0;
   right: 0;
   bottom: 0;

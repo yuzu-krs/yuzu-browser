@@ -9,6 +9,12 @@
   </head>
 
   <body>
+    <nav class="tabbar">
+      <div id="tabs" class="tabs"></div>
+      <button id="new-tab" class="new-tab-btn" type="button" title="新しいタブ">
+        ＋
+      </button>
+    </nav>
     <header class="toolbar">
       <button id="back" class="nav-btn" type="button" title="戻る">←</button>
       <button id="forward" class="nav-btn" type="button" title="進む">→</button>
@@ -47,11 +53,11 @@
         <button id="zoom-in" class="nav-btn zoom-btn" type="button">＋</button>
       </div>
     </header>
-    <nav class="tabbar">
-      <div id="tabs" class="tabs"></div>
-      <button id="new-tab" class="new-tab-btn" type="button" title="新しいタブ">
-        ＋
-      </button>
+    <nav id="bookmarks-bar" class="bookmarks-bar" aria-label="ブックマークバー">
+      <div id="bookmarks-bar-items" class="bookmarks-bar-items"></div>
+      <div id="bookmarks-bar-empty" class="bookmarks-bar-empty" hidden>
+        ☆ボタンでブックマークを追加できます
+      </div>
     </nav>
     <div id="bookmarks-panel" class="bookmarks-panel" hidden>
       <div class="bookmarks-header">
