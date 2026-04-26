@@ -606,7 +606,7 @@ async fn tab_close(
     id: u64,
 ) -> Result<(), String> {
     // 1) ロック内で状態を更新（webview close は別途）
-    let (need_new_tab, new_id_opt) = {
+    let close_window = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         // 閉じるタブの URL をスタックに保存（復元用）。
         if let Some(u) = s.urls.get(&id).cloned() {
@@ -623,26 +623,16 @@ async fn tab_close(
         if s.active == Some(id) {
             s.active = s.order.last().copied();
         }
-        if s.order.is_empty() {
-            s.next_id += 1;
-            (true, Some(s.next_id))
-        } else {
-            (false, None)
-        }
+        s.order.is_empty()
     };
     // 2) ロック外で webview close
     if let Some(view) = window.get_webview(&view_label(id)) {
         let _ = view.close();
     }
-    // 3) 必要なら新規タブを作成（ロック外、main スレッド）
-    if need_new_tab {
-        if let Some(new_id) = new_id_opt {
-            create_view_on_main(&app, &window, new_id, HOME_URL)?;
-            let mut s = state.0.lock().map_err(|e| e.to_string())?;
-            s.order.push(new_id);
-            s.urls.insert(new_id, HOME_URL.to_string());
-            s.active = Some(new_id);
-        }
+    // 3) 最後のタブだったらウィンドウごと閉じる
+    if close_window {
+        let _ = window.close();
+        return Ok(());
     }
     // 4) relayout + emit
     let snapshot = {
