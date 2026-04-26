@@ -79,6 +79,33 @@ body {
   border-color: #6aa9ff;
 }
 
+/* ===== ズームコントロール ===== */
+.zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.zoom-btn {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+}
+.zoom-display {
+  display: inline-block;
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: #cfcfcf;
+  cursor: pointer;
+  user-select: none;
+}
+.zoom-display:hover {
+  color: #6aa9ff;
+}
+
 .tabbar {
   display: flex;
   align-items: stretch;
@@ -134,6 +161,20 @@ body {
   text-overflow: ellipsis;
 }
 
+.tab-favicon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+.tab-favicon.is-fallback {
+  width: 16px;
+  height: 16px;
+  background: #555;
+  border-radius: 3px;
+}
+
 .tab-close {
   width: 18px;
   height: 18px;
@@ -155,6 +196,29 @@ body {
   color: #fff;
 }
 
+.tab-mute {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: #b8b8b8;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+.tab-mute:hover {
+  background: #444;
+}
+.tab-mute.is-muted {
+  color: #ff6a6a;
+}
+
 .new-tab-btn {
   width: 36px;
   height: 36px;
@@ -168,6 +232,17 @@ body {
 
 .new-tab-btn:hover {
   background: #2a2a2a;
+}
+
+/* ===== ドラッグ＆ドロップでの並び替え視覚効果 ===== */
+.tab.dragging {
+  opacity: 0.5;
+}
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 0 #6aa9ff;
+}
+.tab.drop-after {
+  box-shadow: inset -2px 0 0 0 #6aa9ff;
 }
 
 .view-container {

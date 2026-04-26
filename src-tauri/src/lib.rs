@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::webview::WebviewBuilder;
 use tauri::window::WindowBuilder;
 use tauri::{
@@ -97,6 +98,152 @@ const TITLE_WATCH_SCRIPT: &str = r#"
 })();
 "#;
 
+/// 各 <audio>/<video> の音量を `window.__yuzuVolume` (0..1) で制御。
+/// バックエンド側に保持された音量を起動直後に取得して反映する。
+const VOLUME_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuVolInstalled) return;
+  window.__yuzuVolInstalled = true;
+  if (typeof window.__yuzuVolume !== 'number') window.__yuzuVolume = 1.0;
+  function apply() {
+    const v = Math.max(0, Math.min(1, window.__yuzuVolume));
+    document.querySelectorAll('audio,video').forEach(function (el) {
+      try { if (Math.abs(el.volume - v) > 0.001) el.volume = v; } catch (_) {}
+    });
+  }
+  window.__yuzuApplyVolume = apply;
+  setInterval(apply, 500);
+  function start() {
+    if (!document.body) { setTimeout(start, 50); return; }
+    new MutationObserver(apply).observe(document.body, { subtree: true, childList: true });
+    apply();
+  }
+  start();
+  try {
+    if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+      window.__TAURI_INTERNALS__.invoke('tab_get_volume').then(function (v) {
+        if (typeof v === 'number') { window.__yuzuVolume = v; apply(); }
+      }).catch(function () {});
+    }
+  } catch (_) {}
+})();
+"#;
+
+/// Ctrl+ホイール / Ctrl+0 / Ctrl++ / Ctrl+- でズーム。
+/// 起動時にバックエンドから保存済みズームを取得して反映する。
+const ZOOM_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuZoomInstalled) return;
+  window.__yuzuZoomInstalled = true;
+  function setZoom(z) {
+    try { document.documentElement.style.zoom = String(z); } catch (_) {}
+  }
+  window.__yuzuApplyZoom = setZoom;
+  function call(name, args) {
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        return window.__TAURI_INTERNALS__.invoke(name, args || {});
+      }
+    } catch (_) {}
+    return Promise.resolve();
+  }
+  window.addEventListener('wheel', function (e) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var delta = e.deltaY < 0 ? 0.1 : -0.1;
+    call('browser_zoom_delta', { delta: delta });
+  }, { passive: false, capture: true });
+  window.addEventListener('keydown', function (e) {
+    if (!e.ctrlKey) return;
+    if (e.key === '0') { e.preventDefault(); call('browser_zoom_set', { zoom: 1.0 }); }
+    else if (e.key === '+' || e.key === '=') { e.preventDefault(); call('browser_zoom_delta', { delta: 0.1 }); }
+    else if (e.key === '-') { e.preventDefault(); call('browser_zoom_delta', { delta: -0.1 }); }
+  }, { capture: true });
+  call('tab_get_zoom').then(function (z) {
+    if (typeof z === 'number' && z > 0) setZoom(z);
+  });
+})();
+"#;
+
+/// <audio>/<video> の再生状態を監視し、「音が鳴っているか」をバックエンドに通知。
+const AUDIO_WATCH_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuAudioWatchInstalled) return;
+  window.__yuzuAudioWatchInstalled = true;
+  var lastAudible = false;
+  function isAudible() {
+    var els = document.querySelectorAll('audio,video');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      try {
+        if (!el.paused && !el.ended && el.currentTime > 0 && el.volume > 0 && !el.muted) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+  function notify() {
+    var a = isAudible();
+    if (a === lastAudible) return;
+    lastAudible = a;
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('browser_audible_changed', { audible: a });
+      }
+    } catch (_) {}
+  }
+  setInterval(notify, 800);
+  document.addEventListener('play', notify, true);
+  document.addEventListener('pause', notify, true);
+  document.addEventListener('ended', notify, true);
+  document.addEventListener('volumechange', notify, true);
+})();
+"#;
+
+/// 現在のページの favicon URL を抽出してバックエンドに通知。
+const FAVICON_WATCH_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuFaviconWatchInstalled) return;
+  window.__yuzuFaviconWatchInstalled = true;
+  var lastUrl = '';
+  function pickFavicon() {
+    var sels = [
+      'link[rel~="icon"][sizes="any"]',
+      'link[rel="shortcut icon"]',
+      'link[rel="icon"]',
+      'link[rel="apple-touch-icon"]',
+      'link[rel="apple-touch-icon-precomposed"]'
+    ];
+    for (var i = 0; i < sels.length; i++) {
+      var el = document.querySelector(sels[i]);
+      if (el && el.href) return el.href;
+    }
+    try { return new URL('/favicon.ico', location.href).href; } catch (_) { return ''; }
+  }
+  function notify() {
+    var u = pickFavicon();
+    if (u === lastUrl) return;
+    lastUrl = u;
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('browser_favicon_changed', { url: u });
+      }
+    } catch (_) {}
+  }
+  function start() {
+    if (!document.head) { setTimeout(start, 50); return; }
+    new MutationObserver(notify).observe(document.head, { subtree: true, childList: true, attributes: true });
+    notify();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else { start(); }
+  setInterval(notify, 2000);
+})();
+"#;
+
 #[derive(Default)]
 struct TabState {
     /// 表示順を保持する。
@@ -105,8 +252,18 @@ struct TabState {
     urls: HashMap<u64, String>,
     /// 各タブの最新ページタイトル。
     titles: HashMap<u64, String>,
+    /// 各タブの音量（0.0〜1.0）。未設定 = 1.0。
+    volumes: HashMap<u64, f64>,
+    /// 各タブのズーム倍率（0.25〜5.0）。未設定 = 1.0。
+    zooms: HashMap<u64, f64>,
+    /// 各タブで現在音が鳴っているか。
+    audibles: HashMap<u64, bool>,
+    /// 各タブの favicon URL。
+    favicons: HashMap<u64, String>,
     active: Option<u64>,
     next_id: u64,
+    /// 閉じたタブの URL スタック（最新16件）。価として Ctrl+Shift+T で復元する。
+    closed: Vec<String>,
 }
 
 impl TabState {
@@ -116,7 +273,11 @@ impl TabState {
             .map(|id| TabInfo {
                 id: *id,
                 url: self.urls.get(id).cloned().unwrap_or_default(),
+                title: self.titles.get(id).cloned().unwrap_or_default(),
                 active: self.active == Some(*id),
+                muted: self.volumes.get(id).copied().unwrap_or(1.0) <= 0.0001,
+                audible: self.audibles.get(id).copied().unwrap_or(false),
+                favicon: self.favicons.get(id).cloned().unwrap_or_default(),
             })
             .collect()
     }
@@ -129,7 +290,11 @@ struct AppState(Mutex<TabState>);
 struct TabInfo {
     id: u64,
     url: String,
+    title: String,
     active: bool,
+    muted: bool,
+    audible: bool,
+    favicon: String,
 }
 
 fn view_label(id: u64) -> String {
@@ -213,6 +378,10 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
                 .initialization_script(ADBLOCK_SCRIPT)
                 .initialization_script(URL_WATCH_SCRIPT)
                 .initialization_script(TITLE_WATCH_SCRIPT)
+                .initialization_script(VOLUME_SCRIPT)
+                .initialization_script(ZOOM_SCRIPT)
+                .initialization_script(AUDIO_WATCH_SCRIPT)
+                .initialization_script(FAVICON_WATCH_SCRIPT)
                 .on_navigation(move |u| {
                     let _ = app_for_nav.emit_to(
                         "ui",
@@ -291,6 +460,15 @@ async fn tab_close(
     // 1) ロック内で状態を更新（webview close は別途）
     let (need_new_tab, new_id_opt) = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        // 閉じるタブの URL をスタックに保存（復元用）。
+        if let Some(u) = s.urls.get(&id).cloned() {
+            if !u.is_empty() && u != HOME_URL {
+                s.closed.push(u);
+                if s.closed.len() > 16 {
+                    s.closed.remove(0);
+                }
+            }
+        }
         s.order.retain(|x| *x != id);
         s.urls.remove(&id);
         s.titles.remove(&id);
@@ -353,6 +531,178 @@ fn tab_list(state: State<'_, AppState>) -> Result<Vec<TabInfo>, String> {
     Ok(s.summary())
 }
 
+/// 指定タブを複製（同じ URL で新規タブを開く）。
+#[tauri::command]
+async fn tab_duplicate(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<u64, String> {
+    let url = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.urls.get(&id).cloned().unwrap_or_else(|| HOME_URL.to_string())
+    };
+    let new_id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.next_id += 1;
+        s.next_id
+    };
+    create_view_on_main(&app, &window, new_id, &url)?;
+    let snapshot = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        // 元タブの直後に挿入
+        let pos = s.order.iter().position(|x| *x == id).map(|p| p + 1).unwrap_or(s.order.len());
+        s.order.insert(pos, new_id);
+        s.urls.insert(new_id, url);
+        s.active = Some(new_id);
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+        s.summary()
+    };
+    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+    Ok(new_id)
+}
+
+/// 直近に閉じたタブを復元（スタック LIFO）。
+#[tauri::command]
+async fn tab_reopen(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<u64>, String> {
+    let url = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.closed.pop()
+    };
+    let url = match url {
+        Some(u) => u,
+        None => return Ok(None),
+    };
+    let id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.next_id += 1;
+        s.next_id
+    };
+    create_view_on_main(&app, &window, id, &url)?;
+    let snapshot = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.order.push(id);
+        s.urls.insert(id, url);
+        s.active = Some(id);
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+        s.summary()
+    };
+    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+    Ok(Some(id))
+}
+
+/// 指定タブ以外を全て閉じる。
+#[tauri::command]
+async fn tab_close_others(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<(), String> {
+    let to_close: Vec<u64> = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.order.iter().copied().filter(|x| *x != id).collect()
+    };
+    for cid in to_close {
+        {
+            let mut s = state.0.lock().map_err(|e| e.to_string())?;
+            if let Some(u) = s.urls.get(&cid).cloned() {
+                if !u.is_empty() && u != HOME_URL {
+                    s.closed.push(u);
+                    if s.closed.len() > 16 { s.closed.remove(0); }
+                }
+            }
+            s.order.retain(|x| *x != cid);
+            s.urls.remove(&cid);
+            s.titles.remove(&cid);
+        }
+        if let Some(view) = window.get_webview(&view_label(cid)) {
+            let _ = view.close();
+        }
+    }
+    let snapshot = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.active = Some(id);
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+        s.summary()
+    };
+    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+    Ok(())
+}
+
+/// 指定タブの右側にあるタブを全て閉じる。
+#[tauri::command]
+async fn tab_close_right(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<(), String> {
+    let to_close: Vec<u64> = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        match s.order.iter().position(|x| *x == id) {
+            Some(pos) => s.order[pos + 1..].to_vec(),
+            None => Vec::new(),
+        }
+    };
+    for cid in to_close {
+        {
+            let mut s = state.0.lock().map_err(|e| e.to_string())?;
+            if let Some(u) = s.urls.get(&cid).cloned() {
+                if !u.is_empty() && u != HOME_URL {
+                    s.closed.push(u);
+                    if s.closed.len() > 16 { s.closed.remove(0); }
+                }
+            }
+            s.order.retain(|x| *x != cid);
+            s.urls.remove(&cid);
+            s.titles.remove(&cid);
+            if s.active == Some(cid) {
+                s.active = Some(id);
+            }
+        }
+        if let Some(view) = window.get_webview(&view_label(cid)) {
+            let _ = view.close();
+        }
+    }
+    let snapshot = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+        s.summary()
+    };
+    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+    Ok(())
+}
+
+/// タブを並び替える（id を to_index の位置へ移動）。
+#[tauri::command]
+fn tab_reorder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    to_index: usize,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let from = match s.order.iter().position(|x| *x == id) {
+        Some(p) => p,
+        None => return Err(format!("unknown tab id: {id}")),
+    };
+    let removed = s.order.remove(from);
+    let dst = to_index.min(s.order.len());
+    s.order.insert(dst, removed);
+    emit_tabs(&app, &s);
+    Ok(())
+}
+
 /// アクティブタブの view を URL 遷移させる。
 #[tauri::command]
 fn browser_navigate(
@@ -404,6 +754,10 @@ fn browser_url_changed(
     {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.urls.insert(id, url.clone());
+        // 新しいページに遷移したので audible / favicon をリセット。
+        s.audibles.insert(id, false);
+        s.favicons.remove(&id);
+        emit_tabs(&app, &s);
     }
     app.emit_to(
         "ui",
@@ -418,6 +772,7 @@ fn browser_url_changed(
 fn browser_title_changed(
     webview: Webview,
     window: Window,
+    app: AppHandle,
     state: State<'_, AppState>,
     title: String,
 ) -> Result<(), String> {
@@ -428,6 +783,250 @@ fn browser_title_changed(
     if s.active == Some(id) {
         apply_active_title(&window, &s);
     }
+    emit_tabs(&app, &s);
+    Ok(())
+}
+
+/// view 内 JS から「音が鳴っているか」の状態を受け取る。
+#[tauri::command]
+fn browser_audible_changed(
+    webview: Webview,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    audible: bool,
+) -> Result<(), String> {
+    let label = webview.label().to_string();
+    let id = parse_view_id(&label).ok_or_else(|| format!("not a view label: {label}"))?;
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let prev = s.audibles.get(&id).copied().unwrap_or(false);
+    if prev == audible {
+        return Ok(());
+    }
+    s.audibles.insert(id, audible);
+    emit_tabs(&app, &s);
+    Ok(())
+}
+
+/// view 内 JS から favicon URL を受け取る。
+#[tauri::command]
+fn browser_favicon_changed(
+    webview: Webview,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<(), String> {
+    let label = webview.label().to_string();
+    let id = parse_view_id(&label).ok_or_else(|| format!("not a view label: {label}"))?;
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let prev = s.favicons.get(&id).cloned().unwrap_or_default();
+    if prev == url {
+        return Ok(());
+    }
+    s.favicons.insert(id, url);
+    emit_tabs(&app, &s);
+    Ok(())
+}
+
+// ===== 音量 =====
+
+#[tauri::command]
+fn tab_get_volume(webview: Webview, state: State<'_, AppState>) -> Result<f64, String> {
+    let label = webview.label().to_string();
+    // UI からは active タブを対象に、view からは自身の id を対象にする。
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let id = parse_view_id(&label).or(s.active).ok_or_else(|| "no tab".to_string())?;
+    Ok(s.volumes.get(&id).copied().unwrap_or(1.0))
+}
+
+#[tauri::command]
+fn tab_set_volume(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    volume: f64,
+) -> Result<(), String> {
+    let v = volume.clamp(0.0, 1.0);
+    {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.volumes.insert(id, v);
+    }
+    if let Some(view) = window.get_webview(&view_label(id)) {
+        let _ = view.eval(&format!(
+            "window.__yuzuVolume={:.4};window.__yuzuApplyVolume&&window.__yuzuApplyVolume();",
+            v
+        ));
+    }
+    let _ = app.emit_to(
+        "ui",
+        "tab-volume-changed",
+        serde_json::json!({ "id": id, "volume": v }),
+    );
+    // タブ一覧も更新（muted フラグをタブ UI に反映）。
+    {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        emit_tabs(&app, &s);
+    }
+    Ok(())
+}
+
+// ===== ズーム =====
+
+fn apply_zoom_to(window: &Window, id: u64, zoom: f64) {
+    if let Some(view) = window.get_webview(&view_label(id)) {
+        let _ = view.eval(&format!(
+            "document.documentElement.style.zoom='{:.4}';",
+            zoom
+        ));
+    }
+}
+
+#[tauri::command]
+fn tab_get_zoom(webview: Webview, state: State<'_, AppState>) -> Result<f64, String> {
+    let label = webview.label().to_string();
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let id = parse_view_id(&label).or(s.active).ok_or_else(|| "no tab".to_string())?;
+    Ok(s.zooms.get(&id).copied().unwrap_or(1.0))
+}
+
+#[tauri::command]
+fn browser_zoom_delta(
+    webview: Webview,
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    delta: f64,
+) -> Result<(), String> {
+    let label = webview.label().to_string();
+    let id = parse_view_id(&label).ok_or_else(|| format!("not a view: {label}"))?;
+    let new_zoom = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        let cur = s.zooms.get(&id).copied().unwrap_or(1.0);
+        let z = ((cur + delta) * 100.0).round() / 100.0;
+        let z = z.clamp(0.25, 5.0);
+        s.zooms.insert(id, z);
+        z
+    };
+    apply_zoom_to(&window, id, new_zoom);
+    let _ = app.emit_to(
+        "ui",
+        "tab-zoom-changed",
+        serde_json::json!({ "id": id, "zoom": new_zoom }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_zoom_set(
+    webview: Webview,
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    zoom: f64,
+) -> Result<(), String> {
+    let label = webview.label().to_string();
+    let id = parse_view_id(&label).ok_or_else(|| format!("not a view: {label}"))?;
+    let z = zoom.clamp(0.25, 5.0);
+    {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.zooms.insert(id, z);
+    }
+    apply_zoom_to(&window, id, z);
+    let _ = app.emit_to(
+        "ui",
+        "tab-zoom-changed",
+        serde_json::json!({ "id": id, "zoom": z }),
+    );
+    Ok(())
+}
+
+/// UI 側のショートカット用：active タブのズームを設定/相対変化させる。
+#[tauri::command]
+fn active_tab_zoom_delta(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    delta: f64,
+) -> Result<(), String> {
+    let id_and_new = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+        let cur = s.zooms.get(&id).copied().unwrap_or(1.0);
+        let z = ((cur + delta) * 100.0).round() / 100.0;
+        let z = z.clamp(0.25, 5.0);
+        s.zooms.insert(id, z);
+        (id, z)
+    };
+    apply_zoom_to(&window, id_and_new.0, id_and_new.1);
+    let _ = app.emit_to(
+        "ui",
+        "tab-zoom-changed",
+        serde_json::json!({ "id": id_and_new.0, "zoom": id_and_new.1 }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn active_tab_zoom_set(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    zoom: f64,
+) -> Result<(), String> {
+    let z = zoom.clamp(0.25, 5.0);
+    let id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+        s.zooms.insert(id, z);
+        id
+    };
+    apply_zoom_to(&window, id, z);
+    let _ = app.emit_to(
+        "ui",
+        "tab-zoom-changed",
+        serde_json::json!({ "id": id, "zoom": z }),
+    );
+    Ok(())
+}
+
+/// タブの右クリックで呼ばれる。ネイティブのコンテキストメニューを表示し、
+/// 選択結果は menu event ハンドラ経由で `tab-menu-action` イベントとして発行される。
+#[tauri::command]
+fn show_tab_context_menu(
+    app: AppHandle,
+    window: Window,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<(), String> {
+    let (has_others, has_right) = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        let len = s.order.len();
+        let pos = s.order.iter().position(|&x| x == id);
+        let has_right = pos.map(|p| p + 1 < len).unwrap_or(false);
+        (len > 1, has_right)
+    };
+
+    let mk = |action: &str| format!("yuzu-tabmenu:{action}:{id}");
+
+    let new_tab = MenuItemBuilder::with_id(mk("new"), "新規タブ").build(&app).map_err(|e| e.to_string())?;
+    let dup = MenuItemBuilder::with_id(mk("duplicate"), "タブを複製").build(&app).map_err(|e| e.to_string())?;
+    let reload = MenuItemBuilder::with_id(mk("reload"), "ページを再読み込み").build(&app).map_err(|e| e.to_string())?;
+    let reopen = MenuItemBuilder::with_id(mk("reopen"), "閉じたタブを復元").build(&app).map_err(|e| e.to_string())?;
+    let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let close_right = MenuItemBuilder::with_id(mk("close_right"), "右側のタブを全て閉じる")
+        .enabled(has_right)
+        .build(&app).map_err(|e| e.to_string())?;
+    let close_others = MenuItemBuilder::with_id(mk("close_others"), "他のタブを全て閉じる")
+        .enabled(has_others)
+        .build(&app).map_err(|e| e.to_string())?;
+    let close = MenuItemBuilder::with_id(mk("close"), "タブを閉じる").build(&app).map_err(|e| e.to_string())?;
+
+    let menu = MenuBuilder::new(&app)
+        .items(&[&new_tab, &dup, &reload, &reopen, &sep, &close_right, &close_others, &close])
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    window.popup_menu(&menu).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -441,10 +1040,25 @@ pub fn run() {
             tab_close,
             tab_switch,
             tab_list,
+            tab_duplicate,
+            tab_reopen,
+            tab_close_others,
+            tab_close_right,
+            tab_reorder,
+            show_tab_context_menu,
             browser_navigate,
             browser_history,
             browser_url_changed,
             browser_title_changed,
+            browser_audible_changed,
+            browser_favicon_changed,
+            tab_get_volume,
+            tab_set_volume,
+            tab_get_zoom,
+            browser_zoom_delta,
+            browser_zoom_set,
+            active_tab_zoom_delta,
+            active_tab_zoom_set,
         ])
         .setup(|app| {
             let initial_w: f64 = 1100.0;
@@ -456,6 +1070,8 @@ pub fn run() {
                 .background_color(tauri::window::Color(26, 26, 26, 255))
                 .resizable(true)
                 .build()?;
+            // ウィンドウアイコンは tauri.conf.json の bundle.icon （icons/yuzu-browser.ico）から
+            // ビルド時に exe に焼き込まれ、Windows ではそれが自動的にウィンドウアイコンになる。
 
             // UI（アドレスバー＋タブバー）。
             window.add_child(
@@ -487,6 +1103,23 @@ pub fn run() {
                     let guard = s_state.0.lock();
                     if let Ok(s) = guard {
                         relayout(&win, &s);
+                    }
+                }
+            });
+
+            // ネイティブのタブコンテキストメニュー選択イベントをフロントへ転送。
+            let app_for_menu = app_handle.clone();
+            app.on_menu_event(move |_app, event| {
+                let id_str = event.id().0.as_str();
+                if let Some(rest) = id_str.strip_prefix("yuzu-tabmenu:") {
+                    let mut parts = rest.splitn(2, ':');
+                    if let (Some(action), Some(tab_id_str)) = (parts.next(), parts.next()) {
+                        if let Ok(tab_id) = tab_id_str.parse::<u64>() {
+                            let _ = app_for_menu.emit(
+                                "tab-menu-action",
+                                serde_json::json!({ "action": action, "id": tab_id }),
+                            );
+                        }
                     }
                 }
             });
