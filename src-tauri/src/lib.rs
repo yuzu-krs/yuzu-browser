@@ -246,6 +246,90 @@ const FAVICON_WATCH_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Ctrl+クリック / 中クリック でリンクを新しいタブで開く。
+const LINK_INTERCEPT_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuLinkInterceptInstalled) return;
+  window.__yuzuLinkInterceptInstalled = true;
+  function findAnchor(node) {
+    while (node && node.nodeType === 1) {
+      if (node.tagName === 'A' && node.href) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+  function shouldOpenInNewTab(e, a) {
+    if (!a) return false;
+    var href = a.href || '';
+    if (!href) return false;
+    if (href.indexOf('javascript:') === 0) return false;
+    if (href.indexOf('mailto:') === 0) return false;
+    if (href.indexOf('#') === 0) return false;
+    return true;
+  }
+  function openBg(href) {
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('tab_new', { url: href, background: true });
+      }
+    } catch (_) {}
+  }
+  // Ctrl+クリック (左ボタン)
+  document.addEventListener('click', function (e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.button !== 0) return;
+    var a = findAnchor(e.target);
+    if (!shouldOpenInNewTab(e, a)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openBg(a.href);
+  }, true);
+  // 中クリック (auxclick だと一部サイトで取れないため mousedown でも保険)
+  document.addEventListener('auxclick', function (e) {
+    if (e.button !== 1) return;
+    var a = findAnchor(e.target);
+    if (!shouldOpenInNewTab(e, a)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openBg(a.href);
+  }, true);
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 1) return;
+    var a = findAnchor(e.target);
+    if (!shouldOpenInNewTab(e, a)) return;
+    // 中クリックの自動スクロールを抑止
+    e.preventDefault();
+  }, true);
+  // target=_blank も新しいタブで開く（window.open フック）
+  var _open = window.open;
+  window.open = function (url, name, features) {
+    if (url) {
+      openBg(String(url));
+      return null;
+    }
+    return _open ? _open.apply(this, arguments) : null;
+  };
+})();
+"#;
+
+/// 動画などがフルスクリーンに入った/出たときにブラウザのクロームを退避させる。
+const FULLSCREEN_WATCH_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuFullscreenWatchInstalled) return;
+  window.__yuzuFullscreenWatchInstalled = true;
+  function notify() {
+    var fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('view_set_fullscreen', { fullscreen: fs });
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('fullscreenchange', notify, true);
+  document.addEventListener('webkitfullscreenchange', notify, true);
+})();
+"#;
+
 #[derive(Default)]
 struct TabState {
     /// 表示順を保持する。
@@ -384,6 +468,8 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
                 .initialization_script(ZOOM_SCRIPT)
                 .initialization_script(AUDIO_WATCH_SCRIPT)
                 .initialization_script(FAVICON_WATCH_SCRIPT)
+                .initialization_script(LINK_INTERCEPT_SCRIPT)
+                .initialization_script(FULLSCREEN_WATCH_SCRIPT)
                 .on_navigation(move |u| {
                     let _ = app_for_nav.emit_to(
                         "ui",
@@ -428,8 +514,10 @@ async fn tab_new(
     app: AppHandle,
     state: State<'_, AppState>,
     url: Option<String>,
+    background: Option<bool>,
 ) -> Result<u64, String> {
     let target = url.unwrap_or_else(|| HOME_URL.to_string());
+    let bg = background.unwrap_or(false);
     // 1) ID だけ確保してロックを即座に解放
     let id = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
@@ -443,7 +531,12 @@ async fn tab_new(
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.order.push(id);
         s.urls.insert(id, target);
-        s.active = Some(id);
+        if !bg {
+            s.active = Some(id);
+        } else if s.active.is_none() {
+            // active が無いときは結局 active にしないと真っ黒なので。
+            s.active = Some(id);
+        }
         relayout(&window, &s);
         apply_active_title(&window, &s);
         s.summary()
@@ -1187,6 +1280,47 @@ fn ui_set_expanded(
     Ok(())
 }
 
+/// 動画フルスクリーン時にツールバー/タブバーを退避させ、active view をウィンドウ全面に広げる。
+/// 解除時は通常レイアウトに戻す。
+#[tauri::command]
+fn view_set_fullscreen(
+    window: Window,
+    webview: Webview,
+    state: State<'_, AppState>,
+    fullscreen: bool,
+) -> Result<(), String> {
+    // 呼び出し元 view が active タブの場合だけ動かす（バックグラウンドタブからの誤動作防止）。
+    let label = webview.label().to_string();
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let active = match s.active {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+    if label != view_label(active) {
+        return Ok(());
+    }
+    drop(s);
+
+    if fullscreen {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+        let w = size.width.max(1.0);
+        let h = size.height.max(1.0);
+        if let Some(ui) = window.get_webview("ui") {
+            let _ = ui.set_position(LogicalPosition::new(OFFSCREEN_X, 0.0));
+            let _ = ui.set_size(LogicalSize::new(1.0, 1.0));
+        }
+        if let Some(view) = window.get_webview(&view_label(active)) {
+            let _ = view.set_position(LogicalPosition::new(0.0, 0.0));
+            let _ = view.set_size(LogicalSize::new(w, h));
+        }
+    } else {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&window, &s);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1222,6 +1356,7 @@ pub fn run() {
             bookmark_remove,
             bookmark_is_current,
             ui_set_expanded,
+            view_set_fullscreen,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
