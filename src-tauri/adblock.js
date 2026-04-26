@@ -183,6 +183,27 @@
     ".video-ads",
     "tp-yt-paper-dialog:has(yt-mealbar-promo-renderer)",
     "ytmusic-mealbar-promo-renderer",
+    // --- DuckDuckGo 検索広告 ---
+    'li[data-layout="ad"]',
+    'article[data-testid="ad"]',
+    ".result--ad",
+    ".result--ad-v2",
+    ".badge--ad",
+    "div.results--ads",
+    "div.results--ads--main",
+    // --- Google 検索広告 ---
+    "#tads",
+    "#tadsb",
+    "#bottomads",
+    "[data-text-ad]",
+    ".commercial-unit-desktop-top",
+    ".commercial-unit-desktop-rhs",
+    'div[aria-label="広告"]',
+    'div[aria-label="Ads"]',
+    // --- Bing 検索広告 ---
+    ".b_ad",
+    "li.b_adTop",
+    "li.b_adBottom",
   ];
   const style = document.createElement("style");
   style.id = "yuzu-adblock-cosmetic";

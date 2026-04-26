@@ -202,7 +202,15 @@ function renderTabs(): void {
     });
     el.appendChild(close);
 
-    el.addEventListener("click", () => void tabSwitch(t.id));
+    // タブ切り替え: draggable=true な要素では click イベントが発火しない
+    // ことがあるため、mousedown(左ボタン) でハンドリングする。
+    // ボタン要素クリック時はそちらが優先されるよう除外。
+    el.addEventListener("mousedown", (e) => {
+      const me = e as MouseEvent;
+      if (me.button !== 0) return;
+      if ((me.target as HTMLElement).closest("button")) return;
+      void tabSwitch(t.id);
+    });
     el.addEventListener("auxclick", (e) => {
       // 中クリックで閉じる
       if ((e as MouseEvent).button === 1) {
@@ -573,6 +581,18 @@ async function refreshBookmarkStar(): Promise<void> {
     : "このページをブックマーク (Ctrl+D)";
 }
 
+/** ブックマーク行の favicon URL を解決。
+ * 1) ブックマーク自身の favicon
+ * 2) 同じ URL のタブが開いていればそのタブの最新 favicon
+ * 3) {origin}/favicon.ico フォールバック
+ */
+function resolveBookmarkFavicon(b: Bookmark): string {
+  if (b.favicon) return b.favicon;
+  const matched = tabs.find((t) => t.url === b.url && t.favicon);
+  if (matched) return matched.favicon;
+  return faviconFallback(b.url);
+}
+
 function renderBookmarks(): void {
   if (!bookmarksListEl || !bookmarksEmptyEl) return;
   bookmarksListEl.innerHTML = "";
@@ -589,8 +609,11 @@ function renderBookmarks(): void {
     fav.className = "bookmark-favicon";
     fav.alt = "";
     fav.referrerPolicy = "no-referrer";
-    fav.src = b.favicon || faviconFallback(b.url);
-    fav.addEventListener("error", () => fav.removeAttribute("src"));
+    fav.src = resolveBookmarkFavicon(b);
+    fav.addEventListener("error", () => {
+      fav.classList.add("is-fallback");
+      fav.removeAttribute("src");
+    });
     li.appendChild(fav);
 
     const text = document.createElement("div");

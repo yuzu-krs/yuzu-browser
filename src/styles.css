@@ -172,6 +172,10 @@ body {
   flex: 0 0 auto;
   object-fit: contain;
 }
+.bookmarks-list .bookmark-favicon.is-fallback {
+  background: #555;
+  border-radius: 3px;
+}
 .bookmarks-list .bookmark-text {
   flex: 1 1 auto;
   min-width: 0;
