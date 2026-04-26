@@ -1,13 +1,17 @@
 :root {
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", sans-serif;
   font-size: 14px;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -46,8 +50,12 @@ body {
   transition: background 0.12s ease;
 }
 
-.nav-btn:hover { background: #353535; }
-.nav-btn:active { background: #404040; }
+.nav-btn:hover {
+  background: #353535;
+}
+.nav-btn:active {
+  background: #404040;
+}
 
 .address-form {
   flex: 1 1 auto;
@@ -67,7 +75,100 @@ body {
   transition: border-color 0.12s ease;
 }
 
-.address-input:focus { border-color: #6aa9ff; }
+.address-input:focus {
+  border-color: #6aa9ff;
+}
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  background: #1e1e1e;
+  border-bottom: 1px solid #2c2c2c;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  /* タブ全体がコンテンツ幅で、必要なら縮む。+ ボタンを右に押しやらない */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 40px);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  min-width: 120px;
+  max-width: 220px;
+  height: 100%;
+  border-right: 1px solid #2c2c2c;
+  background: #232323;
+  color: #c8c8c8;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  flex: 0 1 200px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tab:hover {
+  background: #2a2a2a;
+}
+
+.tab.active {
+  background: #1a1a1a;
+  color: #f0f0f0;
+  box-shadow: inset 0 2px 0 0 #6aa9ff;
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: #888;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.tab-close:hover {
+  background: #444;
+  color: #fff;
+}
+
+.new-tab-btn {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: #c8c8c8;
+  font-size: 18px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.new-tab-btn:hover {
+  background: #2a2a2a;
+}
 
 .view-container {
   flex: 1 1 auto;

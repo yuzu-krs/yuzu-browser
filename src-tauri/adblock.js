@@ -75,10 +75,14 @@
   const _fetch = window.fetch;
   if (_fetch) {
     window.fetch = function (input, init) {
-      const url = typeof input === "string" ? input : (input && input.url) || "";
+      const url =
+        typeof input === "string" ? input : (input && input.url) || "";
       if (isBlockedUrl(url)) {
         return Promise.resolve(
-          new Response("", { status: 204, statusText: "Blocked by yuzu-adblock" })
+          new Response("", {
+            status: 204,
+            statusText: "Blocked by yuzu-adblock",
+          }),
         );
       }
       return _fetch.apply(this, arguments);
@@ -110,7 +114,10 @@
   }
 
   // --- Image (1x1 ピクセルトラッカー対策) ---
-  const _ImageSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+  const _ImageSrc = Object.getOwnPropertyDescriptor(
+    HTMLImageElement.prototype,
+    "src",
+  );
   if (_ImageSrc && _ImageSrc.set) {
     Object.defineProperty(HTMLImageElement.prototype, "src", {
       configurable: true,
@@ -129,7 +136,12 @@
     window.Worker = function (url, opts) {
       if (isBlockedUrl(url)) {
         // ダミー Worker
-        return { postMessage() {}, terminate() {}, addEventListener() {}, removeEventListener() {} };
+        return {
+          postMessage() {},
+          terminate() {},
+          addEventListener() {},
+          removeEventListener() {},
+        };
       }
       return new _Worker(url, opts);
     };
@@ -141,7 +153,7 @@
     'iframe[src*="doubleclick.net"]',
     'iframe[src*="googlesyndication"]',
     'iframe[src*="adservice"]',
-    'ins.adsbygoogle',
+    "ins.adsbygoogle",
     'div[id^="google_ads_"]',
     'div[id^="div-gpt-ad"]',
     'div[class*="ad-banner"]',
@@ -150,31 +162,33 @@
     'div[class*="sponsored"]',
     'aside[aria-label*="広告"]',
     'aside[aria-label*="advert" i]',
-    '[data-ad-client]',
-    '[data-ad-slot]',
+    "[data-ad-client]",
+    "[data-ad-slot]",
     // --- YouTube ---
-    'ytd-display-ad-renderer',
-    'ytd-promoted-sparkles-web-renderer',
-    'ytd-promoted-video-renderer',
-    'ytd-compact-promoted-video-renderer',
-    'ytd-action-companion-ad-renderer',
-    'ytd-banner-promo-renderer',
-    'ytd-statement-banner-renderer',
-    'ytd-in-feed-ad-layout-renderer',
-    'ytd-ad-slot-renderer',
-    'ytd-rich-item-renderer:has(ytd-ad-slot-renderer)',
-    'ytd-reel-video-renderer:has(.ytd-ad-slot-renderer)',
-    '#masthead-ad',
-    '.ytp-ad-module',
-    '.ytp-ad-overlay-slot',
-    '.ytp-ad-image-overlay',
-    '.video-ads',
-    'tp-yt-paper-dialog:has(yt-mealbar-promo-renderer)',
-    'ytmusic-mealbar-promo-renderer',
+    "ytd-display-ad-renderer",
+    "ytd-promoted-sparkles-web-renderer",
+    "ytd-promoted-video-renderer",
+    "ytd-compact-promoted-video-renderer",
+    "ytd-action-companion-ad-renderer",
+    "ytd-banner-promo-renderer",
+    "ytd-statement-banner-renderer",
+    "ytd-in-feed-ad-layout-renderer",
+    "ytd-ad-slot-renderer",
+    "ytd-rich-item-renderer:has(ytd-ad-slot-renderer)",
+    "ytd-reel-video-renderer:has(.ytd-ad-slot-renderer)",
+    "#masthead-ad",
+    ".ytp-ad-module",
+    ".ytp-ad-overlay-slot",
+    ".ytp-ad-image-overlay",
+    ".video-ads",
+    "tp-yt-paper-dialog:has(yt-mealbar-promo-renderer)",
+    "ytmusic-mealbar-promo-renderer",
   ];
   const style = document.createElement("style");
   style.id = "yuzu-adblock-cosmetic";
-  style.textContent = COSMETIC_SELECTORS.join(",") + "{display:none !important;visibility:hidden !important;height:0 !important;}";
+  style.textContent =
+    COSMETIC_SELECTORS.join(",") +
+    "{display:none !important;visibility:hidden !important;height:0 !important;}";
   function injectStyle() {
     const target = document.head || document.documentElement;
     if (target && !document.getElementById("yuzu-adblock-cosmetic")) {
@@ -193,9 +207,10 @@
   //  (B) ytInitialPlayerResponse / fetch レスポンスから広告フィールドを再帰的に削除
   //  (C) 広告再生中は muted で playbackRate を最大化し、スキップボタンを自動クリック
   //  (D) 広告関連 DOM を MutationObserver で除去
-  if (/(^|\.)youtube(-nocookie)?\.com$/i.test(location.hostname) ||
-      /(^|\.)youtube\.com$/i.test(location.hostname)) {
-
+  if (
+    /(^|\.)youtube(-nocookie)?\.com$/i.test(location.hostname) ||
+    /(^|\.)youtube\.com$/i.test(location.hostname)
+  ) {
     // ---- (A) Object.prototype セッター乗っ取り（uBO の "set, ..., undefined" 相当） ----
     // どの階層のオブジェクトに代入されても無視させる。
     const KILL_KEYS = [
@@ -210,8 +225,12 @@
       try {
         Object.defineProperty(Object.prototype, key, {
           configurable: true,
-          set() { /* 代入を黙殺 */ },
-          get() { return undefined; },
+          set() {
+            /* 代入を黙殺 */
+          },
+          get() {
+            return undefined;
+          },
         });
       } catch (_) {}
     }
@@ -221,7 +240,11 @@
       if (!obj || typeof obj !== "object" || depth > 10) return obj;
       try {
         for (const k of KILL_KEYS) {
-          if (k in obj) { try { delete obj[k]; } catch (_) {} }
+          if (k in obj) {
+            try {
+              delete obj[k];
+            } catch (_) {}
+          }
         }
         if (Array.isArray(obj)) {
           for (const v of obj) stripAds(v, depth + 1);
@@ -240,39 +263,56 @@
     try {
       Object.defineProperty(window, "ytInitialPlayerResponse", {
         configurable: true,
-        get() { return _ytipr; },
-        set(v) { _ytipr = stripAds(v, 0); },
+        get() {
+          return _ytipr;
+        },
+        set(v) {
+          _ytipr = stripAds(v, 0);
+        },
       });
     } catch (_) {}
     let _ytid;
     try {
       Object.defineProperty(window, "ytInitialData", {
         configurable: true,
-        get() { return _ytid; },
-        set(v) { _ytid = stripAds(v, 0); },
+        get() {
+          return _ytid;
+        },
+        set(v) {
+          _ytid = stripAds(v, 0);
+        },
       });
     } catch (_) {}
 
     // YouTube 内部の fetch (ytInitialData / next 等) のレスポンスから広告剥がし
     const _ytFetch = window.fetch;
     window.fetch = function (input, init) {
-      const url = typeof input === "string" ? input : (input && input.url) || "";
+      const url =
+        typeof input === "string" ? input : (input && input.url) || "";
       // /api/stats/ads (広告計測ビーコン) と pagead をブロック
-      if (/\/api\/stats\/ads/.test(url) || /\/pagead\//.test(url) || /\/get_midroll_/.test(url)) {
+      if (
+        /\/api\/stats\/ads/.test(url) ||
+        /\/pagead\//.test(url) ||
+        /\/get_midroll_/.test(url)
+      ) {
         return Promise.resolve(new Response("", { status: 204 }));
       }
       const p = _ytFetch.apply(this, arguments);
       if (/\/youtubei\/v1\/(player|next|browse|search)/.test(url)) {
         return p.then((res) => {
           if (!res || !res.ok) return res;
-          return res.clone().json().then((data) => {
-            stripAds(data, 0);
-            return new Response(JSON.stringify(data), {
-              status: res.status,
-              statusText: res.statusText,
-              headers: res.headers,
-            });
-          }).catch(() => res);
+          return res
+            .clone()
+            .json()
+            .then((data) => {
+              stripAds(data, 0);
+              return new Response(JSON.stringify(data), {
+                status: res.status,
+                statusText: res.statusText,
+                headers: res.headers,
+              });
+            })
+            .catch(() => res);
         });
       }
       return p;
@@ -282,7 +322,9 @@
     function killVideoAd() {
       const player = document.querySelector(".html5-video-player");
       if (!player) return;
-      const isAd = player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting");
+      const isAd =
+        player.classList.contains("ad-showing") ||
+        player.classList.contains("ad-interrupting");
       if (!isAd) return;
 
       // スキップボタンを総当たりでクリック
@@ -294,7 +336,11 @@
       ];
       for (const sel of skipSelectors) {
         const btn = player.querySelector(sel);
-        if (btn) { try { btn.click(); } catch (_) {} }
+        if (btn) {
+          try {
+            btn.click();
+          } catch (_) {}
+        }
       }
 
       // 動画自体を末尾までシーク + 速度最大化 + ミュート
@@ -341,4 +387,3 @@
     startObserver();
   }
 })();
-
