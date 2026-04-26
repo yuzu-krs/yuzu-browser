@@ -56,12 +56,55 @@ const URL_WATCH_SCRIPT: &str = r#"
 })();
 "#;
 
+const TITLE_WATCH_SCRIPT: &str = r#"
+(function () {
+  if (window.__yuzuTitleWatchInstalled) return;
+  window.__yuzuTitleWatchInstalled = true;
+  let lastTitle = '';
+  function notify() {
+    const t = document.title || '';
+    if (t === lastTitle) return;
+    lastTitle = t;
+    try {
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        window.__TAURI_INTERNALS__.invoke('browser_title_changed', { title: t });
+      }
+    } catch (e) { /* ignore */ }
+  }
+  function install() {
+    const titleEl = document.querySelector('head > title');
+    if (titleEl) {
+      new MutationObserver(notify).observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
+    if (document.head) {
+      new MutationObserver(() => {
+        const t2 = document.querySelector('head > title');
+        if (t2 && t2.__yuzuObserved !== true) {
+          t2.__yuzuObserved = true;
+          new MutationObserver(notify).observe(t2, { childList: true, characterData: true, subtree: true });
+          notify();
+        }
+      }).observe(document.head, { childList: true });
+    }
+    notify();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', install);
+  } else {
+    install();
+  }
+  setInterval(notify, 1500);
+})();
+"#;
+
 #[derive(Default)]
 struct TabState {
     /// 表示順を保持する。
     order: Vec<u64>,
     /// 各タブの最新 URL。
     urls: HashMap<u64, String>,
+    /// 各タブの最新ページタイトル。
+    titles: HashMap<u64, String>,
     active: Option<u64>,
     next_id: u64,
 }
@@ -139,6 +182,26 @@ fn emit_tabs(app: &AppHandle, state: &TabState) {
     let _ = app.emit_to("ui", "tabs-updated", state.summary());
 }
 
+/// active タブのタイトルをウィンドウタイトルに反映。
+fn apply_active_title(window: &Window, state: &TabState) {
+    let title = match state.active {
+        Some(id) => state
+            .titles
+            .get(&id)
+            .cloned()
+            .filter(|t| !t.is_empty())
+            .or_else(|| state.urls.get(&id).cloned())
+            .unwrap_or_else(|| "yuzu-browser".to_string()),
+        None => "yuzu-browser".to_string(),
+    };
+    let display = if title == "yuzu-browser" {
+        title
+    } else {
+        format!("{title} - yuzu-browser")
+    };
+    let _ = window.set_title(&display);
+}
+
 /// 新しい view webview をウィンドウに生やす。
 fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(), String> {
     let parsed: Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
@@ -149,6 +212,7 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
             WebviewBuilder::new(&label, WebviewUrl::External(parsed))
                 .initialization_script(ADBLOCK_SCRIPT)
                 .initialization_script(URL_WATCH_SCRIPT)
+                .initialization_script(TITLE_WATCH_SCRIPT)
                 .on_navigation(move |u| {
                     let _ = app_for_nav.emit_to(
                         "ui",
@@ -210,6 +274,7 @@ async fn tab_new(
         s.urls.insert(id, target);
         s.active = Some(id);
         relayout(&window, &s);
+        apply_active_title(&window, &s);
         s.summary()
     };
     let _ = app.emit_to("ui", "tabs-updated", snapshot);
@@ -228,6 +293,7 @@ async fn tab_close(
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.order.retain(|x| *x != id);
         s.urls.remove(&id);
+        s.titles.remove(&id);
         if s.active == Some(id) {
             s.active = s.order.last().copied();
         }
@@ -256,6 +322,7 @@ async fn tab_close(
     let snapshot = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
         relayout(&window, &s);
+        apply_active_title(&window, &s);
         s.summary()
     };
     let _ = app.emit_to("ui", "tabs-updated", snapshot);
@@ -275,6 +342,7 @@ fn tab_switch(
     }
     s.active = Some(id);
     relayout(&window, &s);
+    apply_active_title(&window, &s);
     emit_tabs(&app, &s);
     Ok(())
 }
@@ -345,6 +413,24 @@ fn browser_url_changed(
     .map_err(|e| e.to_string())
 }
 
+/// view 内 JS からタイトル変化を受け取り、active ならウィンドウタイトルを更新。
+#[tauri::command]
+fn browser_title_changed(
+    webview: Webview,
+    window: Window,
+    state: State<'_, AppState>,
+    title: String,
+) -> Result<(), String> {
+    let label = webview.label().to_string();
+    let id = parse_view_id(&label).ok_or_else(|| format!("not a view label: {label}"))?;
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.titles.insert(id, title);
+    if s.active == Some(id) {
+        apply_active_title(&window, &s);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -358,6 +444,7 @@ pub fn run() {
             browser_navigate,
             browser_history,
             browser_url_changed,
+            browser_title_changed,
         ])
         .setup(|app| {
             let initial_w: f64 = 1100.0;
