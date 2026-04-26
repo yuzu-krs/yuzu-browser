@@ -147,6 +147,41 @@ function faviconFallback(url: string): string {
   }
 }
 
+/** 1x1 透明 PNG (壊れた img の代わりに使う)。 */
+const TRANSPARENT_PIXEL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=";
+
+/** favicon img に段階的フォールバック (favicon → /favicon.ico → 透明) を仕込む。
+ * load 失敗をブラウザの「壊れた画像」アイコンで見せないために、
+ * 必ず error ハンドラを src 設定より前に登録する。 */
+function setupCascadingFavicon(
+  img: HTMLImageElement,
+  primary: string,
+  pageUrl: string,
+): void {
+  const fallback1 = faviconFallback(pageUrl);
+  const candidates: string[] = [];
+  if (primary) candidates.push(primary);
+  if (fallback1 && !candidates.includes(fallback1)) candidates.push(fallback1);
+  let idx = 0;
+  img.addEventListener("error", () => {
+    idx += 1;
+    if (idx < candidates.length) {
+      img.src = candidates[idx];
+    } else {
+      // すべて失敗 → 透明ピクセルに置き換えて灰色プレースホルダを表示。
+      img.classList.add("is-fallback");
+      img.src = TRANSPARENT_PIXEL;
+    }
+  });
+  if (candidates.length === 0) {
+    img.classList.add("is-fallback");
+    img.src = TRANSPARENT_PIXEL;
+  } else {
+    img.src = candidates[0];
+  }
+}
+
 function renderTabs(): void {
   tabsEl.innerHTML = "";
   for (const t of tabs) {
@@ -154,19 +189,16 @@ function renderTabs(): void {
     el.className = "tab" + (t.active ? " active" : "");
     el.dataset.id = String(t.id);
     el.title = t.url;
-    el.draggable = true;
+    // HTML5 DnD は WebView2 で挙動が不安定なので使わない (pointer events で実装)。
+    el.draggable = false;
 
     // favicon
     const fav = document.createElement("img");
     fav.className = "tab-favicon";
     fav.alt = "";
     fav.referrerPolicy = "no-referrer";
-    fav.src = t.favicon || faviconFallback(t.url);
-    fav.addEventListener("error", () => {
-      // 取得失敗時はデフォルトアイコンへ
-      fav.classList.add("is-fallback");
-      fav.removeAttribute("src");
-    });
+    fav.draggable = false;
+    setupCascadingFavicon(fav, t.favicon, t.url);
     el.appendChild(fav);
 
     const title = document.createElement("span");
@@ -202,14 +234,14 @@ function renderTabs(): void {
     });
     el.appendChild(close);
 
-    // タブ切り替え: draggable=true な要素では click イベントが発火しない
-    // ことがあるため、mousedown(左ボタン) でハンドリングする。
-    // ボタン要素クリック時はそちらが優先されるよう除外。
-    el.addEventListener("mousedown", (e) => {
-      const me = e as MouseEvent;
-      if (me.button !== 0) return;
-      if ((me.target as HTMLElement).closest("button")) return;
-      void tabSwitch(t.id);
+    // --- pointer event ベースのタブクリック / 並び替え / 切り離し ---
+    // HTML5 DnD は WebView2 で取りこぼしが多いので使わない。
+    el.addEventListener("pointerdown", (e) => {
+      const pe = e as PointerEvent;
+      if (pe.button !== 0) return;
+      if ((pe.target as HTMLElement).closest("button")) return;
+      e.preventDefault();
+      startTabDrag(t.id, el, pe);
     });
     el.addEventListener("auxclick", (e) => {
       // 中クリックで閉じる
@@ -220,54 +252,133 @@ function renderTabs(): void {
     });
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      // ネイティブメニューを Rust 側に出してもらう（UI webview の矩形外にも描画できる）
       void invoke("show_tab_context_menu", { id: t.id }).catch((err) =>
         console.error("show_tab_context_menu failed:", err),
       );
     });
 
-    // --- ドラッグ＆ドロップで並び替え ---
-    el.addEventListener("dragstart", (e) => {
-      el.classList.add("dragging");
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/x-yuzu-tab", String(t.id));
-      }
-    });
-    el.addEventListener("dragend", () => {
-      el.classList.remove("dragging");
-      document
-        .querySelectorAll(".tab.drop-before, .tab.drop-after")
-        .forEach((n) => n.classList.remove("drop-before", "drop-after"));
-    });
-    el.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      const rect = el.getBoundingClientRect();
-      const before = (e as DragEvent).clientX < rect.left + rect.width / 2;
-      el.classList.toggle("drop-before", before);
-      el.classList.toggle("drop-after", !before);
-    });
-    el.addEventListener("dragleave", () => {
-      el.classList.remove("drop-before", "drop-after");
-    });
-    el.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const fromId = Number(e.dataTransfer?.getData("text/x-yuzu-tab") ?? "");
-      el.classList.remove("drop-before", "drop-after");
-      if (!fromId || fromId === t.id) return;
-      const rect = el.getBoundingClientRect();
-      const before = (e as DragEvent).clientX < rect.left + rect.width / 2;
-      const targetIdx = tabs.findIndex((x) => x.id === t.id);
-      const fromIdx = tabs.findIndex((x) => x.id === fromId);
-      if (targetIdx < 0 || fromIdx < 0) return;
-      let to = before ? targetIdx : targetIdx + 1;
-      if (fromIdx < to) to -= 1; // 削除される分訿正
-      void tabReorder(fromId, to);
-    });
-
     tabsEl.appendChild(el);
   }
+}
+
+/** タブの pointerdown 時に呼ばれ、ドラッグ閾値を超えたら並び替え/切り離しを行う。 */
+function startTabDrag(
+  tabId: number,
+  el: HTMLDivElement,
+  downEvt: PointerEvent,
+): void {
+  const startX = downEvt.clientX;
+  const startY = downEvt.clientY;
+  let dragging = false;
+  let lastX = startX;
+  let lastY = startY;
+
+  const setDropMarkers = (x: number) => {
+    document
+      .querySelectorAll(".tab.drop-before, .tab.drop-after")
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    const target = findTabAtX(x, tabId);
+    if (!target) return;
+    const r = target.el.getBoundingClientRect();
+    const before = x < r.left + r.width / 2;
+    target.el.classList.toggle("drop-before", before);
+    target.el.classList.toggle("drop-after", !before);
+  };
+
+  const onMove = (ev: PointerEvent) => {
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    if (!dragging) {
+      if (
+        Math.abs(ev.clientX - startX) > 5 ||
+        Math.abs(ev.clientY - startY) > 5
+      ) {
+        dragging = true;
+        el.classList.add("dragging");
+      } else {
+        return;
+      }
+    }
+    setDropMarkers(ev.clientX);
+  };
+
+  const onUp = (ev: PointerEvent) => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    document
+      .querySelectorAll(".tab.drop-before, .tab.drop-after")
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    el.classList.remove("dragging");
+    if (!dragging) {
+      // ただのクリック → タブ切替
+      void tabSwitch(tabId);
+      return;
+    }
+    // ドロップ位置でアクション決定
+    const tabbar = document.querySelector(".tabbar");
+    if (!tabbar) return;
+    const rect = tabbar.getBoundingClientRect();
+    const farOutside =
+      ev.clientY < rect.top - 60 || ev.clientY > rect.bottom + 60;
+    if (farOutside && tabs.length > 1) {
+      void invoke("tab_detach", { id: tabId }).catch((err) =>
+        console.error("tab_detach failed:", err),
+      );
+      return;
+    }
+    // 並び替え
+    const target = findTabAtX(ev.clientX, tabId);
+    if (!target) return;
+    const r = target.el.getBoundingClientRect();
+    const before = ev.clientX < r.left + r.width / 2;
+    const fromIdx = tabs.findIndex((x) => x.id === tabId);
+    if (fromIdx < 0) return;
+    let to = before ? target.index : target.index + 1;
+    if (fromIdx < to) to -= 1;
+    if (to === fromIdx) return;
+    void tabReorder(tabId, to);
+  };
+
+  const onCancel = () => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    document
+      .querySelectorAll(".tab.drop-before, .tab.drop-after")
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    el.classList.remove("dragging");
+  };
+
+  // last* unused-warning 抑止
+  void lastX;
+  void lastY;
+
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", onCancel, true);
+}
+
+/** 与えられた x 座標に最も近いタブ (自分以外) を返す。 */
+function findTabAtX(
+  x: number,
+  selfId: number,
+): { el: HTMLDivElement; index: number } | null {
+  const els = Array.from(tabsEl.querySelectorAll<HTMLDivElement>(".tab"));
+  let best: { el: HTMLDivElement; index: number; dist: number } | null = null;
+  for (let i = 0; i < els.length; i++) {
+    const e = els[i];
+    if (Number(e.dataset.id) === selfId) continue;
+    const r = e.getBoundingClientRect();
+    let dist: number;
+    if (x < r.left) dist = r.left - x;
+    else if (x > r.right) dist = x - r.right;
+    else dist = 0;
+    if (best === null || dist < best.dist) {
+      best = { el: e, index: i, dist };
+    }
+  }
+  return best ? { el: best.el, index: best.index } : null;
 }
 
 /** ネイティブコンテキストメニューの選択結果を処理。 */
@@ -492,13 +603,19 @@ window.addEventListener("DOMContentLoaded", () => {
   ) as HTMLButtonElement | null;
 
   if (bookmarkToggleBtn) {
-    bookmarkToggleBtn.addEventListener("click", () => void toggleCurrentBookmark());
+    bookmarkToggleBtn.addEventListener(
+      "click",
+      () => void toggleCurrentBookmark(),
+    );
   }
   if (bookmarksOpenBtn) {
     bookmarksOpenBtn.addEventListener("click", () => void openBookmarksPanel());
   }
   if (bookmarksCloseBtn) {
-    bookmarksCloseBtn.addEventListener("click", () => void closeBookmarksPanel());
+    bookmarksCloseBtn.addEventListener(
+      "click",
+      () => void closeBookmarksPanel(),
+    );
   }
 
   void listen<Bookmark[]>("bookmarks-updated", (event) => {
@@ -609,11 +726,7 @@ function renderBookmarks(): void {
     fav.className = "bookmark-favicon";
     fav.alt = "";
     fav.referrerPolicy = "no-referrer";
-    fav.src = resolveBookmarkFavicon(b);
-    fav.addEventListener("error", () => {
-      fav.classList.add("is-fallback");
-      fav.removeAttribute("src");
-    });
+    setupCascadingFavicon(fav, resolveBookmarkFavicon(b), b.url);
     li.appendChild(fav);
 
     const text = document.createElement("div");

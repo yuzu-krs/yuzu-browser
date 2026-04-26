@@ -279,6 +279,10 @@ body {
   flex: 0 0 auto;
   object-fit: contain;
   image-rendering: -webkit-optimize-contrast;
+  /* img のネイティブドラッグを抑止 (これがあると親 .tab の DnD が壊れる)。 */
+  -webkit-user-drag: none;
+  user-select: none;
+  pointer-events: none;
 }
 .tab-favicon.is-fallback {
   width: 16px;

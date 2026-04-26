@@ -545,6 +545,43 @@ async fn tab_new(
     Ok(id)
 }
 
+/// タブをタブバーから切り離して新ウィンドウ (新プロセス) として開く。
+/// yuzu-browser の現アーキテクチャは単一ウィンドウなので、別プロセスを起動して
+/// 環境変数 `YUZU_INITIAL_URL` で初期 URL を渡す方式にする。
+#[tauri::command]
+async fn tab_detach(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<(), String> {
+    let url = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.urls.get(&id).cloned().unwrap_or_default()
+    };
+    if url.is_empty() {
+        return Err("tab url not found".to_string());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.env("YUZU_INITIAL_URL", &url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Windows: 親と完全に切り離して、子プロセスがコンソールやハンドルを共有しないようにする。
+    // これがないと spawn 直後に親 UI が応答しなくなることがある。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("failed to spawn detached window: {e}"))?;
+    tab_close(window, app, state, id).await
+}
+
 #[tauri::command]
 async fn tab_close(
     window: Window,
@@ -1337,6 +1374,7 @@ pub fn run() {
             tab_close_others,
             tab_close_right,
             tab_reorder,
+            tab_detach,
             show_tab_context_menu,
             browser_navigate,
             browser_history,
@@ -1395,12 +1433,19 @@ pub fn run() {
                 let mut s = state.0.lock().expect("state poisoned");
                 s.next_id += 1;
                 let id = s.next_id;
-                create_view(&window, &app_handle, id, HOME_URL).expect("create initial view");
+                // 切り離しウィンドウなど、外部から URL が指定されていればそれを使う。
+                let initial_url = std::env::var("YUZU_INITIAL_URL")
+                    .ok()
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| HOME_URL.to_string());
+                create_view(&window, &app_handle, id, &initial_url).expect("create initial view");
                 s.order.push(id);
-                s.urls.insert(id, HOME_URL.to_string());
+                s.urls.insert(id, initial_url);
                 s.active = Some(id);
                 relayout(&window, &s);
             }
+            // 子プロセスに引き継がれないように消す。
+            std::env::remove_var("YUZU_INITIAL_URL");
 
             // ウィンドウのリサイズに追従。
             let win = window.clone();
