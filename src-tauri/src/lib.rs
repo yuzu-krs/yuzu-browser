@@ -563,19 +563,35 @@ async fn tab_detach(
         return Err("tab url not found".to_string());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // 子プロセス用に別の WebView2 ユーザーデータフォルダを用意する。
+    // 同じフォルダを複数プロセスで共有するとロック競合でフリーズするため必須。
+    let child_udf = {
+        let base = std::env::temp_dir().join("yuzu-browser-detached");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        base.join(unique)
+    };
+    let _ = std::fs::create_dir_all(&child_udf);
     let mut cmd = std::process::Command::new(&exe);
     cmd.env("YUZU_INITIAL_URL", &url)
+        .env("WEBVIEW2_USER_DATA_FOLDER", &child_udf)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // Windows: 親と完全に切り離して、子プロセスがコンソールやハンドルを共有しないようにする。
-    // これがないと spawn 直後に親 UI が応答しなくなることがある。
+    // Windows: 子プロセスを別プロセスグループにして親の Ctrl+C などの影響を受けないようにする。
+    // ※ DETACHED_PROCESS を付けると WebView2 の初期化に失敗してウィンドウが真っ黒になるため、
+    //    付けない (GUI アプリは元々コンソールを持たないので CREATE_NEW_PROCESS_GROUP だけで十分)。
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
     cmd.spawn()
         .map_err(|e| format!("failed to spawn detached window: {e}"))?;
