@@ -238,16 +238,23 @@ function renderTabs(): void {
     // HTML5 DnD は WebView2 で取りこぼしが多いので使わない。
     el.addEventListener("pointerdown", (e) => {
       const pe = e as PointerEvent;
-      if (pe.button !== 0) return;
       if ((pe.target as HTMLElement).closest("button")) return;
+      // 中クリックで閉じる (タブが多くて scroll container 化したとき
+      // auxclick が autoscroll に取られて発火しないことがあるため
+      // pointerdown で確実に処理する)
+      if (pe.button === 1) {
+        e.preventDefault();
+        void tabClose(t.id);
+        return;
+      }
+      if (pe.button !== 0) return;
       e.preventDefault();
       startTabDrag(t.id, el, pe);
     });
     el.addEventListener("auxclick", (e) => {
-      // 中クリックで閉じる
+      // フォールバック (pointerdown で処理済みでも害はない)
       if ((e as MouseEvent).button === 1) {
         e.preventDefault();
-        void tabClose(t.id);
       }
     });
     el.addEventListener("contextmenu", (e) => {
@@ -646,12 +653,21 @@ window.addEventListener("DOMContentLoaded", () => {
   bookmarksBarEmptyEl = document.getElementById(
     "bookmarks-bar-empty",
   ) as HTMLDivElement | null;
+  bookmarksBarAddBtn = document.getElementById(
+    "bookmarks-bar-add",
+  ) as HTMLButtonElement | null;
   const bookmarksCloseBtn = document.getElementById(
     "bookmarks-close",
   ) as HTMLButtonElement | null;
 
   if (bookmarkToggleBtn) {
     bookmarkToggleBtn.addEventListener(
+      "click",
+      () => void toggleCurrentBookmark(),
+    );
+  }
+  if (bookmarksBarAddBtn) {
+    bookmarksBarAddBtn.addEventListener(
       "click",
       () => void toggleCurrentBookmark(),
     );
@@ -720,6 +736,7 @@ let bookmarksListEl: HTMLUListElement | null = null;
 let bookmarksEmptyEl: HTMLDivElement | null = null;
 let bookmarksBarItemsEl: HTMLDivElement | null = null;
 let bookmarksBarEmptyEl: HTMLDivElement | null = null;
+let bookmarksBarAddBtn: HTMLButtonElement | null = null;
 let bookmarksPanelOpen = false;
 
 async function toggleCurrentBookmark(): Promise<void> {
@@ -738,14 +755,22 @@ async function toggleCurrentBookmark(): Promise<void> {
 }
 
 async function refreshBookmarkStar(): Promise<void> {
-  if (!bookmarkToggleBtn) return;
   const a = activeTab();
   const isMarked = !!a && bookmarks.some((b) => b.url === a.url);
-  bookmarkToggleBtn.textContent = isMarked ? "★" : "☆";
-  bookmarkToggleBtn.classList.toggle("is-bookmarked", isMarked);
-  bookmarkToggleBtn.title = isMarked
-    ? "このページのブックマークを削除 (Ctrl+D)"
-    : "このページをブックマーク (Ctrl+D)";
+  if (bookmarkToggleBtn) {
+    bookmarkToggleBtn.textContent = isMarked ? "★" : "☆";
+    bookmarkToggleBtn.classList.toggle("is-bookmarked", isMarked);
+    bookmarkToggleBtn.title = isMarked
+      ? "このページのブックマークを削除 (Ctrl+D)"
+      : "このページをブックマーク (Ctrl+D)";
+  }
+  if (bookmarksBarAddBtn) {
+    bookmarksBarAddBtn.textContent = isMarked ? "★" : "☆";
+    bookmarksBarAddBtn.classList.toggle("is-bookmarked", isMarked);
+    bookmarksBarAddBtn.title = isMarked
+      ? "このページのブックマークを削除 (Ctrl+D)"
+      : "このページをブックマーク (Ctrl+D)";
+  }
 }
 
 /** ブックマーク行の favicon URL を解決。

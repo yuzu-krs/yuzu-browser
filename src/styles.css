@@ -146,15 +146,15 @@ body {
 .bookmarks-bar-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   height: 24px;
-  padding: 0 8px;
+  padding: 0 6px;
   border-radius: 4px;
   color: #d8d8d8;
   font-size: 12px;
   cursor: pointer;
   flex: 0 0 auto;
-  max-width: 200px;
+  max-width: 130px;
   white-space: nowrap;
 }
 .bookmarks-bar-item:hover {
@@ -184,12 +184,32 @@ body {
 .bookmarks-bar-item .bb-title {
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 160px;
+  max-width: 100px;
 }
 .bookmarks-bar-empty {
   color: #888;
   font-size: 12px;
   padding: 0 8px;
+}
+.bookmarks-bar-add {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  width: 28px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: #cfcfcf;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.bookmarks-bar-add:hover {
+  background: #2a2a2a;
+  color: #fff;
+}
+.bookmarks-bar-add.is-bookmarked {
+  color: #ffd54a;
 }
 
 /* ===== ブックマーク一覧パネル ===== */
