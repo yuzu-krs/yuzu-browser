@@ -98,7 +98,7 @@
       </div>
       <div class="toolbox-body">
         <section class="toolbox-tool">
-          <h3>YouTube ダウンロード (yt-dlp)</h3>
+          <h3>YouTube ダウンロード</h3>
           <div class="toolbox-row">
             <label for="ytdlp-url">URL</label>
             <input
@@ -122,13 +122,15 @@
               <option value="video">動画 (mp4)</option>
               <option value="audio">音声のみ (mp3)</option>
             </select>
-            <label>画質</label>
-            <select id="ytdlp-quality">
-              <option value="best">最高</option>
-              <option value="1080">1080p まで</option>
-              <option value="720">720p まで</option>
-              <option value="480">480p まで</option>
-            </select>
+            <span id="ytdlp-quality-wrap">
+              <label for="ytdlp-quality">画質</label>
+              <select id="ytdlp-quality">
+                <option value="best">最高</option>
+                <option value="1080">1080p まで</option>
+                <option value="720">720p まで</option>
+                <option value="480">480p まで</option>
+              </select>
+            </span>
           </div>
           <div class="toolbox-row">
             <label for="ytdlp-dir">保存先</label>
@@ -143,6 +145,57 @@
             <span id="ytdlp-status" class="toolbox-status"></span>
           </div>
           <pre id="ytdlp-log" class="toolbox-log"></pre>
+        </section>
+
+        <section class="toolbox-tool">
+          <h3>ファイル形式コンバータ</h3>
+          <div class="toolbox-row">
+            <label for="conv-input">入力</label>
+            <input id="conv-input" type="text" spellcheck="false" placeholder="変換元ファイル (画像 / 動画 / 音声)" />
+            <button id="conv-pick-input" type="button">参照…</button>
+          </div>
+          <div class="toolbox-row">
+            <label for="conv-format">出力形式</label>
+            <select id="conv-format">
+              <optgroup label="画像">
+                <option value="png">PNG (.png)</option>
+                <option value="jpg">JPEG (.jpg)</option>
+                <option value="webp">WebP (.webp)</option>
+                <option value="gif">GIF (.gif)</option>
+                <option value="bmp">BMP (.bmp)</option>
+                <option value="tiff">TIFF (.tiff)</option>
+                <option value="ico">ICO (.ico)</option>
+                <option value="avif">AVIF (.avif)</option>
+              </optgroup>
+              <optgroup label="動画">
+                <option value="mp4">MP4 (.mp4)</option>
+                <option value="webm">WebM (.webm)</option>
+                <option value="mkv">Matroska (.mkv)</option>
+                <option value="mov">QuickTime (.mov)</option>
+                <option value="avi">AVI (.avi)</option>
+                <option value="gif-anim">アニメーション GIF (.gif)</option>
+              </optgroup>
+              <optgroup label="音声">
+                <option value="mp3">MP3 (.mp3)</option>
+                <option value="wav">WAV (.wav)</option>
+                <option value="ogg">Ogg Vorbis (.ogg)</option>
+                <option value="m4a">AAC / M4A (.m4a)</option>
+                <option value="flac">FLAC (.flac)</option>
+                <option value="opus">Opus (.opus)</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="toolbox-row">
+            <label for="conv-out">出力先</label>
+            <input id="conv-out" type="text" spellcheck="false" placeholder="(空なら入力と同じフォルダ)" />
+            <button id="conv-pick-out" type="button">参照…</button>
+          </div>
+          <div class="toolbox-row toolbox-actions">
+            <button id="conv-run" class="toolbox-primary" type="button">変換開始</button>
+            <button id="conv-cancel" type="button" disabled>キャンセル</button>
+            <span id="conv-status" class="toolbox-status"></span>
+          </div>
+          <pre id="conv-log" class="toolbox-log"></pre>
         </section>
       </div>
     </div>

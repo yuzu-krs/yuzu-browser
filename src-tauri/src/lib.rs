@@ -1760,6 +1760,369 @@ fn toolbox_ytdlp_cancel(state: State<'_, ToolboxState>, job_id: u64) -> Result<(
     Ok(())
 }
 
+// ===== ファイル形式コンバータ (ffmpeg) =====
+
+/// 同梱用 ffmpeg 実行ファイルの保存先 (app_data_dir/bin/ffmpeg(.exe))。
+fn managed_ffmpeg_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir 取得失敗: {}", e))?
+        .join("bin");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    let name = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let name = "ffmpeg";
+    Ok(dir.join(name))
+}
+
+/// ffmpeg を必要に応じて zip からダウンロード・展開する (Windows 想定)。
+fn ensure_ffmpeg(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = managed_ffmpeg_path(app)?;
+    if path.exists() {
+        return Ok(path);
+    }
+    #[cfg(target_os = "windows")]
+    let url =
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+    #[cfg(target_os = "macos")]
+    let url = "https://www.osxexperts.net/ffmpeg71arm.zip";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let url =
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz";
+
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-conv-progress",
+        ConvProgress {
+            job_id: 0,
+            line: format!("ffmpeg を初回ダウンロード中… ({})", url),
+            kind: "info".to_string(),
+        },
+    );
+
+    let parent = path.parent().ok_or_else(|| "親ディレクトリ無し".to_string())?;
+    let zip_path = parent.join("ffmpeg-download.zip");
+    {
+        let resp = ureq::get(url)
+            .call()
+            .map_err(|e| format!("ffmpeg ダウンロード失敗: {}", e))?;
+        let mut file = std::fs::File::create(&zip_path)
+            .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+        let mut reader = resp.into_reader();
+        std::io::copy(&mut reader, &mut file)
+            .map_err(|e| format!("ffmpeg 書き込み失敗: {}", e))?;
+    }
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-conv-progress",
+        ConvProgress {
+            job_id: 0,
+            line: "アーカイブを展開中…".to_string(),
+            kind: "info".to_string(),
+        },
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let f = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipArchive::new(f).map_err(|e| format!("zip 展開失敗: {}", e))?;
+        let mut found = false;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+            let name = entry.name().to_string();
+            if name.ends_with("/bin/ffmpeg.exe") || name.ends_with("\\bin\\ffmpeg.exe") {
+                let mut out = std::fs::File::create(&path)
+                    .map_err(|e| format!("ffmpeg.exe 書き込み失敗: {}", e))?;
+                std::io::copy(&mut entry, &mut out)
+                    .map_err(|e| format!("ffmpeg.exe 取り出し失敗: {}", e))?;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("zip 内に ffmpeg.exe が見つかりませんでした".to_string());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("このプラットフォームでは ffmpeg を自動取得できません".to_string());
+    }
+
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-conv-progress",
+        ConvProgress {
+            job_id: 0,
+            line: format!("ffmpeg を保存しました: {}", path.display()),
+            kind: "info".to_string(),
+        },
+    );
+    Ok(path)
+}
+
+#[derive(Clone, Serialize)]
+struct ConvProgress {
+    job_id: u64,
+    line: String,
+    kind: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ConvDone {
+    job_id: u64,
+    success: bool,
+    code: Option<i32>,
+    output_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConvertRunArgs {
+    input: String,
+    /// "png", "jpg", "webp", "gif", "bmp", "tiff", "ico", "avif",
+    /// "mp4", "webm", "mkv", "mov", "avi", "gif-anim",
+    /// "mp3", "wav", "ogg", "m4a", "flac", "opus"
+    format: String,
+    #[serde(default)]
+    out_dir: String,
+}
+
+/// 出力 (拡張子, ffmpeg 引数) を返す。
+fn ffmpeg_args_for(format: &str) -> Result<(&'static str, Vec<&'static str>), String> {
+    let r: (&str, Vec<&str>) = match format {
+        // 画像
+        "png" => ("png", vec![]),
+        "jpg" => ("jpg", vec!["-q:v", "2"]),
+        "webp" => ("webp", vec![]),
+        "gif" => ("gif", vec![]),
+        "bmp" => ("bmp", vec![]),
+        "tiff" => ("tiff", vec![]),
+        "ico" => ("ico", vec!["-vf", "scale=256:256:force_original_aspect_ratio=decrease"]),
+        "avif" => ("avif", vec!["-c:v", "libaom-av1", "-still-picture", "1"]),
+        // 動画
+        "mp4" => ("mp4", vec!["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"]),
+        "webm" => ("webm", vec!["-c:v", "libvpx-vp9", "-c:a", "libopus"]),
+        "mkv" => ("mkv", vec!["-c:v", "libx264", "-c:a", "aac"]),
+        "mov" => ("mov", vec!["-c:v", "libx264", "-c:a", "aac"]),
+        "avi" => ("avi", vec!["-c:v", "mpeg4", "-c:a", "libmp3lame"]),
+        "gif-anim" => (
+            "gif",
+            vec!["-vf", "fps=15,scale=480:-1:flags=lanczos", "-loop", "0"],
+        ),
+        // 音声
+        "mp3" => ("mp3", vec!["-vn", "-c:a", "libmp3lame", "-q:a", "2"]),
+        "wav" => ("wav", vec!["-vn", "-c:a", "pcm_s16le"]),
+        "ogg" => ("ogg", vec!["-vn", "-c:a", "libvorbis", "-q:a", "5"]),
+        "m4a" => ("m4a", vec!["-vn", "-c:a", "aac", "-b:a", "192k"]),
+        "flac" => ("flac", vec!["-vn", "-c:a", "flac"]),
+        "opus" => ("opus", vec!["-vn", "-c:a", "libopus", "-b:a", "128k"]),
+        _ => return Err(format!("未対応の形式: {}", format)),
+    };
+    Ok(r)
+}
+
+#[tauri::command]
+async fn toolbox_pick_file(initial: Option<String>) -> Result<Option<String>, String> {
+    let mut dlg = rfd::AsyncFileDialog::new()
+        .add_filter(
+            "メディアファイル",
+            &[
+                "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "ico", "avif",
+                "heic", "heif", "mp4", "webm", "mkv", "mov", "avi", "m4v", "flv", "wmv",
+                "mp3", "wav", "ogg", "m4a", "flac", "opus", "aac", "wma",
+            ],
+        )
+        .add_filter("すべてのファイル", &["*"]);
+    if let Some(p) = initial {
+        let pb = PathBuf::from(&p);
+        if let Some(parent) = pb.parent() {
+            if parent.is_dir() {
+                dlg = dlg.set_directory(parent);
+            }
+        }
+    }
+    let chosen = dlg.pick_file().await;
+    Ok(chosen.map(|h| h.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn toolbox_convert_run(
+    app: AppHandle,
+    state: State<'_, ToolboxState>,
+    args: ConvertRunArgs,
+) -> Result<u64, String> {
+    let input = args.input.trim().to_string();
+    if input.is_empty() {
+        return Err("入力ファイルを指定してください".to_string());
+    }
+    let in_path = PathBuf::from(&input);
+    if !in_path.is_file() {
+        return Err(format!("入力ファイルが見つかりません: {}", input));
+    }
+    let (ext, extra) = ffmpeg_args_for(&args.format)?;
+
+    let out_dir = if args.out_dir.trim().is_empty() {
+        in_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| "入力ファイルの親ディレクトリが取得できません".to_string())?
+    } else {
+        PathBuf::from(args.out_dir.trim())
+    };
+    if !out_dir.is_dir() {
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("出力フォルダ作成失敗: {}", e))?;
+    }
+    let stem = in_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "output".to_string());
+    let mut out_path = out_dir.join(format!("{}.{}", stem, ext));
+    // 既存があれば連番
+    let mut n = 1;
+    while out_path.exists()
+        && out_path.canonicalize().ok() != in_path.canonicalize().ok()
+    {
+        out_path = out_dir.join(format!("{} ({}).{}", stem, n, ext));
+        n += 1;
+        if n > 999 {
+            break;
+        }
+    }
+    // 入力と出力が同じ場合は安全のためサフィックスを追加
+    if out_path.canonicalize().ok() == in_path.canonicalize().ok() {
+        out_path = out_dir.join(format!("{} (converted).{}", stem, ext));
+    }
+
+    let ffmpeg = ensure_ffmpeg(&app)?;
+    let exe = ffmpeg.to_string_lossy().to_string();
+
+    let mut cmd = std::process::Command::new(&ffmpeg);
+    cmd.arg("-hide_banner")
+        .arg("-y")
+        .arg("-i")
+        .arg(&in_path);
+    for a in &extra {
+        cmd.arg(a);
+    }
+    cmd.arg(&out_path);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("ffmpeg 起動失敗: {}", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let job_id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.next_job_id += 1;
+        s.next_job_id
+    };
+    let child_arc = std::sync::Arc::new(Mutex::new(Some(child)));
+    {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.jobs.insert(job_id, child_arc.clone());
+    }
+
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-conv-progress",
+        ConvProgress {
+            job_id,
+            line: format!(
+                "$ {} -i \"{}\" {} \"{}\"",
+                exe,
+                in_path.display(),
+                extra.join(" "),
+                out_path.display()
+            ),
+            kind: "info".to_string(),
+        },
+    );
+
+    if let Some(out) = stdout {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for line in BufReader::new(out).lines().flatten() {
+                let _ = app2.emit_to(
+                    "ui",
+                    "toolbox-conv-progress",
+                    ConvProgress { job_id, line, kind: "stdout".to_string() },
+                );
+            }
+        });
+    }
+    if let Some(err) = stderr {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for line in BufReader::new(err).lines().flatten() {
+                let _ = app2.emit_to(
+                    "ui",
+                    "toolbox-conv-progress",
+                    ConvProgress { job_id, line, kind: "stderr".to_string() },
+                );
+            }
+        });
+    }
+    let app3 = app.clone();
+    let child_arc2 = child_arc.clone();
+    let state_handle = app.clone();
+    let out_path_str = out_path.to_string_lossy().to_string();
+    std::thread::spawn(move || {
+        let mut taken = {
+            let mut g = child_arc2.lock().unwrap();
+            g.take()
+        };
+        let result = if let Some(ref mut c) = taken {
+            c.wait()
+        } else {
+            return;
+        };
+        let (success, code) = match result {
+            Ok(status) => (status.success(), status.code()),
+            Err(_) => (false, None),
+        };
+        let _ = app3.emit_to(
+            "ui",
+            "toolbox-conv-done",
+            ConvDone {
+                job_id,
+                success,
+                code,
+                output_path: if success { Some(out_path_str) } else { None },
+            },
+        );
+        if let Some(state) = state_handle.try_state::<ToolboxState>() {
+            if let Ok(mut s) = state.0.lock() {
+                s.jobs.remove(&job_id);
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+fn toolbox_convert_cancel(
+    state: State<'_, ToolboxState>,
+    job_id: u64,
+) -> Result<(), String> {
+    toolbox_ytdlp_cancel(state, job_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1806,6 +2169,9 @@ pub fn run() {
             toolbox_ytdlp_run,
             toolbox_ytdlp_cancel,
             toolbox_open_path,
+            toolbox_pick_file,
+            toolbox_convert_run,
+            toolbox_convert_cancel,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。

@@ -1175,6 +1175,17 @@ async function setupToolbox(): Promise<void> {
     const a = activeTab();
     if (a && ytdlpUrlInput) ytdlpUrlInput.value = a.url;
   });
+  // 形式に応じて画質を表示/非表示
+  const qualityWrap = document.getElementById(
+    "ytdlp-quality-wrap",
+  ) as HTMLElement | null;
+  const updateQualityVisibility = (): void => {
+    if (!qualityWrap) return;
+    qualityWrap.style.display =
+      ytdlpModeSel?.value === "audio" ? "none" : "";
+  };
+  ytdlpModeSel?.addEventListener("change", updateQualityVisibility);
+  updateQualityVisibility();
   ytdlpPickDirBtn?.addEventListener("click", async () => {
     try {
       const initial = ytdlpDirInput?.value ?? "";
@@ -1247,4 +1258,133 @@ async function setupToolbox(): Promise<void> {
       currentJobId = null;
     },
   );
+
+  setupConverter();
+}
+
+// ===== ファイル形式コンバータ =====
+
+let convInputEl: HTMLInputElement | null = null;
+let convOutEl: HTMLInputElement | null = null;
+let convFormatSel: HTMLSelectElement | null = null;
+let convRunBtn: HTMLButtonElement | null = null;
+let convCancelBtn: HTMLButtonElement | null = null;
+let convLogEl: HTMLPreElement | null = null;
+let convStatusEl: HTMLSpanElement | null = null;
+let convJobId: number | null = null;
+
+function appendConvLog(line: string, kind: string): void {
+  if (!convLogEl) return;
+  const span = document.createElement("span");
+  if (kind === "stderr") span.className = "log-stderr";
+  else if (kind === "info") span.className = "log-info";
+  span.textContent = line + "\n";
+  convLogEl.appendChild(span);
+  convLogEl.scrollTop = convLogEl.scrollHeight;
+}
+
+function setupConverter(): void {
+  convInputEl = document.getElementById(
+    "conv-input",
+  ) as HTMLInputElement | null;
+  convOutEl = document.getElementById("conv-out") as HTMLInputElement | null;
+  convFormatSel = document.getElementById(
+    "conv-format",
+  ) as HTMLSelectElement | null;
+  convRunBtn = document.getElementById("conv-run") as HTMLButtonElement | null;
+  convCancelBtn = document.getElementById(
+    "conv-cancel",
+  ) as HTMLButtonElement | null;
+  convLogEl = document.getElementById("conv-log") as HTMLPreElement | null;
+  convStatusEl = document.getElementById(
+    "conv-status",
+  ) as HTMLSpanElement | null;
+  const pickInBtn = document.getElementById(
+    "conv-pick-input",
+  ) as HTMLButtonElement | null;
+  const pickOutBtn = document.getElementById(
+    "conv-pick-out",
+  ) as HTMLButtonElement | null;
+
+  pickInBtn?.addEventListener("click", async () => {
+    try {
+      const initial = convInputEl?.value ?? "";
+      const chosen = await invoke<string | null>("toolbox_pick_file", {
+        initial,
+      });
+      if (chosen && convInputEl) convInputEl.value = chosen;
+    } catch (e) {
+      console.error("toolbox_pick_file failed:", e);
+    }
+  });
+  pickOutBtn?.addEventListener("click", async () => {
+    try {
+      const initial = convOutEl?.value ?? "";
+      const chosen = await invoke<string | null>("toolbox_pick_download_dir", {
+        initial,
+      });
+      if (chosen && convOutEl) convOutEl.value = chosen;
+    } catch (e) {
+      console.error("toolbox_pick_download_dir failed:", e);
+    }
+  });
+
+  convRunBtn?.addEventListener("click", async () => {
+    const input = (convInputEl?.value ?? "").trim();
+    if (!input) {
+      if (convStatusEl) convStatusEl.textContent = "入力ファイルを指定してください";
+      return;
+    }
+    if (convLogEl) convLogEl.textContent = "";
+    if (convStatusEl) convStatusEl.textContent = "起動中…";
+    if (convRunBtn) convRunBtn.disabled = true;
+    if (convCancelBtn) convCancelBtn.disabled = false;
+    try {
+      const id = await invoke<number>("toolbox_convert_run", {
+        args: {
+          input,
+          format: convFormatSel?.value ?? "mp4",
+          out_dir: convOutEl?.value ?? "",
+        },
+      });
+      convJobId = id;
+      if (convStatusEl) convStatusEl.textContent = `変換中 (job ${id})`;
+    } catch (e) {
+      const msg = String(e);
+      appendConvLog(`エラー: ${msg}`, "stderr");
+      if (convStatusEl) convStatusEl.textContent = "エラー";
+      if (convRunBtn) convRunBtn.disabled = false;
+      if (convCancelBtn) convCancelBtn.disabled = true;
+    }
+  });
+  convCancelBtn?.addEventListener("click", () => {
+    if (convJobId === null) return;
+    void invoke("toolbox_convert_cancel", { jobId: convJobId }).catch((e) =>
+      console.error("toolbox_convert_cancel failed:", e),
+    );
+  });
+
+  void listen<{ job_id: number; line: string; kind: string }>(
+    "toolbox-conv-progress",
+    (event) => {
+      appendConvLog(event.payload.line, event.payload.kind);
+    },
+  );
+  void listen<{
+    job_id: number;
+    success: boolean;
+    code: number | null;
+    output_path: string | null;
+  }>("toolbox-conv-done", (event) => {
+    const p = event.payload;
+    const txt = p.success ? "完了" : `失敗 (exit ${p.code ?? "?"})`;
+    appendConvLog(`--- ${txt} ---`, "info");
+    if (p.success && p.output_path) {
+      appendConvLog(`出力: ${p.output_path}`, "info");
+    }
+    if (convStatusEl) convStatusEl.textContent = txt;
+    if (convRunBtn) convRunBtn.disabled = false;
+    if (convCancelBtn) convCancelBtn.disabled = true;
+    convJobId = null;
+  });
 }
