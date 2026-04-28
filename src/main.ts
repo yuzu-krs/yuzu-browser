@@ -1302,6 +1302,7 @@ async function setupToolbox(): Promise<void> {
   setupFileMetaTool();
   setupAudioTagsTool();
   setupGenericMetaTool();
+  setupMiniGameTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -3376,4 +3377,1108 @@ function setupGenericMetaTool(): void {
       if (status) status.textContent = `保存失敗: ${String(e)}`;
     }
   });
+}
+
+// ===== ミニゲーム (オフライン暇つぶし) =====
+
+type MiniGameKind = "dino" | "snake" | "2048" | "memory" | "rhythm" | "suika";
+
+let miniGameCleanup: (() => void) | null = null;
+let miniGameCurrent: MiniGameKind = "dino";
+const miniGameBest: Record<MiniGameKind, number> = {
+  dino: 0,
+  snake: 0,
+  "2048": 0,
+  memory: 0,
+  rhythm: 0,
+  suika: 0,
+};
+
+function setupMiniGameTool(): void {
+  const canvas = $id<HTMLCanvasElement>("minigame-canvas");
+  const grid = $id<HTMLDivElement>("minigame-grid");
+  const scoreEl = $id<HTMLSpanElement>("minigame-score");
+  const bestEl = $id<HTMLSpanElement>("minigame-best");
+  const helpEl = $id<HTMLParagraphElement>("minigame-help");
+  const restart = $id<HTMLButtonElement>("minigame-restart");
+  const netEl = $id<HTMLSpanElement>("minigame-net");
+  if (!canvas || !grid || !scoreEl || !bestEl || !helpEl) return;
+
+  // ベストスコアを localStorage から復元
+  try {
+    const raw = localStorage.getItem("yuzu-minigame-best");
+    if (raw) {
+      const obj = JSON.parse(raw) as Partial<Record<MiniGameKind, number>>;
+      for (const k of Object.keys(obj) as MiniGameKind[]) {
+        if (typeof obj[k] === "number") miniGameBest[k] = obj[k]!;
+      }
+    }
+  } catch {
+    // noop
+  }
+
+  const updateNet = (): void => {
+    if (netEl) {
+      netEl.textContent = navigator.onLine ? "オンライン" : "オフライン";
+      netEl.style.color = navigator.onLine ? "#3a3" : "#c33";
+    }
+  };
+  updateNet();
+  window.addEventListener("online", updateNet);
+  window.addEventListener("offline", updateNet);
+
+  const setScore = (s: number): void => {
+    scoreEl.textContent = `スコア: ${s}`;
+    if (s > miniGameBest[miniGameCurrent]) {
+      miniGameBest[miniGameCurrent] = s;
+      bestEl.textContent = `ベスト: ${s}`;
+      try {
+        localStorage.setItem(
+          "yuzu-minigame-best",
+          JSON.stringify(miniGameBest),
+        );
+      } catch {
+        // noop
+      }
+    }
+  };
+  const showBest = (): void => {
+    bestEl.textContent = `ベスト: ${miniGameBest[miniGameCurrent]}`;
+  };
+
+  const switchTo = (kind: MiniGameKind): void => {
+    if (miniGameCleanup) {
+      miniGameCleanup();
+      miniGameCleanup = null;
+    }
+    miniGameCurrent = kind;
+    setScore(0);
+    showBest();
+    // ボタン active 状態
+    document.querySelectorAll<HTMLButtonElement>("[data-game]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.game === kind);
+    });
+    if (kind === "memory") {
+      canvas.style.display = "none";
+      grid.style.display = "grid";
+    } else {
+      canvas.style.display = "block";
+      grid.style.display = "none";
+    }
+    if (kind === "dino") {
+      helpEl.textContent =
+        "操作: スペース / ↑ でジャンプ。サボテンを避けよう。";
+      miniGameCleanup = startDinoGame(canvas, setScore);
+    } else if (kind === "snake") {
+      helpEl.textContent = "操作: 矢印キーで移動。エサを食べて伸ばそう。";
+      miniGameCleanup = startSnakeGame(canvas, setScore);
+    } else if (kind === "2048") {
+      helpEl.textContent = "操作: 矢印キーでスライド。同じ数字を合わせる。";
+      miniGameCleanup = start2048Game(canvas, setScore);
+    } else if (kind === "memory") {
+      helpEl.textContent = "操作: クリックでカードをめくる。全ペアを当てよう。";
+      miniGameCleanup = startMemoryGame(grid, setScore);
+    } else if (kind === "rhythm") {
+      helpEl.textContent =
+        "操作: D / F / J / K (または画面クリック) で判定ライン上のノーツを叩く。";
+      miniGameCleanup = startRhythmGame(canvas, setScore);
+    } else {
+      helpEl.textContent =
+        "操作: マウスを動かしてクリックで果物を落とす。同じ果物をくっつけると進化！";
+      miniGameCleanup = startSuikaGame(canvas, setScore);
+    }
+    canvas.focus();
+  };
+
+  document.querySelectorAll<HTMLButtonElement>("[data-game]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const k = (b.dataset.game ?? "dino") as MiniGameKind;
+      switchTo(k);
+    });
+  });
+  restart?.addEventListener("click", () => switchTo(miniGameCurrent));
+
+  // 初期ゲーム
+  switchTo("dino");
+}
+
+// ---- 共通ヘルパ ----
+function attachKeyHandler(
+  target: HTMLElement,
+  handler: (e: KeyboardEvent) => void,
+): () => void {
+  const wrapper = (e: KeyboardEvent): void => {
+    if (
+      ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)
+    ) {
+      e.preventDefault();
+    }
+    handler(e);
+  };
+  target.addEventListener("keydown", wrapper);
+  return () => target.removeEventListener("keydown", wrapper);
+}
+
+// ---- 🦖 ジャンプゲーム ----
+function startDinoGame(
+  canvas: HTMLCanvasElement,
+  setScore: (n: number) => void,
+): () => void {
+  const ctx = canvas.getContext("2d")!;
+  const W = canvas.width;
+  const H = canvas.height;
+  const groundY = H - 40;
+  let x = 60;
+  let y = groundY;
+  let vy = 0;
+  const gravity = 0.55;
+  let speed = 4;
+  let score = 0;
+  let alive = true;
+  interface Obs {
+    x: number;
+    w: number;
+    h: number;
+  }
+  const obs: Obs[] = [];
+  let frame = 0;
+
+  const reset = (): void => {
+    obs.length = 0;
+    obs.push({ x: W + 100, w: 18, h: 30 });
+  };
+  reset();
+
+  const removeKey = attachKeyHandler(canvas, (e) => {
+    if ((e.key === " " || e.key === "ArrowUp") && y >= groundY && alive) {
+      vy = -13;
+    }
+  });
+  const onClick = (): void => {
+    if (y >= groundY && alive) vy = -13;
+    if (!alive) {
+      alive = true;
+      score = 0;
+      speed = 4;
+      reset();
+      setScore(0);
+    }
+  };
+  canvas.addEventListener("click", onClick);
+
+  let raf = 0;
+  const loop = (): void => {
+    frame++;
+    ctx.fillStyle = "#f7f7f7";
+    ctx.fillRect(0, 0, W, H);
+    // 地面
+    ctx.strokeStyle = "#555";
+    ctx.beginPath();
+    ctx.moveTo(0, groundY + 5);
+    ctx.lineTo(W, groundY + 5);
+    ctx.stroke();
+
+    if (alive) {
+      vy += gravity;
+      y += vy;
+      if (y > groundY) {
+        y = groundY;
+        vy = 0;
+      }
+      for (const o of obs) o.x -= speed;
+      while (obs.length > 0 && obs[0].x + obs[0].w < 0) {
+        obs.shift();
+        score++;
+        setScore(score);
+        if (score % 10 === 0) speed += 0.4;
+      }
+      const last = obs[obs.length - 1];
+      if (!last || last.x < W - 280 - Math.random() * 220) {
+        const h = 20 + Math.random() * 22;
+        obs.push({ x: W + 20, w: 12 + Math.random() * 10, h });
+      }
+      // 衝突判定
+      const px = x;
+      const py = y - 30;
+      const pw = 26;
+      const ph = 30;
+      for (const o of obs) {
+        const ox = o.x;
+        const oy = groundY - o.h;
+        if (px + pw > ox && px < ox + o.w && py + ph > oy && py < oy + o.h) {
+          alive = false;
+        }
+      }
+    }
+
+    // プレイヤ (🦖 風の四角)
+    ctx.fillStyle = "#3a7";
+    ctx.fillRect(x, y - 30, 26, 30);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(x + 18, y - 26, 4, 4);
+
+    // 障害物 (サボテン)
+    ctx.fillStyle = "#284";
+    for (const o of obs) {
+      ctx.fillRect(o.x, groundY - o.h, o.w, o.h);
+    }
+
+    if (!alive) {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      ctx.font = "24px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("ゲームオーバー", W / 2, H / 2 - 10);
+      ctx.font = "14px sans-serif";
+      ctx.fillText("クリック または スペース で再開", W / 2, H / 2 + 14);
+      ctx.textAlign = "start";
+    }
+
+    raf = requestAnimationFrame(loop);
+  };
+  raf = requestAnimationFrame(loop);
+
+  return () => {
+    cancelAnimationFrame(raf);
+    removeKey();
+    canvas.removeEventListener("click", onClick);
+  };
+}
+
+// ---- 🐍 スネーク ----
+function startSnakeGame(
+  canvas: HTMLCanvasElement,
+  setScore: (n: number) => void,
+): () => void {
+  const ctx = canvas.getContext("2d")!;
+  const cell = 16;
+  const cols = Math.floor(canvas.width / cell);
+  const rows = Math.floor(canvas.height / cell);
+  let snake: { x: number; y: number }[] = [
+    { x: 10, y: 10 },
+    { x: 9, y: 10 },
+    { x: 8, y: 10 },
+  ];
+  let dir = { x: 1, y: 0 };
+  let pendingDir = dir;
+  let food = { x: 15, y: 10 };
+  let alive = true;
+  let score = 0;
+  const placeFood = (): void => {
+    while (true) {
+      const f = {
+        x: Math.floor(Math.random() * cols),
+        y: Math.floor(Math.random() * rows),
+      };
+      if (!snake.some((s) => s.x === f.x && s.y === f.y)) {
+        food = f;
+        return;
+      }
+    }
+  };
+
+  const removeKey = attachKeyHandler(canvas, (e) => {
+    if (e.key === "ArrowUp" && dir.y !== 1) pendingDir = { x: 0, y: -1 };
+    else if (e.key === "ArrowDown" && dir.y !== -1) pendingDir = { x: 0, y: 1 };
+    else if (e.key === "ArrowLeft" && dir.x !== 1) pendingDir = { x: -1, y: 0 };
+    else if (e.key === "ArrowRight" && dir.x !== -1)
+      pendingDir = { x: 1, y: 0 };
+  });
+
+  let timer = 0;
+  const tick = (): void => {
+    if (alive) {
+      dir = pendingDir;
+      const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+      if (
+        head.x < 0 ||
+        head.x >= cols ||
+        head.y < 0 ||
+        head.y >= rows ||
+        snake.some((s) => s.x === head.x && s.y === head.y)
+      ) {
+        alive = false;
+      } else {
+        snake.unshift(head);
+        if (head.x === food.x && head.y === food.y) {
+          score++;
+          setScore(score);
+          placeFood();
+        } else {
+          snake.pop();
+        }
+      }
+    }
+    // 描画
+    ctx.fillStyle = "#f7f7f7";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#c44";
+    ctx.fillRect(food.x * cell, food.y * cell, cell - 2, cell - 2);
+    ctx.fillStyle = "#284";
+    for (const s of snake) {
+      ctx.fillRect(s.x * cell, s.y * cell, cell - 2, cell - 2);
+    }
+    if (!alive) {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fff";
+      ctx.font = "24px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("ゲームオーバー", canvas.width / 2, canvas.height / 2);
+      ctx.textAlign = "start";
+    }
+  };
+  timer = window.setInterval(tick, 140);
+  placeFood();
+
+  return () => {
+    clearInterval(timer);
+    removeKey();
+  };
+}
+
+// ---- 🔢 2048 ----
+function start2048Game(
+  canvas: HTMLCanvasElement,
+  setScore: (n: number) => void,
+): () => void {
+  const ctx = canvas.getContext("2d")!;
+  const N = 4;
+  const size = Math.min(canvas.width, canvas.height) - 20;
+  const cell = Math.floor(size / N);
+  const offX = (canvas.width - cell * N) / 2;
+  const offY = (canvas.height - cell * N) / 2;
+  let board: number[][] = Array.from(
+    { length: N },
+    () => Array(N).fill(0) as number[],
+  );
+  let score = 0;
+  let over = false;
+  const colors: Record<number, string> = {
+    0: "#ccc0b3",
+    2: "#eee4da",
+    4: "#ede0c8",
+    8: "#f2b179",
+    16: "#f59563",
+    32: "#f67c5f",
+    64: "#f65e3b",
+    128: "#edcf72",
+    256: "#edcc61",
+    512: "#edc850",
+    1024: "#edc53f",
+    2048: "#edc22e",
+  };
+
+  const addRandom = (): void => {
+    const empties: [number, number][] = [];
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (board[r][c] === 0) empties.push([r, c]);
+      }
+    }
+    if (empties.length === 0) return;
+    const [r, c] = empties[Math.floor(Math.random() * empties.length)];
+    board[r][c] = Math.random() < 0.9 ? 2 : 4;
+  };
+
+  const slide = (row: number[]): { row: number[]; gain: number } => {
+    let arr = row.filter((v) => v !== 0);
+    let gain = 0;
+    for (let i = 0; i < arr.length - 1; i++) {
+      if (arr[i] === arr[i + 1]) {
+        arr[i] *= 2;
+        gain += arr[i];
+        arr.splice(i + 1, 1);
+      }
+    }
+    while (arr.length < N) arr.push(0);
+    return { row: arr, gain };
+  };
+
+  const move = (dir: "L" | "R" | "U" | "D"): boolean => {
+    const before = JSON.stringify(board);
+    let totalGain = 0;
+    if (dir === "L" || dir === "R") {
+      for (let r = 0; r < N; r++) {
+        let row = board[r].slice();
+        if (dir === "R") row.reverse();
+        const { row: nr, gain } = slide(row);
+        totalGain += gain;
+        if (dir === "R") nr.reverse();
+        board[r] = nr;
+      }
+    } else {
+      for (let c = 0; c < N; c++) {
+        let col = board.map((r) => r[c]);
+        if (dir === "D") col.reverse();
+        const { row: nc, gain } = slide(col);
+        totalGain += gain;
+        if (dir === "D") nc.reverse();
+        for (let r = 0; r < N; r++) board[r][c] = nc[r];
+      }
+    }
+    score += totalGain;
+    if (totalGain > 0) setScore(score);
+    return JSON.stringify(board) !== before;
+  };
+
+  const isOver = (): boolean => {
+    for (let r = 0; r < N; r++)
+      for (let c = 0; c < N; c++) {
+        if (board[r][c] === 0) return false;
+        if (c + 1 < N && board[r][c] === board[r][c + 1]) return false;
+        if (r + 1 < N && board[r][c] === board[r + 1][c]) return false;
+      }
+    return true;
+  };
+
+  const draw = (): void => {
+    ctx.fillStyle = "#bbada0";
+    ctx.fillRect(offX - 5, offY - 5, cell * N + 10, cell * N + 10);
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const v = board[r][c];
+        ctx.fillStyle = colors[v] ?? "#3c3a32";
+        const x = offX + c * cell + 4;
+        const y = offY + r * cell + 4;
+        ctx.fillRect(x, y, cell - 8, cell - 8);
+        if (v) {
+          ctx.fillStyle = v <= 4 ? "#776e65" : "#f9f6f2";
+          const fs = v < 100 ? 32 : v < 1000 ? 26 : 22;
+          ctx.font = `bold ${fs}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(v), x + (cell - 8) / 2, y + (cell - 8) / 2);
+        }
+      }
+    }
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    if (over) {
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#000";
+      ctx.font = "24px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("ゲームオーバー", canvas.width / 2, canvas.height / 2);
+      ctx.textAlign = "start";
+    }
+  };
+
+  addRandom();
+  addRandom();
+  draw();
+
+  const removeKey = attachKeyHandler(canvas, (e) => {
+    if (over) return;
+    let moved = false;
+    if (e.key === "ArrowLeft") moved = move("L");
+    else if (e.key === "ArrowRight") moved = move("R");
+    else if (e.key === "ArrowUp") moved = move("U");
+    else if (e.key === "ArrowDown") moved = move("D");
+    if (moved) {
+      addRandom();
+      if (isOver()) over = true;
+    }
+    draw();
+  });
+
+  return () => {
+    removeKey();
+  };
+}
+
+// ---- 🧠 神経衰弱 ----
+function startMemoryGame(
+  grid: HTMLDivElement,
+  setScore: (n: number) => void,
+): () => void {
+  const symbols = ["🍎", "🍊", "🍇", "🍓", "🍌", "🍒"];
+  const deck = [...symbols, ...symbols]
+    .map((s) => ({ s, r: Math.random() }))
+    .sort((a, b) => a.r - b.r)
+    .map((o) => o.s);
+  grid.innerHTML = "";
+  grid.style.display = "grid";
+  grid.style.gridTemplateColumns = "repeat(4, 70px)";
+  grid.style.gap = "6px";
+
+  const cards: HTMLButtonElement[] = [];
+  let flipped: number[] = [];
+  let matched = 0;
+  let score = 0;
+  let busy = false;
+
+  deck.forEach((sym, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.sym = sym;
+    b.dataset.idx = String(i);
+    b.style.cssText =
+      "width:70px;height:70px;font-size:32px;border-radius:8px;border:1px solid #555;background:#445;color:#445;cursor:pointer";
+    b.textContent = "?";
+    const flip = (show: boolean): void => {
+      if (show) {
+        b.textContent = sym;
+        b.style.background = "#fff";
+        b.style.color = "#000";
+      } else {
+        b.textContent = "?";
+        b.style.background = "#445";
+        b.style.color = "#445";
+      }
+    };
+    (b as HTMLButtonElement & { flip: typeof flip }).flip = flip;
+    b.addEventListener("click", () => {
+      if (busy || b.disabled || flipped.includes(i)) return;
+      flip(true);
+      flipped.push(i);
+      if (flipped.length === 2) {
+        busy = true;
+        const [a, c] = flipped;
+        if (cards[a].dataset.sym === cards[c].dataset.sym) {
+          cards[a].disabled = true;
+          cards[c].disabled = true;
+          matched++;
+          score += 10;
+          setScore(score);
+          flipped = [];
+          busy = false;
+          if (matched === symbols.length) {
+            setTimeout(() => alert(`クリア！ スコア ${score}`), 50);
+          }
+        } else {
+          setTimeout(() => {
+            (
+              cards[a] as HTMLButtonElement & { flip: (s: boolean) => void }
+            ).flip(false);
+            (
+              cards[c] as HTMLButtonElement & { flip: (s: boolean) => void }
+            ).flip(false);
+            flipped = [];
+            busy = false;
+          }, 700);
+        }
+      }
+    });
+    cards.push(b);
+    grid.appendChild(b);
+  });
+
+  return () => {
+    grid.innerHTML = "";
+  };
+}
+
+// ---- 🎵 リズムゲーム (osu!mania 風 4 レーン) ----
+function startRhythmGame(
+  canvas: HTMLCanvasElement,
+  setScore: (n: number) => void,
+): () => void {
+  const ctx = canvas.getContext("2d")!;
+  const W = canvas.width;
+  const H = canvas.height;
+  const LANES = 4;
+  const laneW = Math.min(80, Math.floor(W / (LANES + 2)));
+  const totalW = laneW * LANES;
+  const offX = (W - totalW) / 2;
+  const judgeY = H - 50;
+  const noteH = 14;
+  const speed = 240; // px/sec
+  const keys = ["d", "f", "j", "k"];
+  const laneColors = ["#4cf", "#fc4", "#f6a", "#7f6"];
+
+  interface Note {
+    lane: number;
+    time: number; // 判定時刻 (sec)
+    hit: boolean;
+    miss: boolean;
+  }
+
+  // 簡易譜面: 一定 BPM で擬似ランダム (シードに startTime を使う)
+  const bpm = 110;
+  const beat = 60 / bpm;
+  const notes: Note[] = [];
+  const songLen = 45; // 45 秒
+  const seed = Math.floor(Math.random() * 1e9);
+  let rngState = seed;
+  const rng = (): number => {
+    rngState = (rngState * 1664525 + 1013904223) >>> 0;
+    return rngState / 0x100000000;
+  };
+  for (let t = 2; t < songLen; t += beat) {
+    if (rng() < 0.55) {
+      notes.push({
+        lane: Math.floor(rng() * LANES),
+        time: t,
+        hit: false,
+        miss: false,
+      });
+    }
+    if (rng() < 0.08) {
+      // 同時押し
+      let lane2 = Math.floor(rng() * LANES);
+      if (notes.length > 0 && notes[notes.length - 1].time === t) {
+        while (lane2 === notes[notes.length - 1].lane) {
+          lane2 = (lane2 + 1) % LANES;
+        }
+      }
+      notes.push({ lane: lane2, time: t, hit: false, miss: false });
+    }
+  }
+
+  let score = 0;
+  let combo = 0;
+  let maxCombo = 0;
+  let judgeText = "";
+  let judgeFlash = 0;
+  const laneFlash = [0, 0, 0, 0];
+
+  // WebAudio (BGM 代わりにメトロノーム + ヒット音)
+  let audioCtx: AudioContext | null = null;
+  try {
+    audioCtx = new (
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext
+    )();
+  } catch {
+    audioCtx = null;
+  }
+  const playBeep = (freq: number, dur: number, vol = 0.15): void => {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = freq;
+    osc.type = "square";
+    gain.gain.value = vol;
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + dur);
+  };
+
+  const startTime = performance.now();
+  let lastBeat = -1;
+
+  const judge = (lane: number): void => {
+    const now = (performance.now() - startTime) / 1000;
+    laneFlash[lane] = 0.2;
+    // 最も近い未ヒットノート
+    let best: Note | null = null;
+    let bestDiff = 999;
+    for (const n of notes) {
+      if (n.hit || n.miss) continue;
+      if (n.lane !== lane) continue;
+      const d = Math.abs(n.time - now);
+      if (d < bestDiff) {
+        bestDiff = d;
+        best = n;
+      }
+    }
+    if (!best || bestDiff > 0.25) {
+      judgeText = "MISS";
+      judgeFlash = 0.4;
+      combo = 0;
+      return;
+    }
+    best.hit = true;
+    if (bestDiff < 0.08) {
+      score += 300;
+      judgeText = "PERFECT";
+    } else if (bestDiff < 0.15) {
+      score += 100;
+      judgeText = "GREAT";
+    } else {
+      score += 50;
+      judgeText = "GOOD";
+    }
+    combo++;
+    if (combo > maxCombo) maxCombo = combo;
+    judgeFlash = 0.4;
+    setScore(score);
+    playBeep(660, 0.05, 0.12);
+  };
+
+  const onKey = (e: KeyboardEvent): void => {
+    const k = e.key.toLowerCase();
+    const idx = keys.indexOf(k);
+    if (idx >= 0) {
+      e.preventDefault();
+      judge(idx);
+    }
+  };
+  canvas.addEventListener("keydown", onKey);
+
+  const onClick = (e: MouseEvent): void => {
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const lane = Math.floor((cx - offX) / laneW);
+    if (lane >= 0 && lane < LANES) judge(lane);
+  };
+  canvas.addEventListener("click", onClick);
+
+  let raf = 0;
+  const loop = (): void => {
+    const now = (performance.now() - startTime) / 1000;
+    // メトロノーム
+    const curBeat = Math.floor(now / beat);
+    if (curBeat !== lastBeat && now > 0 && now < songLen) {
+      lastBeat = curBeat;
+      playBeep(curBeat % 4 === 0 ? 880 : 440, 0.03, 0.06);
+    }
+
+    // 自動 MISS 判定
+    for (const n of notes) {
+      if (!n.hit && !n.miss && now - n.time > 0.25) {
+        n.miss = true;
+        combo = 0;
+        judgeText = "MISS";
+        judgeFlash = 0.3;
+      }
+    }
+
+    // 描画
+    ctx.fillStyle = "#0e0e16";
+    ctx.fillRect(0, 0, W, H);
+    // レーン
+    for (let i = 0; i < LANES; i++) {
+      const x = offX + i * laneW;
+      ctx.fillStyle = laneFlash[i] > 0 ? "rgba(255,255,255,0.12)" : "#181826";
+      ctx.fillRect(x, 0, laneW - 2, H);
+      // キー表示
+      ctx.fillStyle = "#888";
+      ctx.font = "bold 16px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(keys[i].toUpperCase(), x + laneW / 2, H - 14);
+      laneFlash[i] = Math.max(0, laneFlash[i] - 0.02);
+    }
+    // 判定ライン
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(offX, judgeY);
+    ctx.lineTo(offX + totalW, judgeY);
+    ctx.stroke();
+
+    // ノート
+    for (const n of notes) {
+      if (n.hit) continue;
+      const dt = n.time - now;
+      const y = judgeY - dt * speed;
+      if (y < -noteH || y > H) continue;
+      const x = offX + n.lane * laneW + 2;
+      ctx.fillStyle = n.miss ? "#555" : laneColors[n.lane];
+      ctx.fillRect(x, y - noteH / 2, laneW - 6, noteH);
+    }
+
+    // 情報
+    ctx.textAlign = "start";
+    ctx.fillStyle = "#fff";
+    ctx.font = "16px sans-serif";
+    ctx.fillText(`Score: ${score}`, 8, 20);
+    ctx.fillText(`Combo: ${combo} (Max ${maxCombo})`, 8, 40);
+    const remain = Math.max(0, songLen - now);
+    ctx.textAlign = "end";
+    ctx.fillText(`残り ${remain.toFixed(1)}s`, W - 8, 20);
+    ctx.textAlign = "start";
+
+    if (judgeFlash > 0) {
+      ctx.globalAlpha = Math.min(1, judgeFlash * 2.5);
+      ctx.fillStyle =
+        judgeText === "PERFECT"
+          ? "#ff0"
+          : judgeText === "GREAT"
+            ? "#4f8"
+            : judgeText === "GOOD"
+              ? "#4cf"
+              : "#f44";
+      ctx.font = "bold 36px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(judgeText, W / 2, H / 2);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "start";
+      judgeFlash -= 0.02;
+    }
+
+    if (now > songLen + 1) {
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      ctx.font = "28px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(
+        `クリア！ Score ${score} / Max Combo ${maxCombo}`,
+        W / 2,
+        H / 2,
+      );
+      ctx.textAlign = "start";
+      cancelAnimationFrame(raf);
+      return;
+    }
+
+    raf = requestAnimationFrame(loop);
+  };
+  raf = requestAnimationFrame(loop);
+
+  return () => {
+    cancelAnimationFrame(raf);
+    canvas.removeEventListener("keydown", onKey);
+    canvas.removeEventListener("click", onClick);
+    if (audioCtx) {
+      try {
+        audioCtx.close();
+      } catch {
+        // noop
+      }
+    }
+  };
+}
+
+// ---- 🍉 スイカゲーム風 ----
+function startSuikaGame(
+  canvas: HTMLCanvasElement,
+  setScore: (n: number) => void,
+): () => void {
+  const ctx = canvas.getContext("2d")!;
+  const W = canvas.width;
+  const H = canvas.height;
+  // 果物 (半径, 色, ラベル, スコア)
+  const FRUITS: { r: number; color: string; label: string; pt: number }[] = [
+    { r: 14, color: "#f6c", label: "🍓", pt: 1 },
+    { r: 18, color: "#f88", label: "🍒", pt: 3 },
+    { r: 24, color: "#fa6", label: "🍊", pt: 6 },
+    { r: 30, color: "#fd4", label: "🍋", pt: 10 },
+    { r: 38, color: "#c8f", label: "🍇", pt: 15 },
+    { r: 46, color: "#fc8", label: "🍑", pt: 21 },
+    { r: 54, color: "#f64", label: "🍎", pt: 28 },
+    { r: 64, color: "#fa4", label: "🥭", pt: 36 },
+    { r: 76, color: "#4c8", label: "🍉", pt: 45 },
+  ];
+  const ceilingY = 40; // この高さを超えたらゲームオーバー
+  interface Ball {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    type: number; // FRUITS index
+    spawnAt: number;
+  }
+  const balls: Ball[] = [];
+  let score = 0;
+  let nextType = Math.floor(Math.random() * 3);
+  let pointerX = W / 2;
+  let dropCooldown = 0;
+  let over = false;
+  const gravity = 0.4;
+  const restitution = 0.18;
+  const friction = 0.99;
+
+  const onMove = (e: MouseEvent): void => {
+    const rect = canvas.getBoundingClientRect();
+    pointerX = e.clientX - rect.left;
+  };
+  const onClick = (e: MouseEvent): void => {
+    if (over) return;
+    if (dropCooldown > 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const f = FRUITS[nextType];
+    balls.push({
+      x: Math.max(f.r + 2, Math.min(W - f.r - 2, x)),
+      y: ceilingY - f.r - 2,
+      vx: 0,
+      vy: 0,
+      type: nextType,
+      spawnAt: performance.now(),
+    });
+    nextType = Math.floor(Math.random() * 3);
+    dropCooldown = 25;
+  };
+  canvas.addEventListener("mousemove", onMove);
+  canvas.addEventListener("click", onClick);
+
+  const step = (): void => {
+    if (dropCooldown > 0) dropCooldown--;
+    // 重力 + 移動
+    for (const b of balls) {
+      b.vy += gravity;
+      b.vx *= friction;
+      b.x += b.vx;
+      b.y += b.vy;
+      const r = FRUITS[b.type].r;
+      // 床
+      if (b.y + r > H) {
+        b.y = H - r;
+        b.vy = -b.vy * restitution;
+        if (Math.abs(b.vy) < 0.5) b.vy = 0;
+      }
+      // 壁
+      if (b.x - r < 0) {
+        b.x = r;
+        b.vx = -b.vx * restitution;
+      }
+      if (b.x + r > W) {
+        b.x = W - r;
+        b.vx = -b.vx * restitution;
+      }
+    }
+    // 衝突 (位置補正 & 反発)
+    for (let iter = 0; iter < 4; iter++) {
+      for (let i = 0; i < balls.length; i++) {
+        for (let j = i + 1; j < balls.length; j++) {
+          const a = balls[i];
+          const b = balls[j];
+          const ra = FRUITS[a.type].r;
+          const rb = FRUITS[b.type].r;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          const minD = ra + rb;
+          if (d2 < minD * minD && d2 > 0.0001) {
+            const d = Math.sqrt(d2);
+            const overlap = minD - d;
+            const nx = dx / d;
+            const ny = dy / d;
+            a.x -= (nx * overlap) / 2;
+            a.y -= (ny * overlap) / 2;
+            b.x += (nx * overlap) / 2;
+            b.y += (ny * overlap) / 2;
+            // 速度の反発
+            const rvx = b.vx - a.vx;
+            const rvy = b.vy - a.vy;
+            const vn = rvx * nx + rvy * ny;
+            if (vn < 0) {
+              const e = restitution;
+              const jimp = (-(1 + e) * vn) / 2;
+              a.vx -= jimp * nx;
+              a.vy -= jimp * ny;
+              b.vx += jimp * nx;
+              b.vy += jimp * ny;
+            }
+          }
+        }
+      }
+    }
+    // マージ判定
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i];
+        const b = balls[j];
+        if (a.type !== b.type) continue;
+        if (a.type >= FRUITS.length - 1) continue;
+        const ra = FRUITS[a.type].r;
+        const rb = FRUITS[b.type].r;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < ra + rb - 1) {
+          const newType = a.type + 1;
+          const nx = (a.x + b.x) / 2;
+          const ny = (a.y + b.y) / 2;
+          balls.splice(j, 1);
+          balls.splice(i, 1);
+          balls.push({
+            x: nx,
+            y: ny,
+            vx: 0,
+            vy: -1,
+            type: newType,
+            spawnAt: performance.now(),
+          });
+          score += FRUITS[newType].pt;
+          setScore(score);
+          i = -1;
+          break;
+        }
+      }
+    }
+    // ゲームオーバー判定 (天井超え + 1秒以上)
+    const now = performance.now();
+    for (const b of balls) {
+      const r = FRUITS[b.type].r;
+      if (b.y - r < ceilingY && now - b.spawnAt > 1500) {
+        over = true;
+      }
+    }
+  };
+
+  const draw = (): void => {
+    ctx.fillStyle = "#fff7e6";
+    ctx.fillRect(0, 0, W, H);
+    // 天井ライン
+    ctx.strokeStyle = "#e44";
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, ceilingY);
+    ctx.lineTo(W, ceilingY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 次のフルーツプレビュー
+    if (!over) {
+      const nf = FRUITS[nextType];
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = nf.color;
+      ctx.beginPath();
+      ctx.arc(
+        Math.max(nf.r + 2, Math.min(W - nf.r - 2, pointerX)),
+        ceilingY - nf.r - 2,
+        nf.r,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    // ボール
+    for (const b of balls) {
+      const f = FRUITS[b.type];
+      ctx.fillStyle = f.color;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, f.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.25)";
+      ctx.stroke();
+      ctx.fillStyle = "#000";
+      ctx.font = `${Math.floor(f.r * 1.1)}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(f.label, b.x, b.y);
+    }
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    // HUD
+    ctx.fillStyle = "#333";
+    ctx.font = "14px sans-serif";
+    ctx.fillText(`Score: ${score}`, 8, 18);
+    ctx.fillText("クリックで落下", 8, 36);
+
+    if (over) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      ctx.font = "26px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("ゲームオーバー", W / 2, H / 2 - 6);
+      ctx.font = "14px sans-serif";
+      ctx.fillText(`スコア ${score}`, W / 2, H / 2 + 18);
+      ctx.textAlign = "start";
+    }
+  };
+
+  let raf = 0;
+  const loop = (): void => {
+    if (!over) step();
+    draw();
+    raf = requestAnimationFrame(loop);
+  };
+  raf = requestAnimationFrame(loop);
+
+  return () => {
+    cancelAnimationFrame(raf);
+    canvas.removeEventListener("mousemove", onMove);
+    canvas.removeEventListener("click", onClick);
+  };
 }

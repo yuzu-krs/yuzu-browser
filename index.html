@@ -186,6 +186,10 @@
             <span class="toolbox-nav-icon">📄</span>
             <span>ファイルメタ</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="minigame">
+            <span class="toolbox-nav-icon">🎮</span>
+            <span>ミニゲーム</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -1191,6 +1195,73 @@
                 ></pre>
               </div>
             </details>
+          </section>
+          <section class="toolbox-tool" data-tool="minigame" hidden>
+            <h3>🎮 ミニゲーム</h3>
+            <p class="toolbox-hint">
+              オフラインの暇つぶし用。ネット状態:
+              <span id="minigame-net">―</span>
+            </p>
+            <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+              <button type="button" class="toolbox-tab-btn" data-game="dino">
+                🦖 ジャンプ
+              </button>
+              <button type="button" class="toolbox-tab-btn" data-game="snake">
+                🐍 スネーク
+              </button>
+              <button type="button" class="toolbox-tab-btn" data-game="2048">
+                🔢 2048
+              </button>
+              <button type="button" class="toolbox-tab-btn" data-game="memory">
+                🧠 神経衰弱
+              </button>
+              <button type="button" class="toolbox-tab-btn" data-game="rhythm">
+                🎵 音ゲー
+              </button>
+              <button type="button" class="toolbox-tab-btn" data-game="suika">
+                🍉 スイカ
+              </button>
+              <span style="flex: 1"></span>
+              <span id="minigame-score" class="toolbox-status">スコア: 0</span>
+              <span id="minigame-best" class="toolbox-status">ベスト: 0</span>
+              <button
+                type="button"
+                id="minigame-restart"
+                class="toolbox-primary"
+              >
+                リスタート
+              </button>
+            </div>
+            <div
+              id="minigame-stage"
+              style="
+                margin-top: 8px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                background: #111;
+                border-radius: 8px;
+                padding: 8px;
+                min-height: 320px;
+              "
+            >
+              <canvas
+                id="minigame-canvas"
+                width="480"
+                height="320"
+                style="
+                  background: #f7f7f7;
+                  border-radius: 4px;
+                  display: block;
+                  outline: none;
+                "
+                tabindex="0"
+              ></canvas>
+              <div id="minigame-grid" style="display: none; gap: 6px"></div>
+            </div>
+            <p class="toolbox-hint" id="minigame-help">
+              操作: スペース / ↑ でジャンプ。矢印キーで操作。
+            </p>
           </section>
         </div>
       </div>
