@@ -676,7 +676,9 @@ window.addEventListener("DOMContentLoaded", () => {
     bookmarksOpenBtn.addEventListener(
       "click",
       () =>
-        void (bookmarksPanelOpen ? closeBookmarksPanel() : openBookmarksPanel()),
+        void (bookmarksPanelOpen
+          ? closeBookmarksPanel()
+          : openBookmarksPanel()),
     );
   }
   if (bookmarksCloseBtn) {
@@ -715,6 +717,9 @@ window.addEventListener("DOMContentLoaded", () => {
       void refreshBookmarkStar();
     })
     .catch((e) => console.error("bookmark_list failed:", e));
+
+  // ツールボックス UI を初期化
+  void setupToolbox();
 
   // 初期タブリスト取得
   void invoke<TabInfo[]>("tab_list")
@@ -1044,4 +1049,202 @@ async function closeBookmarksPanel(): Promise<void> {
   } catch (e) {
     console.error("ui_set_expanded failed:", e);
   }
+}
+
+// ===== ツールボックス =====
+
+interface ToolboxSettings {
+  download_dir: string;
+}
+
+let toolboxPanel: HTMLDivElement | null = null;
+let toolboxOpen = false;
+let ytdlpRunBtn: HTMLButtonElement | null = null;
+let ytdlpCancelBtn: HTMLButtonElement | null = null;
+let ytdlpUrlInput: HTMLInputElement | null = null;
+let ytdlpDirInput: HTMLInputElement | null = null;
+let ytdlpModeSel: HTMLSelectElement | null = null;
+let ytdlpQualitySel: HTMLSelectElement | null = null;
+let ytdlpLogEl: HTMLPreElement | null = null;
+let ytdlpStatusEl: HTMLSpanElement | null = null;
+let ytdlpFillBtn: HTMLButtonElement | null = null;
+let ytdlpPickDirBtn: HTMLButtonElement | null = null;
+let toolboxOpenBtn: HTMLButtonElement | null = null;
+let toolboxCloseBtn: HTMLButtonElement | null = null;
+let currentJobId: number | null = null;
+
+async function loadToolboxSettings(): Promise<void> {
+  try {
+    const s = await invoke<ToolboxSettings>("toolbox_settings_get");
+    if (ytdlpDirInput) ytdlpDirInput.value = s.download_dir || "";
+  } catch (e) {
+    console.error("toolbox_settings_get failed:", e);
+  }
+}
+
+async function saveToolboxSettings(): Promise<void> {
+  const settings: ToolboxSettings = {
+    download_dir: ytdlpDirInput?.value ?? "",
+  };
+  try {
+    await invoke("toolbox_settings_set", { settings });
+  } catch (e) {
+    console.error("toolbox_settings_set failed:", e);
+  }
+}
+
+async function openToolboxPanel(): Promise<void> {
+  if (!toolboxPanel) return;
+  try {
+    await invoke("ui_set_expanded", { expanded: true });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+  toolboxPanel.hidden = false;
+  toolboxOpen = true;
+  await loadToolboxSettings();
+  // 現在ページ URL を予め埋めない (ユーザー操作優先)
+}
+
+async function closeToolboxPanel(): Promise<void> {
+  if (!toolboxPanel) return;
+  toolboxPanel.hidden = true;
+  toolboxOpen = false;
+  try {
+    await invoke("ui_set_expanded", { expanded: false });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+}
+
+function appendYtdlpLog(line: string, kind: string): void {
+  if (!ytdlpLogEl) return;
+  const span = document.createElement("span");
+  if (kind === "stderr") span.className = "log-stderr";
+  else if (kind === "info") span.className = "log-info";
+  span.textContent = line + "\n";
+  ytdlpLogEl.appendChild(span);
+  ytdlpLogEl.scrollTop = ytdlpLogEl.scrollHeight;
+}
+
+async function setupToolbox(): Promise<void> {
+  toolboxPanel = document.getElementById(
+    "toolbox-panel",
+  ) as HTMLDivElement | null;
+  toolboxOpenBtn = document.getElementById(
+    "toolbox-open",
+  ) as HTMLButtonElement | null;
+  toolboxCloseBtn = document.getElementById(
+    "toolbox-close",
+  ) as HTMLButtonElement | null;
+  ytdlpRunBtn = document.getElementById(
+    "ytdlp-run",
+  ) as HTMLButtonElement | null;
+  ytdlpCancelBtn = document.getElementById(
+    "ytdlp-cancel",
+  ) as HTMLButtonElement | null;
+  ytdlpUrlInput = document.getElementById(
+    "ytdlp-url",
+  ) as HTMLInputElement | null;
+  ytdlpDirInput = document.getElementById(
+    "ytdlp-dir",
+  ) as HTMLInputElement | null;
+  ytdlpModeSel = document.getElementById(
+    "ytdlp-mode",
+  ) as HTMLSelectElement | null;
+  ytdlpQualitySel = document.getElementById(
+    "ytdlp-quality",
+  ) as HTMLSelectElement | null;
+  ytdlpLogEl = document.getElementById("ytdlp-log") as HTMLPreElement | null;
+  ytdlpStatusEl = document.getElementById(
+    "ytdlp-status",
+  ) as HTMLSpanElement | null;
+  ytdlpFillBtn = document.getElementById(
+    "ytdlp-fill-current",
+  ) as HTMLButtonElement | null;
+  ytdlpPickDirBtn = document.getElementById(
+    "ytdlp-pick-dir",
+  ) as HTMLButtonElement | null;
+
+  toolboxOpenBtn?.addEventListener("click", () => {
+    void (toolboxOpen ? closeToolboxPanel() : openToolboxPanel());
+  });
+  toolboxCloseBtn?.addEventListener("click", () => void closeToolboxPanel());
+
+  ytdlpFillBtn?.addEventListener("click", () => {
+    const a = activeTab();
+    if (a && ytdlpUrlInput) ytdlpUrlInput.value = a.url;
+  });
+  ytdlpPickDirBtn?.addEventListener("click", async () => {
+    try {
+      const initial = ytdlpDirInput?.value ?? "";
+      const chosen = await invoke<string | null>("toolbox_pick_download_dir", {
+        initial,
+      });
+      if (chosen && ytdlpDirInput) {
+        ytdlpDirInput.value = chosen;
+        await saveToolboxSettings();
+      }
+    } catch (e) {
+      console.error("toolbox_pick_download_dir failed:", e);
+    }
+  });
+  // 設定変更時に保存
+  ytdlpDirInput?.addEventListener("change", () => void saveToolboxSettings());
+
+  ytdlpRunBtn?.addEventListener("click", async () => {
+    const url = (ytdlpUrlInput?.value ?? "").trim();
+    if (!url) {
+      if (ytdlpStatusEl) ytdlpStatusEl.textContent = "URL を入力してください";
+      return;
+    }
+    await saveToolboxSettings();
+    if (ytdlpLogEl) ytdlpLogEl.textContent = "";
+    if (ytdlpStatusEl) ytdlpStatusEl.textContent = "起動中…";
+    if (ytdlpRunBtn) ytdlpRunBtn.disabled = true;
+    if (ytdlpCancelBtn) ytdlpCancelBtn.disabled = false;
+    try {
+      const id = await invoke<number>("toolbox_ytdlp_run", {
+        args: {
+          url,
+          mode: ytdlpModeSel?.value ?? "video",
+          quality: ytdlpQualitySel?.value ?? "best",
+        },
+      });
+      currentJobId = id;
+      if (ytdlpStatusEl) ytdlpStatusEl.textContent = `実行中 (job ${id})`;
+    } catch (e) {
+      const msg = String(e);
+      appendYtdlpLog(`エラー: ${msg}`, "stderr");
+      if (ytdlpStatusEl) ytdlpStatusEl.textContent = "エラー";
+      if (ytdlpRunBtn) ytdlpRunBtn.disabled = false;
+      if (ytdlpCancelBtn) ytdlpCancelBtn.disabled = true;
+    }
+  });
+  ytdlpCancelBtn?.addEventListener("click", () => {
+    if (currentJobId === null) return;
+    void invoke("toolbox_ytdlp_cancel", { jobId: currentJobId }).catch((e) =>
+      console.error("toolbox_ytdlp_cancel failed:", e),
+    );
+  });
+
+  // バックエンドからの進捗イベント
+  void listen<{ job_id: number; line: string; kind: string }>(
+    "toolbox-ytdlp-progress",
+    (event) => {
+      appendYtdlpLog(event.payload.line, event.payload.kind);
+    },
+  );
+  void listen<{ job_id: number; success: boolean; code: number | null }>(
+    "toolbox-ytdlp-done",
+    (event) => {
+      const p = event.payload;
+      const txt = p.success ? "完了" : `失敗 (exit ${p.code ?? "?"})`;
+      appendYtdlpLog(`--- ${txt} ---`, "info");
+      if (ytdlpStatusEl) ytdlpStatusEl.textContent = txt;
+      if (ytdlpRunBtn) ytdlpRunBtn.disabled = false;
+      if (ytdlpCancelBtn) ytdlpCancelBtn.disabled = true;
+      currentJobId = null;
+    },
+  );
 }

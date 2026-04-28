@@ -1385,12 +1385,388 @@ fn view_set_fullscreen(
     Ok(())
 }
 
+// ===== ツールボックス =====
+//
+// 拡張可能な「ツールボックス」UI 用のコマンド群。第 1 弾として yt-dlp を
+// 使った動画ダウンロード機能を実装。yt-dlp 本体はユーザーが PATH か
+// 設定で指定したパスから探す。設定は app_data_dir/toolbox.json に永続化。
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ToolboxSettings {
+    /// ダウンロード保存先ディレクトリ。空ならユーザーの Downloads。
+    #[serde(default)]
+    download_dir: String,
+}
+
+impl ToolboxSettings {
+    fn load(path: &PathBuf) -> Self {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(s) = serde_json::from_str::<ToolboxSettings>(&text) {
+                return s;
+            }
+        }
+        ToolboxSettings::default()
+    }
+    fn save(&self, path: &PathBuf) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Default)]
+struct ToolboxStateInner {
+    settings: ToolboxSettings,
+    path: Option<PathBuf>,
+    /// 実行中の yt-dlp ジョブ id -> 子プロセス。Cancel 用。
+    jobs: HashMap<u64, std::sync::Arc<Mutex<Option<std::process::Child>>>>,
+    next_job_id: u64,
+}
+
+#[derive(Default)]
+struct ToolboxState(Mutex<ToolboxStateInner>);
+
+fn default_download_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("USERPROFILE") {
+        let d = PathBuf::from(p).join("Downloads");
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    dirs_download()
+}
+
+#[cfg(target_os = "windows")]
+fn dirs_download() -> Option<PathBuf> {
+    std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Downloads"))
+}
+#[cfg(not(target_os = "windows"))]
+fn dirs_download() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(|p| PathBuf::from(p).join("Downloads"))
+}
+
+/// 同梱用 yt-dlp 実行ファイルの保存先 (app_data_dir/bin/yt-dlp.exe)。
+fn managed_ytdlp_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir 取得失敗: {}", e))?
+        .join("bin");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    let name = "yt-dlp.exe";
+    #[cfg(not(target_os = "windows"))]
+    let name = "yt-dlp";
+    Ok(dir.join(name))
+}
+
+/// yt-dlp が無ければ GitHub から最新リリースをダウンロードする。
+fn ensure_ytdlp(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = managed_ytdlp_path(app)?;
+    if path.exists() {
+        return Ok(path);
+    }
+    #[cfg(target_os = "windows")]
+    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+    #[cfg(target_os = "macos")]
+    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-ytdlp-progress",
+        YtdlpProgress {
+            job_id: 0,
+            line: format!("yt-dlp を初回ダウンロード中… ({})", url),
+            kind: "info".to_string(),
+        },
+    );
+
+    let resp = ureq::get(url)
+        .call()
+        .map_err(|e| format!("yt-dlp ダウンロード失敗: {}", e))?;
+    let tmp = path.with_extension("download");
+    {
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| format!("一時ファイル作成失敗: {}", e))?;
+        let mut reader = resp.into_reader();
+        std::io::copy(&mut reader, &mut file)
+            .map_err(|e| format!("yt-dlp 書き込み失敗: {}", e))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("yt-dlp 配置失敗: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-ytdlp-progress",
+        YtdlpProgress {
+            job_id: 0,
+            line: format!("yt-dlp を保存しました: {}", path.display()),
+            kind: "info".to_string(),
+        },
+    );
+    Ok(path)
+}
+
+#[tauri::command]
+fn toolbox_settings_get(state: State<'_, ToolboxState>) -> Result<ToolboxSettings, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.settings.clone())
+}
+
+#[tauri::command]
+fn toolbox_settings_set(
+    state: State<'_, ToolboxState>,
+    settings: ToolboxSettings,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.settings = settings;
+    if let Some(p) = s.path.clone() {
+        s.settings.save(&p)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn toolbox_default_download_dir() -> Result<String, String> {
+    Ok(default_download_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn toolbox_pick_download_dir(initial: Option<String>) -> Result<Option<String>, String> {
+    let mut dlg = rfd::AsyncFileDialog::new().set_title("ダウンロード先フォルダを選択");
+    if let Some(p) = initial.filter(|s| !s.is_empty()) {
+        dlg = dlg.set_directory(p);
+    }
+    let chosen = dlg.pick_folder().await;
+    Ok(chosen.map(|h| h.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn toolbox_open_path(path: String) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+struct YtdlpProgress {
+    job_id: u64,
+    line: String,
+    kind: String, // "stdout" | "stderr" | "info"
+}
+
+#[derive(Serialize, Clone)]
+struct YtdlpDone {
+    job_id: u64,
+    success: bool,
+    code: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct YtdlpRunArgs {
+    url: String,
+    /// "video" | "audio"
+    #[serde(default)]
+    mode: String,
+    /// 例: "best", "1080", "720", "480"
+    #[serde(default)]
+    quality: String,
+}
+
+#[tauri::command]
+fn toolbox_ytdlp_run(
+    app: AppHandle,
+    state: State<'_, ToolboxState>,
+    args: YtdlpRunArgs,
+) -> Result<u64, String> {
+    if args.url.trim().is_empty() {
+        return Err("URL を入力してください".to_string());
+    }
+    let download_dir = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.settings.download_dir.clone()
+    };
+    if download_dir.is_empty() {
+        return Err("ダウンロード先が未設定です".to_string());
+    }
+    let ytdlp_pathbuf = ensure_ytdlp(&app)?;
+    let exe = ytdlp_pathbuf.to_string_lossy().to_string();
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--no-colors")
+        .arg("--newline")
+        .arg("--no-mtime")
+        .arg("-o")
+        .arg(format!("{}/%(title)s [%(id)s].%(ext)s", download_dir));
+
+    let mode = args.mode.as_str();
+    if mode == "audio" {
+        cmd.args(["-x", "--audio-format", "mp3"]);
+    } else {
+        let q = args.quality.as_str();
+        let format = match q {
+            "1080" => "bv*[height<=1080]+ba/b[height<=1080]".to_string(),
+            "720" => "bv*[height<=720]+ba/b[height<=720]".to_string(),
+            "480" => "bv*[height<=480]+ba/b[height<=480]".to_string(),
+            _ => "bv*+ba/b".to_string(),
+        };
+        cmd.args(["-f", &format, "--merge-output-format", "mp4"]);
+    }
+    cmd.arg(&args.url);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("yt-dlp の起動に失敗: {} (実行ファイル: {})", e, exe)
+    })?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let job_id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.next_job_id += 1;
+        s.next_job_id
+    };
+
+    let child_arc = std::sync::Arc::new(Mutex::new(Some(child)));
+    {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.jobs.insert(job_id, child_arc.clone());
+    }
+
+    // 起動メッセージ
+    let _ = app.emit_to(
+        "ui",
+        "toolbox-ytdlp-progress",
+        YtdlpProgress {
+            job_id,
+            line: format!("$ {} {}", exe, args.url),
+            kind: "info".to_string(),
+        },
+    );
+
+    // stdout 読み取りスレッド
+    if let Some(out) = stdout {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let r = BufReader::new(out);
+            for line in r.lines().flatten() {
+                let _ = app2.emit_to(
+                    "ui",
+                    "toolbox-ytdlp-progress",
+                    YtdlpProgress { job_id, line, kind: "stdout".to_string() },
+                );
+            }
+        });
+    }
+    // stderr 読み取りスレッド
+    if let Some(err) = stderr {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let r = BufReader::new(err);
+            for line in r.lines().flatten() {
+                let _ = app2.emit_to(
+                    "ui",
+                    "toolbox-ytdlp-progress",
+                    YtdlpProgress { job_id, line, kind: "stderr".to_string() },
+                );
+            }
+        });
+    }
+    // wait スレッド
+    let app3 = app.clone();
+    let child_arc2 = child_arc.clone();
+    let state_handle = app.clone();
+    std::thread::spawn(move || {
+        // wait は &mut self が必要なので一旦取り出す
+        let mut taken = {
+            let mut g = child_arc2.lock().unwrap();
+            g.take()
+        };
+        let result = if let Some(ref mut c) = taken {
+            c.wait()
+        } else {
+            return;
+        };
+        let (success, code) = match result {
+            Ok(status) => (status.success(), status.code()),
+            Err(_) => (false, None),
+        };
+        let _ = app3.emit_to(
+            "ui",
+            "toolbox-ytdlp-done",
+            YtdlpDone { job_id, success, code },
+        );
+        // ジョブ表からも削除
+        if let Some(state) = state_handle.try_state::<ToolboxState>() {
+            if let Ok(mut s) = state.0.lock() {
+                s.jobs.remove(&job_id);
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+fn toolbox_ytdlp_cancel(state: State<'_, ToolboxState>, job_id: u64) -> Result<(), String> {
+    let arc = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.jobs.get(&job_id).cloned()
+    };
+    if let Some(arc) = arc {
+        if let Ok(mut g) = arc.lock() {
+            if let Some(child) = g.as_mut() {
+                let _ = child.kill();
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .manage(BookmarksState::default())
+        .manage(ToolboxState::default())
         .invoke_handler(tauri::generate_handler![
             tab_new,
             tab_close,
@@ -1423,6 +1799,13 @@ pub fn run() {
             bookmark_is_current,
             ui_set_expanded,
             view_set_fullscreen,
+            toolbox_settings_get,
+            toolbox_settings_set,
+            toolbox_pick_download_dir,
+            toolbox_default_download_dir,
+            toolbox_ytdlp_run,
+            toolbox_ytdlp_cancel,
+            toolbox_open_path,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
@@ -1432,6 +1815,21 @@ pub fn run() {
                 let state: State<'_, BookmarksState> = app.state();
                 if let Ok(mut s) = state.0.lock() {
                     *s = store;
+                };
+            }
+            // ツールボックス設定をロード。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let path = dir.join("toolbox.json");
+                let mut settings = ToolboxSettings::load(&path);
+                if settings.download_dir.is_empty() {
+                    if let Some(d) = default_download_dir() {
+                        settings.download_dir = d.to_string_lossy().to_string();
+                    }
+                }
+                let state: State<'_, ToolboxState> = app.state();
+                if let Ok(mut s) = state.0.lock() {
+                    s.settings = settings;
+                    s.path = Some(path);
                 };
             }
 

@@ -58,6 +58,14 @@
       >
         ▤
       </button>
+      <button
+        id="toolbox-open"
+        class="bookmarks-bar-add toolbox-open-btn"
+        type="button"
+        title="ツールボックス"
+      >
+        🧰
+      </button>
     </nav>
     <div id="bookmarks-panel" class="bookmarks-panel" hidden>
       <div class="bookmarks-header">
@@ -74,6 +82,68 @@
       <ul id="bookmarks-list" class="bookmarks-list"></ul>
       <div id="bookmarks-empty" class="bookmarks-empty" hidden>
         まだブックマークはありません。☆ボタンで追加できます。
+      </div>
+    </div>
+    <div id="toolbox-panel" class="bookmarks-panel toolbox-panel" hidden>
+      <div class="bookmarks-header">
+        <span>🧰 ツールボックス</span>
+        <button
+          id="toolbox-close"
+          class="bookmarks-close"
+          type="button"
+          title="閉じる"
+        >
+          ×
+        </button>
+      </div>
+      <div class="toolbox-body">
+        <section class="toolbox-tool">
+          <h3>YouTube ダウンロード (yt-dlp)</h3>
+          <div class="toolbox-row">
+            <label for="ytdlp-url">URL</label>
+            <input
+              id="ytdlp-url"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="https://www.youtube.com/watch?v=..."
+            />
+            <button
+              id="ytdlp-fill-current"
+              type="button"
+              title="現在のタブ URL を入れる"
+            >
+              現在のタブ
+            </button>
+          </div>
+          <div class="toolbox-row">
+            <label>形式</label>
+            <select id="ytdlp-mode">
+              <option value="video">動画 (mp4)</option>
+              <option value="audio">音声のみ (mp3)</option>
+            </select>
+            <label>画質</label>
+            <select id="ytdlp-quality">
+              <option value="best">最高</option>
+              <option value="1080">1080p まで</option>
+              <option value="720">720p まで</option>
+              <option value="480">480p まで</option>
+            </select>
+          </div>
+          <div class="toolbox-row">
+            <label for="ytdlp-dir">保存先</label>
+            <input id="ytdlp-dir" type="text" spellcheck="false" />
+            <button id="ytdlp-pick-dir" type="button">参照…</button>
+          </div>
+          <div class="toolbox-row toolbox-actions">
+            <button id="ytdlp-run" class="toolbox-primary" type="button">
+              ダウンロード開始
+            </button>
+            <button id="ytdlp-cancel" type="button" disabled>キャンセル</button>
+            <span id="ytdlp-status" class="toolbox-status"></span>
+          </div>
+          <pre id="ytdlp-log" class="toolbox-log"></pre>
+        </section>
       </div>
     </div>
   </body>

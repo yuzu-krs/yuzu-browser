@@ -314,6 +314,113 @@ body {
   font-size: 13px;
 }
 
+/* ===== ツールボックス ===== */
+.toolbox-panel {
+  /* bookmarks-panel のスタイルを継承しつつ中身は独自レイアウト */
+}
+.toolbox-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.toolbox-tool {
+  background: #232323;
+  border: 1px solid #2c2c2c;
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toolbox-tool h3 {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  color: #f0f0f0;
+}
+.toolbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbox-row label {
+  font-size: 12px;
+  color: #cfcfcf;
+  flex: 0 0 auto;
+  min-width: 64px;
+}
+.toolbox-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid #3a3a3a;
+  background: #1a1a1a;
+  color: #f0f0f0;
+  font-size: 12px;
+}
+.toolbox-row select {
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid #3a3a3a;
+  background: #1a1a1a;
+  color: #f0f0f0;
+  font-size: 12px;
+}
+.toolbox-row button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #3a3a3a;
+  background: #2a2a2a;
+  color: #f0f0f0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.toolbox-row button:hover:not([disabled]) {
+  background: #353535;
+}
+.toolbox-row button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.toolbox-actions .toolbox-primary {
+  background: #2f6fdb;
+  border-color: #2f6fdb;
+  color: #fff;
+  font-weight: 600;
+}
+.toolbox-actions .toolbox-primary:hover:not([disabled]) {
+  background: #3a7ce8;
+}
+.toolbox-status {
+  font-size: 12px;
+  color: #cfcfcf;
+  margin-left: auto;
+}
+.toolbox-log {
+  margin: 0;
+  height: 220px;
+  overflow: auto;
+  background: #111;
+  border: 1px solid #2c2c2c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #d8d8d8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.toolbox-log .log-stderr {
+  color: #ffb27a;
+}
+.toolbox-log .log-info {
+  color: #8ab4ff;
+}
+
 .tabbar {
   display: flex;
   align-items: stretch;
