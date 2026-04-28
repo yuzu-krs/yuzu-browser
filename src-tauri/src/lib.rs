@@ -1385,6 +1385,85 @@ fn view_set_fullscreen(
     Ok(())
 }
 
+/// アクティブタブの動画/音声要素に Web Audio API の GainNode を挟んで
+/// 音量を 100% を超えてブーストする。`gain` は 1.0 == 100%。
+/// ページ遷移/リロード時にはリセットされる (再適用が必要)。
+#[tauri::command]
+fn view_set_volume_boost(
+    window: Window,
+    state: State<'_, AppState>,
+    gain: f64,
+) -> Result<(), String> {
+    let id = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.active.ok_or_else(|| "no active tab".to_string())?
+    };
+    let view = window
+        .get_webview(&view_label(id))
+        .ok_or_else(|| "active view not found".to_string())?;
+    // 安全のため 0.0 - 16.0 にクランプ
+    let g = if gain.is_finite() {
+        gain.clamp(0.0, 16.0)
+    } else {
+        1.0
+    };
+    let script = format!(
+        r#"(function() {{
+  try {{
+    var GAIN = {gain};
+    var ctx = window.__yuzuAudioCtx;
+    if (!ctx) {{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ctx = new AC();
+      window.__yuzuAudioCtx = ctx;
+      window.__yuzuGainNodes = new WeakMap();
+    }}
+    if (ctx.state === 'suspended') {{ try {{ ctx.resume(); }} catch (e) {{}} }}
+    function attach(el) {{
+      if (!el) return;
+      var node = window.__yuzuGainNodes.get(el);
+      if (!node) {{
+        try {{
+          var src = ctx.createMediaElementSource(el);
+          var gainNode = ctx.createGain();
+          src.connect(gainNode);
+          gainNode.connect(ctx.destination);
+          node = gainNode;
+          window.__yuzuGainNodes.set(el, gainNode);
+        }} catch (e) {{ return; }}
+      }}
+      node.gain.value = GAIN;
+    }}
+    var media = document.querySelectorAll('video, audio');
+    for (var i = 0; i < media.length; i++) attach(media[i]);
+    if (!window.__yuzuMediaObserver) {{
+      var obs = new MutationObserver(function(muts) {{
+        for (var i = 0; i < muts.length; i++) {{
+          var added = muts[i].addedNodes;
+          for (var j = 0; j < added.length; j++) {{
+            var n = added[j];
+            if (!n || n.nodeType !== 1) continue;
+            if (n.tagName === 'VIDEO' || n.tagName === 'AUDIO') attach(n);
+            else if (n.querySelectorAll) {{
+              var inner = n.querySelectorAll('video, audio');
+              for (var k = 0; k < inner.length; k++) attach(inner[k]);
+            }}
+          }}
+        }}
+      }});
+      obs.observe(document.documentElement || document.body, {{ subtree: true, childList: true }});
+      window.__yuzuMediaObserver = obs;
+    }}
+    window.__yuzuCurrentGain = GAIN;
+  }} catch (e) {{ console.error('volume boost failed:', e); }}
+}})();"#,
+        gain = g
+    );
+    view.eval(&script).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ===== ツールボックス =====
 //
 // 拡張可能な「ツールボックス」UI 用のコマンド群。第 1 弾として yt-dlp を
@@ -2162,6 +2241,7 @@ pub fn run() {
             bookmark_is_current,
             ui_set_expanded,
             view_set_fullscreen,
+            view_set_volume_boost,
             toolbox_settings_get,
             toolbox_settings_set,
             toolbox_pick_download_dir,

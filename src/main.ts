@@ -1171,6 +1171,28 @@ async function setupToolbox(): Promise<void> {
   });
   toolboxCloseBtn?.addEventListener("click", () => void closeToolboxPanel());
 
+  // ツール切替ナビ
+  const navItems = document.querySelectorAll<HTMLButtonElement>(
+    "#toolbox-nav .toolbox-nav-item",
+  );
+  const sections = document.querySelectorAll<HTMLElement>(
+    "#toolbox-content .toolbox-tool",
+  );
+  const selectTool = (name: string): void => {
+    navItems.forEach((b) => {
+      b.classList.toggle("active", b.dataset.tool === name);
+    });
+    sections.forEach((s) => {
+      s.hidden = s.dataset.tool !== name;
+    });
+  };
+  navItems.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const t = btn.dataset.tool;
+      if (t) selectTool(t);
+    });
+  });
+
   ytdlpFillBtn?.addEventListener("click", () => {
     const a = activeTab();
     if (a && ytdlpUrlInput) ytdlpUrlInput.value = a.url;
@@ -1260,6 +1282,7 @@ async function setupToolbox(): Promise<void> {
   );
 
   setupConverter();
+  setupVolumeBoost();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -1386,5 +1409,52 @@ function setupConverter(): void {
     if (convRunBtn) convRunBtn.disabled = false;
     if (convCancelBtn) convCancelBtn.disabled = true;
     convJobId = null;
+  });
+}
+
+// ===== 動画音量ブースト =====
+
+function setupVolumeBoost(): void {
+  const range = document.getElementById(
+    "vboost-range",
+  ) as HTMLInputElement | null;
+  const valueEl = document.getElementById(
+    "vboost-value",
+  ) as HTMLSpanElement | null;
+  const applyBtn = document.getElementById(
+    "vboost-apply",
+  ) as HTMLButtonElement | null;
+  const resetBtn = document.getElementById(
+    "vboost-reset",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById(
+    "vboost-status",
+  ) as HTMLSpanElement | null;
+  if (!range || !valueEl) return;
+
+  const updateLabel = (): void => {
+    valueEl.textContent = `${range.value}%`;
+  };
+  range.addEventListener("input", updateLabel);
+  updateLabel();
+
+  const apply = async (gainPct: number): Promise<void> => {
+    if (statusEl) statusEl.textContent = "適用中…";
+    try {
+      await invoke("view_set_volume_boost", { gain: gainPct / 100 });
+      if (statusEl) statusEl.textContent = `適用済み (${gainPct}%)`;
+    } catch (e) {
+      console.error("view_set_volume_boost failed:", e);
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  };
+
+  applyBtn?.addEventListener("click", () => {
+    void apply(parseInt(range.value, 10) || 100);
+  });
+  resetBtn?.addEventListener("click", () => {
+    range.value = "100";
+    updateLabel();
+    void apply(100);
   });
 }

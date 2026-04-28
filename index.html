@@ -97,7 +97,22 @@
         </button>
       </div>
       <div class="toolbox-body">
-        <section class="toolbox-tool">
+        <nav class="toolbox-nav" id="toolbox-nav">
+          <button type="button" class="toolbox-nav-item active" data-tool="ytdlp">
+            <span class="toolbox-nav-icon">⬇</span>
+            <span>YouTube ダウンロード</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="converter">
+            <span class="toolbox-nav-icon">⇄</span>
+            <span>ファイル形式コンバータ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="vboost">
+            <span class="toolbox-nav-icon">🔊</span>
+            <span>動画音量ブースト</span>
+          </button>
+        </nav>
+        <div class="toolbox-content" id="toolbox-content">
+        <section class="toolbox-tool" data-tool="ytdlp">
           <h3>YouTube ダウンロード</h3>
           <div class="toolbox-row">
             <label for="ytdlp-url">URL</label>
@@ -147,7 +162,7 @@
           <pre id="ytdlp-log" class="toolbox-log"></pre>
         </section>
 
-        <section class="toolbox-tool">
+        <section class="toolbox-tool" data-tool="converter" hidden>
           <h3>ファイル形式コンバータ</h3>
           <div class="toolbox-row">
             <label for="conv-input">入力</label>
@@ -197,6 +212,34 @@
           </div>
           <pre id="conv-log" class="toolbox-log"></pre>
         </section>
+
+        <section class="toolbox-tool" data-tool="vboost" hidden>
+          <h3>動画音量ブースト</h3>
+          <p class="toolbox-note">
+            現在のタブで再生中の動画/音声の音量を 100% 以上に増幅します。
+            ページをリロード/移動するとリセットされるので、再度適用してください。
+          </p>
+          <div class="toolbox-row">
+            <label for="vboost-range">音量</label>
+            <input
+              id="vboost-range"
+              type="range"
+              min="100"
+              max="500"
+              step="10"
+              value="100"
+            />
+            <span id="vboost-value" class="toolbox-status">100%</span>
+          </div>
+          <div class="toolbox-row toolbox-actions">
+            <button id="vboost-apply" class="toolbox-primary" type="button">
+              現在のタブに適用
+            </button>
+            <button id="vboost-reset" type="button">100% に戻す</button>
+            <span id="vboost-status" class="toolbox-status"></span>
+          </div>
+        </section>
+        </div>
       </div>
     </div>
   </body>
