@@ -110,6 +110,10 @@
             <span class="toolbox-nav-icon">🔊</span>
             <span>動画音量ブースト</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="savehtml">
+            <span class="toolbox-nav-icon">💾</span>
+            <span>ページHTML保存</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
         <section class="toolbox-tool" data-tool="ytdlp">
@@ -238,6 +242,39 @@
             <button id="vboost-reset" type="button">100% に戻す</button>
             <span id="vboost-status" class="toolbox-status"></span>
           </div>
+        </section>
+
+        <section class="toolbox-tool" data-tool="savehtml" hidden>
+          <h3>ページHTML保存</h3>
+          <p class="toolbox-note">
+            指定 URL のページ HTML を取得して .html ファイルとして保存します。
+            JavaScript 実行後の DOM ではなく、サーバから返される生の HTML が保存されます。
+          </p>
+          <div class="toolbox-row">
+            <label for="savehtml-url">URL</label>
+            <input
+              id="savehtml-url"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="https://example.com/"
+            />
+            <button id="savehtml-fill-current" type="button" title="現在のタブ URL を入れる">
+              現在のタブ
+            </button>
+          </div>
+          <div class="toolbox-row">
+            <label for="savehtml-dir">保存先</label>
+            <input id="savehtml-dir" type="text" spellcheck="false" />
+            <button id="savehtml-pick-dir" type="button">参照…</button>
+          </div>
+          <div class="toolbox-row toolbox-actions">
+            <button id="savehtml-run" class="toolbox-primary" type="button">
+              保存
+            </button>
+            <span id="savehtml-status" class="toolbox-status"></span>
+          </div>
+          <pre id="savehtml-log" class="toolbox-log"></pre>
         </section>
         </div>
       </div>

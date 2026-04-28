@@ -1283,6 +1283,7 @@ async function setupToolbox(): Promise<void> {
 
   setupConverter();
   setupVolumeBoost();
+  setupSaveHtml();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -1456,5 +1457,97 @@ function setupVolumeBoost(): void {
     range.value = "100";
     updateLabel();
     void apply(100);
+  });
+}
+
+// ===== ページ HTML 保存 =====
+
+function setupSaveHtml(): void {
+  const urlEl = document.getElementById(
+    "savehtml-url",
+  ) as HTMLInputElement | null;
+  const dirEl = document.getElementById(
+    "savehtml-dir",
+  ) as HTMLInputElement | null;
+  const fillBtn = document.getElementById(
+    "savehtml-fill-current",
+  ) as HTMLButtonElement | null;
+  const pickDirBtn = document.getElementById(
+    "savehtml-pick-dir",
+  ) as HTMLButtonElement | null;
+  const runBtn = document.getElementById(
+    "savehtml-run",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById(
+    "savehtml-status",
+  ) as HTMLSpanElement | null;
+  const logEl = document.getElementById(
+    "savehtml-log",
+  ) as HTMLPreElement | null;
+  if (!urlEl || !dirEl || !runBtn) return;
+
+  // ダウンロードディレクトリを初期値に
+  void (async () => {
+    try {
+      const def = await invoke<string>("toolbox_default_download_dir");
+      if (def && !dirEl.value) dirEl.value = def;
+    } catch {
+      /* noop */
+    }
+  })();
+
+  fillBtn?.addEventListener("click", () => {
+    const a = activeTab();
+    if (a) urlEl.value = a.url;
+  });
+
+  pickDirBtn?.addEventListener("click", async () => {
+    try {
+      const chosen = await invoke<string | null>("toolbox_pick_download_dir", {
+        initial: dirEl.value || null,
+      });
+      if (chosen) dirEl.value = chosen;
+    } catch (e) {
+      console.error("toolbox_pick_download_dir failed:", e);
+    }
+  });
+
+  const appendLog = (line: string, kind: "info" | "err" = "info"): void => {
+    if (!logEl) return;
+    const span = document.createElement("span");
+    span.className = kind === "err" ? "log-stderr" : "log-info";
+    span.textContent = line + "\n";
+    logEl.appendChild(span);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  runBtn.addEventListener("click", async () => {
+    const url = urlEl.value.trim();
+    const dir = dirEl.value.trim();
+    if (!url) {
+      if (statusEl) statusEl.textContent = "URL を入力してください";
+      return;
+    }
+    if (!dir) {
+      if (statusEl) statusEl.textContent = "保存先を選択してください";
+      return;
+    }
+    runBtn.disabled = true;
+    if (statusEl) statusEl.textContent = "保存中…";
+    appendLog(`取得中: ${url}`);
+    try {
+      const path = await invoke<string>("toolbox_save_page_html", {
+        url,
+        dir,
+      });
+      if (statusEl) statusEl.textContent = "保存しました";
+      appendLog(`保存: ${path}`);
+    } catch (e) {
+      const msg = String(e);
+      if (statusEl) statusEl.textContent = `エラー: ${msg}`;
+      appendLog(msg, "err");
+    } finally {
+      runBtn.disabled = false;
+    }
   });
 }

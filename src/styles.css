@@ -386,6 +386,9 @@ body {
   flex-direction: column;
   gap: 8px;
 }
+.toolbox-tool[hidden] {
+  display: none;
+}
 .toolbox-tool h3 {
   margin: 0 0 4px 0;
   font-size: 13px;

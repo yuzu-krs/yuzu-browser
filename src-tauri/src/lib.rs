@@ -2202,6 +2202,105 @@ fn toolbox_convert_cancel(
     toolbox_ytdlp_cancel(state, job_id)
 }
 
+/// 指定 URL のページ HTML をダウンロードしてファイルに保存する。
+/// JS 実行後の DOM ではなく、サーバから返される生の HTML を保存する。
+#[tauri::command]
+fn toolbox_save_page_html(url: String, dir: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL を入力してください".to_string());
+    }
+    let parsed = url::Url::parse(&url).map_err(|e| format!("URL が不正です: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("http/https の URL を指定してください".to_string());
+    }
+    let dir = dir.trim().to_string();
+    if dir.is_empty() {
+        return Err("保存先が未設定です".to_string());
+    }
+    let dir_path = std::path::PathBuf::from(&dir);
+    std::fs::create_dir_all(&dir_path)
+        .map_err(|e| format!("保存先フォルダ作成失敗: {}", e))?;
+
+    let resp = ureq::get(&url)
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) yuzu-browser/0.1",
+        )
+        .set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+        .call()
+        .map_err(|e| format!("取得失敗: {}", e))?;
+
+    let mut reader = resp.into_reader();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut bytes)
+        .map_err(|e| format!("読み込み失敗: {}", e))?;
+
+    let text = String::from_utf8_lossy(&bytes);
+    let title = extract_title(&text);
+    let base_name = title
+        .as_deref()
+        .map(sanitize_filename)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let host = parsed.host_str().unwrap_or("page").to_string();
+            sanitize_filename(&host)
+        });
+    let mut base_name = base_name;
+    if base_name.len() > 80 {
+        base_name.truncate(80);
+    }
+
+    let mut path = dir_path.join(format!("{}.html", base_name));
+    let mut idx: u32 = 1;
+    while path.exists() {
+        path = dir_path.join(format!("{}_{}.html", base_name, idx));
+        idx += 1;
+        if idx > 9999 {
+            return Err("ファイル名候補を使い切りました".to_string());
+        }
+    }
+    std::fs::write(&path, &bytes).map_err(|e| format!("書き込み失敗: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn extract_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let after = &html[start..];
+    let gt = after.find('>')?;
+    let body = &after[gt + 1..];
+    let lower_body = body.to_ascii_lowercase();
+    let end = lower_body.find("</title>")?;
+    let raw = body[..end].trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(
+            raw.replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'"),
+        )
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            || ch.is_control()
+        {
+            out.push('_');
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim().trim_matches('.').to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2252,6 +2351,7 @@ pub fn run() {
             toolbox_pick_file,
             toolbox_convert_run,
             toolbox_convert_cancel,
+            toolbox_save_page_html,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
