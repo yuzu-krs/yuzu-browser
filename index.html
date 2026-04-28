@@ -98,7 +98,11 @@
       </div>
       <div class="toolbox-body">
         <nav class="toolbox-nav" id="toolbox-nav">
-          <button type="button" class="toolbox-nav-item active" data-tool="ytdlp">
+          <button
+            type="button"
+            class="toolbox-nav-item active"
+            data-tool="ytdlp"
+          >
             <span class="toolbox-nav-icon">⬇</span>
             <span>YouTube ダウンロード</span>
           </button>
@@ -114,168 +118,1080 @@
             <span class="toolbox-nav-icon">💾</span>
             <span>ページHTML保存</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="reader">
+            <span class="toolbox-nav-icon">📖</span>
+            <span>リーディングモード</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="screenshot">
+            <span class="toolbox-nav-icon">📷</span>
+            <span>スクリーンショット</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="json">
+            <span class="toolbox-nav-icon">{}</span>
+            <span>JSON 整形 / 検証</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="base64">
+            <span class="toolbox-nav-icon">B64</span>
+            <span>Base64</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="urlcodec">
+            <span class="toolbox-nav-icon">%</span>
+            <span>URL エンコード</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="hash">
+            <span class="toolbox-nav-icon">#</span>
+            <span>ハッシュ生成</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="uuid">
+            <span class="toolbox-nav-icon">🆔</span>
+            <span>UUID 生成</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="timestamp">
+            <span class="toolbox-nav-icon">⏱</span>
+            <span>タイムスタンプ変換</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="regex">
+            <span class="toolbox-nav-icon">.*</span>
+            <span>正規表現テスト</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="jwt">
+            <span class="toolbox-nav-icon">JWT</span>
+            <span>JWT デコーダ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="color">
+            <span class="toolbox-nav-icon">🎨</span>
+            <span>カラー変換</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="diff">
+            <span class="toolbox-nav-icon">±</span>
+            <span>テキスト Diff</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="useragent">
+            <span class="toolbox-nav-icon">🌐</span>
+            <span>User-Agent 表示</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="scrape">
+            <span class="toolbox-nav-icon">🕸</span>
+            <span>スクレイピング</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="unzip">
+            <span class="toolbox-nav-icon">🗄</span>
+            <span>ZIP 解凍</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="clipboard">
+            <span class="toolbox-nav-icon">📋</span>
+            <span>クリップボード履歴</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="filemeta">
+            <span class="toolbox-nav-icon">📄</span>
+            <span>ファイルメタ</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
-        <section class="toolbox-tool" data-tool="ytdlp">
-          <h3>YouTube ダウンロード</h3>
-          <div class="toolbox-row">
-            <label for="ytdlp-url">URL</label>
-            <input
-              id="ytdlp-url"
-              type="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="https://www.youtube.com/watch?v=..."
-            />
-            <button
-              id="ytdlp-fill-current"
-              type="button"
-              title="現在のタブ URL を入れる"
-            >
-              現在のタブ
-            </button>
-          </div>
-          <div class="toolbox-row">
-            <label>形式</label>
-            <select id="ytdlp-mode">
-              <option value="video">動画 (mp4)</option>
-              <option value="audio">音声のみ (mp3)</option>
-            </select>
-            <span id="ytdlp-quality-wrap">
-              <label for="ytdlp-quality">画質</label>
-              <select id="ytdlp-quality">
-                <option value="best">最高</option>
-                <option value="1080">1080p まで</option>
-                <option value="720">720p まで</option>
-                <option value="480">480p まで</option>
+          <section class="toolbox-tool" data-tool="ytdlp">
+            <h3>YouTube ダウンロード</h3>
+            <div class="toolbox-row">
+              <label for="ytdlp-url">URL</label>
+              <input
+                id="ytdlp-url"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://www.youtube.com/watch?v=..."
+              />
+              <button
+                id="ytdlp-fill-current"
+                type="button"
+                title="現在のタブ URL を入れる"
+              >
+                現在のタブ
+              </button>
+            </div>
+            <div class="toolbox-row">
+              <label>形式</label>
+              <select id="ytdlp-mode">
+                <option value="video">動画 (mp4)</option>
+                <option value="audio">音声のみ (mp3)</option>
               </select>
-            </span>
-          </div>
-          <div class="toolbox-row">
-            <label for="ytdlp-dir">保存先</label>
-            <input id="ytdlp-dir" type="text" spellcheck="false" />
-            <button id="ytdlp-pick-dir" type="button">参照…</button>
-          </div>
-          <div class="toolbox-row toolbox-actions">
-            <button id="ytdlp-run" class="toolbox-primary" type="button">
-              ダウンロード開始
-            </button>
-            <button id="ytdlp-cancel" type="button" disabled>キャンセル</button>
-            <span id="ytdlp-status" class="toolbox-status"></span>
-          </div>
-          <pre id="ytdlp-log" class="toolbox-log"></pre>
-        </section>
+              <span id="ytdlp-quality-wrap">
+                <label for="ytdlp-quality">画質</label>
+                <select id="ytdlp-quality">
+                  <option value="best">最高</option>
+                  <option value="1080">1080p まで</option>
+                  <option value="720">720p まで</option>
+                  <option value="480">480p まで</option>
+                </select>
+              </span>
+            </div>
+            <div class="toolbox-row">
+              <label for="ytdlp-dir">保存先</label>
+              <input id="ytdlp-dir" type="text" spellcheck="false" />
+              <button id="ytdlp-pick-dir" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="ytdlp-run" class="toolbox-primary" type="button">
+                ダウンロード開始
+              </button>
+              <button id="ytdlp-cancel" type="button" disabled>
+                キャンセル
+              </button>
+              <span id="ytdlp-status" class="toolbox-status"></span>
+            </div>
+            <pre id="ytdlp-log" class="toolbox-log"></pre>
+          </section>
 
-        <section class="toolbox-tool" data-tool="converter" hidden>
-          <h3>ファイル形式コンバータ</h3>
-          <div class="toolbox-row">
-            <label for="conv-input">入力</label>
-            <input id="conv-input" type="text" spellcheck="false" placeholder="変換元ファイル (画像 / 動画 / 音声)" />
-            <button id="conv-pick-input" type="button">参照…</button>
-          </div>
-          <div class="toolbox-row">
-            <label for="conv-format">出力形式</label>
-            <select id="conv-format">
-              <optgroup label="画像">
-                <option value="png">PNG (.png)</option>
-                <option value="jpg">JPEG (.jpg)</option>
-                <option value="webp">WebP (.webp)</option>
-                <option value="gif">GIF (.gif)</option>
-                <option value="bmp">BMP (.bmp)</option>
-                <option value="tiff">TIFF (.tiff)</option>
-                <option value="ico">ICO (.ico)</option>
-                <option value="avif">AVIF (.avif)</option>
-              </optgroup>
-              <optgroup label="動画">
-                <option value="mp4">MP4 (.mp4)</option>
-                <option value="webm">WebM (.webm)</option>
-                <option value="mkv">Matroska (.mkv)</option>
-                <option value="mov">QuickTime (.mov)</option>
-                <option value="avi">AVI (.avi)</option>
-                <option value="gif-anim">アニメーション GIF (.gif)</option>
-              </optgroup>
-              <optgroup label="音声">
-                <option value="mp3">MP3 (.mp3)</option>
-                <option value="wav">WAV (.wav)</option>
-                <option value="ogg">Ogg Vorbis (.ogg)</option>
-                <option value="m4a">AAC / M4A (.m4a)</option>
-                <option value="flac">FLAC (.flac)</option>
-                <option value="opus">Opus (.opus)</option>
-              </optgroup>
-            </select>
-          </div>
-          <div class="toolbox-row">
-            <label for="conv-out">出力先</label>
-            <input id="conv-out" type="text" spellcheck="false" placeholder="(空なら入力と同じフォルダ)" />
-            <button id="conv-pick-out" type="button">参照…</button>
-          </div>
-          <div class="toolbox-row toolbox-actions">
-            <button id="conv-run" class="toolbox-primary" type="button">変換開始</button>
-            <button id="conv-cancel" type="button" disabled>キャンセル</button>
-            <span id="conv-status" class="toolbox-status"></span>
-          </div>
-          <pre id="conv-log" class="toolbox-log"></pre>
-        </section>
+          <section class="toolbox-tool" data-tool="converter" hidden>
+            <h3>ファイル形式コンバータ</h3>
+            <div class="toolbox-row">
+              <label for="conv-input">入力</label>
+              <input
+                id="conv-input"
+                type="text"
+                spellcheck="false"
+                placeholder="変換元ファイル (画像 / 動画 / 音声)"
+              />
+              <button id="conv-pick-input" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row">
+              <label for="conv-format">出力形式</label>
+              <select id="conv-format">
+                <optgroup label="画像">
+                  <option value="png">PNG (.png)</option>
+                  <option value="jpg">JPEG (.jpg)</option>
+                  <option value="webp">WebP (.webp)</option>
+                  <option value="gif">GIF (.gif)</option>
+                  <option value="bmp">BMP (.bmp)</option>
+                  <option value="tiff">TIFF (.tiff)</option>
+                  <option value="ico">ICO (.ico)</option>
+                  <option value="avif">AVIF (.avif)</option>
+                </optgroup>
+                <optgroup label="動画">
+                  <option value="mp4">MP4 (.mp4)</option>
+                  <option value="webm">WebM (.webm)</option>
+                  <option value="mkv">Matroska (.mkv)</option>
+                  <option value="mov">QuickTime (.mov)</option>
+                  <option value="avi">AVI (.avi)</option>
+                  <option value="gif-anim">アニメーション GIF (.gif)</option>
+                </optgroup>
+                <optgroup label="音声">
+                  <option value="mp3">MP3 (.mp3)</option>
+                  <option value="wav">WAV (.wav)</option>
+                  <option value="ogg">Ogg Vorbis (.ogg)</option>
+                  <option value="m4a">AAC / M4A (.m4a)</option>
+                  <option value="flac">FLAC (.flac)</option>
+                  <option value="opus">Opus (.opus)</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="toolbox-row">
+              <label for="conv-out">出力先</label>
+              <input
+                id="conv-out"
+                type="text"
+                spellcheck="false"
+                placeholder="(空なら入力と同じフォルダ)"
+              />
+              <button id="conv-pick-out" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="conv-run" class="toolbox-primary" type="button">
+                変換開始
+              </button>
+              <button id="conv-cancel" type="button" disabled>
+                キャンセル
+              </button>
+              <span id="conv-status" class="toolbox-status"></span>
+            </div>
+            <pre id="conv-log" class="toolbox-log"></pre>
+          </section>
 
-        <section class="toolbox-tool" data-tool="vboost" hidden>
-          <h3>動画音量ブースト</h3>
-          <p class="toolbox-note">
-            現在のタブで再生中の動画/音声の音量を 100% 以上に増幅します。
-            ページをリロード/移動するとリセットされるので、再度適用してください。
-          </p>
-          <div class="toolbox-row">
-            <label for="vboost-range">音量</label>
-            <input
-              id="vboost-range"
-              type="range"
-              min="100"
-              max="500"
-              step="10"
-              value="100"
-            />
-            <span id="vboost-value" class="toolbox-status">100%</span>
-          </div>
-          <div class="toolbox-row toolbox-actions">
-            <button id="vboost-apply" class="toolbox-primary" type="button">
-              現在のタブに適用
-            </button>
-            <button id="vboost-reset" type="button">100% に戻す</button>
-            <span id="vboost-status" class="toolbox-status"></span>
-          </div>
-        </section>
+          <section class="toolbox-tool" data-tool="vboost" hidden>
+            <h3>動画音量ブースト</h3>
+            <p class="toolbox-note">
+              現在のタブで再生中の動画/音声の音量を 100% 以上に増幅します。
+              ページをリロード/移動するとリセットされるので、再度適用してください。
+            </p>
+            <div class="toolbox-row">
+              <label for="vboost-range">音量</label>
+              <input
+                id="vboost-range"
+                type="range"
+                min="100"
+                max="500"
+                step="10"
+                value="100"
+              />
+              <span id="vboost-value" class="toolbox-status">100%</span>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="vboost-apply" class="toolbox-primary" type="button">
+                現在のタブに適用
+              </button>
+              <button id="vboost-reset" type="button">100% に戻す</button>
+              <span id="vboost-status" class="toolbox-status"></span>
+            </div>
+          </section>
 
-        <section class="toolbox-tool" data-tool="savehtml" hidden>
-          <h3>ページHTML保存</h3>
-          <p class="toolbox-note">
-            指定 URL のページ HTML を取得して .html ファイルとして保存します。
-            JavaScript 実行後の DOM ではなく、サーバから返される生の HTML が保存されます。
-          </p>
-          <div class="toolbox-row">
-            <label for="savehtml-url">URL</label>
-            <input
-              id="savehtml-url"
-              type="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="https://example.com/"
-            />
-            <button id="savehtml-fill-current" type="button" title="現在のタブ URL を入れる">
-              現在のタブ
-            </button>
-          </div>
-          <div class="toolbox-row">
-            <label for="savehtml-dir">保存先</label>
-            <input id="savehtml-dir" type="text" spellcheck="false" />
-            <button id="savehtml-pick-dir" type="button">参照…</button>
-          </div>
-          <div class="toolbox-row toolbox-actions">
-            <button id="savehtml-run" class="toolbox-primary" type="button">
-              保存
-            </button>
-            <span id="savehtml-status" class="toolbox-status"></span>
-          </div>
-          <pre id="savehtml-log" class="toolbox-log"></pre>
-        </section>
+          <section class="toolbox-tool" data-tool="savehtml" hidden>
+            <h3>ページHTML保存</h3>
+            <p class="toolbox-note">
+              指定 URL のページ HTML を取得して .html ファイルとして保存します。
+              JavaScript 実行後の DOM ではなく、サーバから返される生の HTML
+              が保存されます。
+            </p>
+            <div class="toolbox-row">
+              <label for="savehtml-url">URL</label>
+              <input
+                id="savehtml-url"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://example.com/"
+              />
+              <button
+                id="savehtml-fill-current"
+                type="button"
+                title="現在のタブ URL を入れる"
+              >
+                現在のタブ
+              </button>
+            </div>
+            <div class="toolbox-row">
+              <label for="savehtml-dir">保存先</label>
+              <input id="savehtml-dir" type="text" spellcheck="false" />
+              <button id="savehtml-pick-dir" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="savehtml-run" class="toolbox-primary" type="button">
+                保存
+              </button>
+              <span id="savehtml-status" class="toolbox-status"></span>
+            </div>
+            <pre id="savehtml-log" class="toolbox-log"></pre>
+          </section>
+
+          <section class="toolbox-tool" data-tool="reader" hidden>
+            <h3>リーディングモード</h3>
+            <p class="toolbox-note">
+              現在のタブの本文を抽出して読みやすく表示します。
+              適用中にページをリロード/移動した場合は再適用してください。
+            </p>
+            <div class="toolbox-row toolbox-actions">
+              <button id="reader-apply" class="toolbox-primary" type="button">
+                現在のタブに適用
+              </button>
+              <button id="reader-disable" type="button">解除</button>
+              <span id="reader-status" class="toolbox-status"></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="screenshot" hidden>
+            <h3>スクリーンショット</h3>
+            <p class="toolbox-note">
+              現在のタブの表示領域を PNG として保存します。
+            </p>
+            <div class="toolbox-row">
+              <label for="screenshot-dir">保存先</label>
+              <input id="screenshot-dir" type="text" spellcheck="false" />
+              <button id="screenshot-pick-dir" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="screenshot-run" class="toolbox-primary" type="button">
+                撮影して保存
+              </button>
+              <span id="screenshot-status" class="toolbox-status"></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="json" hidden>
+            <h3>JSON 整形 / 検証</h3>
+            <div class="toolbox-row toolbox-actions">
+              <button id="json-format" class="toolbox-primary" type="button">
+                整形 (2 スペース)
+              </button>
+              <button id="json-format-4" type="button">整形 (4)</button>
+              <button id="json-minify" type="button">ミニファイ</button>
+              <button id="json-sort" type="button">キーをソート</button>
+              <button id="json-copy" type="button">出力をコピー</button>
+              <span id="json-status" class="toolbox-status"></span>
+            </div>
+            <textarea
+              id="json-input"
+              class="toolbox-textarea"
+              placeholder='{"foo":1,"bar":[2,3]}'
+            ></textarea>
+            <textarea
+              id="json-output"
+              class="toolbox-textarea"
+              readonly
+            ></textarea>
+          </section>
+
+          <section class="toolbox-tool" data-tool="base64" hidden>
+            <h3>Base64 エンコード / デコード</h3>
+            <div class="toolbox-grid-2col">
+              <div>
+                <span class="toolbox-sublabel">平文 (UTF-8)</span>
+                <textarea id="b64-plain" class="toolbox-textarea"></textarea>
+              </div>
+              <div>
+                <span class="toolbox-sublabel">Base64</span>
+                <textarea id="b64-encoded" class="toolbox-textarea"></textarea>
+              </div>
+            </div>
+            <div class="toolbox-row">
+              <label
+                ><input id="b64-urlsafe" type="checkbox" /> URL-safe (-_)</label
+              >
+              <span id="b64-status" class="toolbox-status"></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="urlcodec" hidden>
+            <h3>URL エンコード / デコード</h3>
+            <div class="toolbox-grid-2col">
+              <div>
+                <span class="toolbox-sublabel">平文</span>
+                <textarea id="url-plain" class="toolbox-textarea"></textarea>
+              </div>
+              <div>
+                <span class="toolbox-sublabel">エンコード済</span>
+                <textarea id="url-encoded" class="toolbox-textarea"></textarea>
+              </div>
+            </div>
+            <div class="toolbox-row">
+              <label
+                ><input id="url-component" type="checkbox" checked />
+                encodeURIComponent (チェックを外すと encodeURI)</label
+              >
+              <span id="url-status" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row">
+              <label for="url-parse">URL 解析</label>
+              <input
+                id="url-parse"
+                type="text"
+                spellcheck="false"
+                placeholder="https://example.com/path?a=1&b=2"
+              />
+            </div>
+            <pre id="url-parsed" class="toolbox-output"></pre>
+          </section>
+
+          <section class="toolbox-tool" data-tool="hash" hidden>
+            <h3>ハッシュ生成</h3>
+            <p class="toolbox-note">
+              テキストを入力すると SHA-1/256/384/512 を hex で計算します。
+            </p>
+            <textarea
+              id="hash-input"
+              class="toolbox-textarea"
+              placeholder="ここにテキストを入力"
+            ></textarea>
+            <div class="toolbox-row">
+              <label>SHA-1</label>
+              <pre id="hash-sha1" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>SHA-256</label>
+              <pre
+                id="hash-sha256"
+                class="toolbox-output"
+                style="flex: 1"
+              ></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>SHA-384</label>
+              <pre
+                id="hash-sha384"
+                class="toolbox-output"
+                style="flex: 1"
+              ></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>SHA-512</label>
+              <pre
+                id="hash-sha512"
+                class="toolbox-output"
+                style="flex: 1"
+              ></pre>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="uuid" hidden>
+            <h3>UUID 生成</h3>
+            <div class="toolbox-row">
+              <label for="uuid-count">個数</label>
+              <input
+                id="uuid-count"
+                type="number"
+                value="5"
+                min="1"
+                max="1000"
+                style="width: 80px"
+              />
+              <button id="uuid-generate" class="toolbox-primary" type="button">
+                生成
+              </button>
+              <button id="uuid-copy" type="button">コピー</button>
+              <label
+                ><input id="uuid-uppercase" type="checkbox" /> 大文字</label
+              >
+              <label
+                ><input id="uuid-nohyphen" type="checkbox" />
+                ハイフン除去</label
+              >
+            </div>
+            <textarea
+              id="uuid-output"
+              class="toolbox-textarea"
+              readonly
+              style="min-height: 200px"
+            ></textarea>
+          </section>
+
+          <section class="toolbox-tool" data-tool="timestamp" hidden>
+            <h3>タイムスタンプ変換</h3>
+            <div class="toolbox-row">
+              <label>現在</label>
+              <pre id="ts-now" class="toolbox-output" style="flex: 1"></pre>
+              <button id="ts-now-refresh" type="button">更新</button>
+            </div>
+            <div class="toolbox-row">
+              <label for="ts-unix">UNIX 秒</label>
+              <input
+                id="ts-unix"
+                type="text"
+                spellcheck="false"
+                placeholder="1700000000"
+              />
+              <button id="ts-unix-now" type="button">現在を入力</button>
+            </div>
+            <div class="toolbox-row">
+              <label for="ts-iso">ISO 8601</label>
+              <input
+                id="ts-iso"
+                type="text"
+                spellcheck="false"
+                placeholder="2024-01-01T00:00:00Z"
+              />
+            </div>
+            <div class="toolbox-row">
+              <label>ローカル</label>
+              <pre id="ts-local" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>UTC</label>
+              <pre id="ts-utc" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>UNIX ms</label>
+              <pre id="ts-ms" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="regex" hidden>
+            <h3>正規表現テスト</h3>
+            <div class="toolbox-row">
+              <label for="regex-pattern">パターン</label>
+              <input
+                id="regex-pattern"
+                type="text"
+                spellcheck="false"
+                placeholder="\\d+"
+              />
+              <label for="regex-flags">flags</label>
+              <input
+                id="regex-flags"
+                type="text"
+                spellcheck="false"
+                value="g"
+                style="max-width: 80px"
+              />
+            </div>
+            <span class="toolbox-sublabel">テストテキスト</span>
+            <textarea id="regex-input" class="toolbox-textarea"></textarea>
+            <div class="toolbox-row">
+              <span
+                id="regex-status"
+                class="toolbox-status"
+                style="margin-left: 0"
+              ></span>
+            </div>
+            <span class="toolbox-sublabel">ハイライト表示</span>
+            <pre
+              id="regex-highlight"
+              class="toolbox-output"
+              style="min-height: 80px"
+            ></pre>
+            <span class="toolbox-sublabel">マッチ一覧</span>
+            <pre
+              id="regex-matches"
+              class="toolbox-output"
+              style="min-height: 80px"
+            ></pre>
+          </section>
+
+          <section class="toolbox-tool" data-tool="jwt" hidden>
+            <h3>JWT デコーダ</h3>
+            <p class="toolbox-note">
+              署名は検証せず、ヘッダ・ペイロードを Base64URL デコードします。
+            </p>
+            <textarea
+              id="jwt-input"
+              class="toolbox-textarea"
+              placeholder="xxxxx.yyyyy.zzzzz"
+            ></textarea>
+            <div class="toolbox-grid-2col">
+              <div>
+                <span class="toolbox-sublabel">ヘッダ</span>
+                <pre
+                  id="jwt-header"
+                  class="toolbox-output"
+                  style="min-height: 120px"
+                ></pre>
+              </div>
+              <div>
+                <span class="toolbox-sublabel">ペイロード</span>
+                <pre
+                  id="jwt-payload"
+                  class="toolbox-output"
+                  style="min-height: 120px"
+                ></pre>
+              </div>
+            </div>
+            <div class="toolbox-row">
+              <span
+                id="jwt-status"
+                class="toolbox-status"
+                style="margin-left: 0"
+              ></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="color" hidden>
+            <h3>カラー変換</h3>
+            <div class="toolbox-row">
+              <div id="color-swatch" class="toolbox-color-swatch"></div>
+              <input id="color-picker" type="color" value="#2f6fdb" />
+            </div>
+            <div class="toolbox-row">
+              <label for="color-hex">HEX</label>
+              <input
+                id="color-hex"
+                type="text"
+                spellcheck="false"
+                placeholder="#2f6fdb"
+              />
+            </div>
+            <div class="toolbox-row">
+              <label for="color-rgb">RGB</label>
+              <input
+                id="color-rgb"
+                type="text"
+                spellcheck="false"
+                placeholder="rgb(47, 111, 219)"
+              />
+            </div>
+            <div class="toolbox-row">
+              <label for="color-hsl">HSL</label>
+              <input
+                id="color-hsl"
+                type="text"
+                spellcheck="false"
+                placeholder="hsl(216, 70%, 52%)"
+              />
+            </div>
+            <div class="toolbox-row">
+              <span
+                id="color-status"
+                class="toolbox-status"
+                style="margin-left: 0"
+              ></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="diff" hidden>
+            <h3>テキスト Diff</h3>
+            <div class="toolbox-grid-2col">
+              <div>
+                <span class="toolbox-sublabel">左 (原本)</span>
+                <textarea id="diff-left" class="toolbox-textarea"></textarea>
+              </div>
+              <div>
+                <span class="toolbox-sublabel">右 (変更後)</span>
+                <textarea id="diff-right" class="toolbox-textarea"></textarea>
+              </div>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="diff-run" class="toolbox-primary" type="button">
+                比較
+              </button>
+              <span id="diff-status" class="toolbox-status"></span>
+            </div>
+            <pre
+              id="diff-output"
+              class="toolbox-output"
+              style="min-height: 160px"
+            ></pre>
+          </section>
+
+          <section class="toolbox-tool" data-tool="useragent" hidden>
+            <h3>User-Agent / ブラウザ情報</h3>
+            <p class="toolbox-note">
+              この UI Webview の情報です (タブ側 webview は別途)。
+            </p>
+            <div class="toolbox-row">
+              <label>UA</label>
+              <pre id="ua-string" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>言語</label>
+              <pre id="ua-lang" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>プラットフォーム</label>
+              <pre
+                id="ua-platform"
+                class="toolbox-output"
+                style="flex: 1"
+              ></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>画面</label>
+              <pre id="ua-screen" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>タイムゾーン</label>
+              <pre id="ua-tz" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label>オンライン</label>
+              <pre id="ua-online" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="scrape" hidden>
+            <h3>スクレイピング (HTTP 取得 + CSS セレクタ)</h3>
+            <div class="toolbox-row">
+              <label for="scrape-url">URL</label>
+              <input
+                id="scrape-url"
+                type="text"
+                spellcheck="false"
+                placeholder="https://example.com/"
+                style="flex: 1"
+              />
+              <button
+                id="scrape-fill-current"
+                type="button"
+                title="現在のタブ URL を入れる"
+              >
+                現在のタブ
+              </button>
+            </div>
+            <div class="toolbox-row">
+              <label for="scrape-ua">User-Agent</label>
+              <input
+                id="scrape-ua"
+                type="text"
+                spellcheck="false"
+                placeholder="空でデフォルト"
+                style="flex: 1"
+              />
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="scrape-fetch" class="toolbox-primary" type="button">
+                取得
+              </button>
+              <span id="scrape-status" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row">
+              <label for="scrape-selector">CSS セレクタ</label>
+              <input
+                id="scrape-selector"
+                type="text"
+                spellcheck="false"
+                placeholder="a, h1, .item ..."
+                style="flex: 1"
+              />
+              <select id="scrape-extract">
+                <option value="text">テキスト</option>
+                <option value="html">innerHTML</option>
+                <option value="href">href</option>
+                <option value="src">src</option>
+                <option value="outer">outerHTML</option>
+              </select>
+              <button id="scrape-apply" type="button">抽出</button>
+            </div>
+            <div class="toolbox-row" style="align-items: flex-start">
+              <label>結果</label>
+              <pre
+                id="scrape-output"
+                class="toolbox-output"
+                style="flex: 1; max-height: 280px; overflow: auto"
+              ></pre>
+            </div>
+            <div class="toolbox-row" style="align-items: flex-start">
+              <label>生 HTML</label>
+              <textarea
+                id="scrape-raw"
+                class="toolbox-textarea"
+                readonly
+                style="flex: 1; height: 160px"
+              ></textarea>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="unzip" hidden>
+            <h3>アーカイブ解凍</h3>
+            <p class="toolbox-note">
+              対応: zip / tar / tar.gz (tgz) / tar.bz2 (tbz2) / tar.xz (txz) /
+              tar.zst (tzst) / 7z / gz / bz2 / xz / zst (単体圧縮も含む)。
+            </p>
+            <div class="toolbox-row">
+              <label for="unzip-src">アーカイブ</label>
+              <input
+                id="unzip-src"
+                type="text"
+                spellcheck="false"
+                style="flex: 1"
+              />
+              <button id="unzip-pick-src" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row">
+              <label for="unzip-dest">出力先</label>
+              <input
+                id="unzip-dest"
+                type="text"
+                spellcheck="false"
+                style="flex: 1"
+              />
+              <button id="unzip-pick-dest" type="button">参照…</button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="unzip-run" class="toolbox-primary" type="button">
+                解凍
+              </button>
+              <button id="unzip-open" type="button">出力先を開く</button>
+              <span id="unzip-status" class="toolbox-status"></span>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="clipboard" hidden>
+            <h3>クリップボード履歴</h3>
+            <p class="toolbox-note">
+              ローカル保存。LIFO/FIFO/ユニークスタックなどモード選択、自動監視、ピン留め、検索、JSON
+              エクスポート/インポートに対応。
+            </p>
+            <div class="toolbox-row">
+              <label for="clip-mode">モード</label>
+              <select id="clip-mode">
+                <option value="lifo">LIFO (新しいものが上)</option>
+                <option value="fifo">FIFO (古いものが上)</option>
+                <option value="unique">ユニーク (重複除去)</option>
+                <option value="stack">スタック (LIFO + 重複除去)</option>
+              </select>
+              <label for="clip-capacity">上限</label>
+              <input
+                id="clip-capacity"
+                type="number"
+                min="1"
+                max="10000"
+                value="100"
+                style="width: 80px"
+              />
+              <label class="toolbox-inline-check"
+                ><input id="clip-watch" type="checkbox" /> 自動監視 (1s)</label
+              >
+              <label class="toolbox-inline-check"
+                ><input id="clip-no-empty" type="checkbox" checked />
+                空文字を除外</label
+              >
+              <label class="toolbox-inline-check"
+                ><input id="clip-trim" type="checkbox" /> 前後空白を trim</label
+              >
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="clip-capture" class="toolbox-primary" type="button">
+                現在のクリップボードを取り込む
+              </button>
+              <button id="clip-add-manual" type="button">手動で追加</button>
+              <button id="clip-export" type="button">エクスポート</button>
+              <button id="clip-import" type="button">インポート</button>
+              <input
+                id="clip-import-file"
+                type="file"
+                accept=".json,application/json"
+                hidden
+              />
+              <button id="clip-clear-unpinned" type="button">
+                ピン以外を削除
+              </button>
+              <button id="clip-clear" type="button">すべて削除</button>
+              <span id="clip-status" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row">
+              <label for="clip-search">検索</label>
+              <input
+                id="clip-search"
+                type="text"
+                placeholder="フィルタ文字列 / 正規表現 (/.../i)"
+                style="flex: 1"
+              />
+              <span id="clip-count" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row" style="align-items: flex-start">
+              <label for="clip-input">手動入力</label>
+              <textarea
+                id="clip-input"
+                class="toolbox-textarea"
+                placeholder="ここに貼り付けると「手動で追加」で履歴にできます"
+                style="flex: 1; height: 80px"
+              ></textarea>
+            </div>
+            <div class="toolbox-row" style="align-items: flex-start">
+              <label>履歴</label>
+              <ul id="clip-list" class="clip-history" style="flex: 1"></ul>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="filemeta" hidden>
+            <h3>ファイルメタデータ編集 / 偽装</h3>
+            <p class="toolbox-note">
+              ファイルの作成/更新時刻変更、PNG/JPEG の埋め込みメタデータ (EXIF /
+              tEXt 他) の除去ができます。
+            </p>
+            <div class="toolbox-row">
+              <label for="fm-path">ファイル</label>
+              <input
+                id="fm-path"
+                type="text"
+                spellcheck="false"
+                style="flex: 1"
+              />
+              <button id="fm-pick" type="button">参照…</button>
+              <button id="fm-reload" type="button">再読込</button>
+            </div>
+            <div class="toolbox-row">
+              <label>サイズ</label>
+              <pre id="fm-size" class="toolbox-output" style="flex: 1"></pre>
+            </div>
+            <div class="toolbox-row">
+              <label for="fm-mtime">更新時刻</label>
+              <input id="fm-mtime" type="datetime-local" step="1" />
+              <label for="fm-atime">アクセス時刻</label>
+              <input id="fm-atime" type="datetime-local" step="1" />
+              <button id="fm-set-times" class="toolbox-primary" type="button">
+                書き込む
+              </button>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="fm-strip" type="button">
+                画像の埋め込みメタを除去して保存
+              </button>
+              <span id="fm-status" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row" style="align-items: flex-start">
+              <label>画像メタ</label>
+              <pre
+                id="fm-image"
+                class="toolbox-output"
+                style="flex: 1; max-height: 240px; overflow: auto"
+              ></pre>
+            </div>
+
+            <details id="fm-id3-panel" class="toolbox-subpanel" open>
+              <summary>
+                <strong
+                  >音声タグ (MP3 / WAV / FLAC / OGG / Opus / M4A / AAC / AIFF /
+                  APE)</strong
+                >
+              </summary>
+              <p class="toolbox-note">
+                音声ファイルを選択すると自動で読み込みます。空で「書き込む」とそのフィールドは削除されます。各コンテナに適したタグ
+                (ID3v2 / Vorbis Comment / MP4 atom / RIFF INFO / APE)
+                に自動マッピングされます。
+              </p>
+              <div class="toolbox-grid-2col">
+                <div>
+                  <label>Title</label><input id="id3-title" type="text" />
+                </div>
+                <div>
+                  <label>Artist</label><input id="id3-artist" type="text" />
+                </div>
+                <div>
+                  <label>Album</label><input id="id3-album" type="text" />
+                </div>
+                <div>
+                  <label>Album Artist</label
+                  ><input id="id3-album-artist" type="text" />
+                </div>
+                <div>
+                  <label>Year</label><input id="id3-year" type="number" />
+                </div>
+                <div>
+                  <label>Genre</label><input id="id3-genre" type="text" />
+                </div>
+                <div>
+                  <label>Composer</label><input id="id3-composer" type="text" />
+                </div>
+                <div>
+                  <label>Publisher</label
+                  ><input id="id3-publisher" type="text" />
+                </div>
+                <div>
+                  <label>Track #</label><input id="id3-track" type="number" />
+                </div>
+                <div>
+                  <label>Total Tracks</label
+                  ><input id="id3-total-tracks" type="number" />
+                </div>
+                <div>
+                  <label>Disc #</label><input id="id3-disc" type="number" />
+                </div>
+                <div>
+                  <label>Total Discs</label
+                  ><input id="id3-total-discs" type="number" />
+                </div>
+                <div>
+                  <label>BPM</label><input id="id3-bpm" type="number" />
+                </div>
+                <div><label>Key</label><input id="id3-key" type="text" /></div>
+                <div>
+                  <label>Language (3 char)</label
+                  ><input id="id3-lang" type="text" maxlength="3" />
+                </div>
+                <div>
+                  <label>ISRC</label><input id="id3-isrc" type="text" />
+                </div>
+                <div>
+                  <label>Encoded By</label
+                  ><input id="id3-encoded-by" type="text" />
+                </div>
+                <div>
+                  <label>Encoder Settings</label
+                  ><input id="id3-encoder-settings" type="text" />
+                </div>
+                <div>
+                  <label>Copyright</label
+                  ><input id="id3-copyright" type="text" />
+                </div>
+                <div>
+                  <label>Grouping</label><input id="id3-grouping" type="text" />
+                </div>
+                <div>
+                  <label>Subtitle</label><input id="id3-subtitle" type="text" />
+                </div>
+                <div>
+                  <label>Conductor</label
+                  ><input id="id3-conductor" type="text" />
+                </div>
+                <div>
+                  <label>Remixer</label><input id="id3-remixer" type="text" />
+                </div>
+                <div>
+                  <label>Original Artist</label
+                  ><input id="id3-orig-artist" type="text" />
+                </div>
+                <div>
+                  <label>Original Album</label
+                  ><input id="id3-orig-album" type="text" />
+                </div>
+                <div><label>URL</label><input id="id3-url" type="text" /></div>
+              </div>
+              <div class="toolbox-row" style="align-items: flex-start">
+                <label for="id3-comment">Comment</label>
+                <textarea
+                  id="id3-comment"
+                  class="toolbox-textarea"
+                  style="flex: 1; height: 60px"
+                ></textarea>
+              </div>
+              <div class="toolbox-row" style="align-items: flex-start">
+                <label for="id3-lyrics">Lyrics</label>
+                <textarea
+                  id="id3-lyrics"
+                  class="toolbox-textarea"
+                  style="flex: 1; height: 100px"
+                ></textarea>
+              </div>
+              <div class="toolbox-row">
+                <label>アルバムアート</label>
+                <pre
+                  id="id3-art-info"
+                  class="toolbox-output"
+                  style="flex: 1"
+                ></pre>
+                <button id="id3-art-change" type="button">画像を選択…</button>
+                <button id="id3-art-remove" type="button">削除</button>
+              </div>
+              <div class="toolbox-row toolbox-actions">
+                <button id="id3-save" class="toolbox-primary" type="button">
+                  音声タグを書き込む
+                </button>
+                <button id="id3-clear-all" type="button">
+                  すべてのタグを削除
+                </button>
+                <span id="id3-status" class="toolbox-status"></span>
+              </div>
+            </details>
+
+            <details id="fm-pngtext-panel" class="toolbox-subpanel">
+              <summary><strong>PNG テキストチャンク (.png)</strong></summary>
+              <p class="toolbox-note">
+                PNG の tEXt チャンクをキー/値ペアで編集して保存します。保存先は
+                *_tagged.png となります。
+              </p>
+              <div id="png-text-list"></div>
+              <div class="toolbox-row toolbox-actions">
+                <button id="png-text-add" type="button">項目を追加</button>
+                <button
+                  id="png-text-save"
+                  class="toolbox-primary"
+                  type="button"
+                >
+                  保存
+                </button>
+                <span id="png-text-status" class="toolbox-status"></span>
+              </div>
+            </details>
+
+            <details id="fm-generic-panel" class="toolbox-subpanel" open>
+              <summary>
+                <strong
+                  >汎用メタデータ (PDF / DOCX / XLSX / PPTX / EPUB / HTML / EXE
+                  / 動画 ほか)</strong
+                >
+              </summary>
+              <p class="toolbox-note">
+                ファイル種別を自動判定し、編集可能なフィールドを表示します。
+                対応: PDF (Info dict)、OOXML (docProps/core.xml)、EPUB (OPF
+                metadata)、HTML (&lt;meta&gt; タグ)。 読み取り表示:
+                MP4/MOV/MKV/WebM の概要、PE EXE/DLL の
+                VS_VERSION_INFO、ELF/Mach-O ヘッダ、APK/ISO 概要。
+              </p>
+              <div class="toolbox-row">
+                <span id="generic-kind" class="toolbox-status"></span>
+              </div>
+              <div id="generic-fields"></div>
+              <div class="toolbox-row toolbox-actions">
+                <button id="generic-add" type="button">フィールドを追加</button>
+                <button id="generic-save" class="toolbox-primary" type="button">
+                  メタデータを書き込む
+                </button>
+                <span id="generic-status" class="toolbox-status"></span>
+              </div>
+              <div class="toolbox-row" style="align-items: flex-start">
+                <label>追加情報</label>
+                <pre
+                  id="generic-info"
+                  class="toolbox-output"
+                  style="flex: 1; max-height: 240px; overflow: auto"
+                ></pre>
+              </div>
+            </details>
+          </section>
         </div>
       </div>
     </div>
