@@ -464,7 +464,15 @@ window.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     userTyping = false;
-    void navigate(resolveQuery(input.value));
+    const raw = input.value.trim();
+    // "AI:質問" / "ai:質問" → AI ツールに転送して質問
+    const m = raw.match(/^(?:AI|ai|Ai|aI)\s*[:：]\s*(.+)$/);
+    if (m) {
+      const q = m[1].trim();
+      void runAIFromAddressBar(q);
+      return;
+    }
+    void navigate(resolveQuery(raw));
   });
   input.addEventListener("input", () => {
     userTyping = true;
@@ -1303,6 +1311,7 @@ async function setupToolbox(): Promise<void> {
   setupAudioTagsTool();
   setupGenericMetaTool();
   setupMiniGameTool();
+  setupAITool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -4481,4 +4490,1209 @@ function startSuikaGame(
     canvas.removeEventListener("mousemove", onMove);
     canvas.removeEventListener("click", onClick);
   };
+}
+
+// ===== ✨ AI アシスタント (BYOK) =====
+
+interface AISettings {
+  base: string;
+  model: string;
+  key: string;
+}
+
+const AI_PRESETS: Record<string, { base: string; model: string }> = {
+  openai: { base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  groq: {
+    base: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+  },
+  openrouter: {
+    base: "https://openrouter.ai/api/v1",
+    model: "openai/gpt-4o-mini",
+  },
+  ollama: { base: "http://localhost:11434/v1", model: "llama3.2" },
+  custom: { base: "", model: "" },
+};
+
+const AI_STORAGE_KEY = "yuzu-ai-settings-v1";
+
+function loadAISettings(): AISettings {
+  try {
+    const raw = localStorage.getItem(AI_STORAGE_KEY);
+    if (raw) {
+      const j = JSON.parse(raw) as Partial<AISettings>;
+      return {
+        base: j.base ?? AI_PRESETS.openai.base,
+        model: j.model ?? AI_PRESETS.openai.model,
+        key: j.key ?? "",
+      };
+    }
+  } catch {
+    /* noop */
+  }
+  return {
+    base: AI_PRESETS.openai.base,
+    model: AI_PRESETS.openai.model,
+    key: "",
+  };
+}
+
+function saveAISettings(s: AISettings): void {
+  try {
+    localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    /* noop */
+  }
+}
+
+/** HTML から本文テキストを抽出 (script/style/nav/footer を除去) */
+function extractMainText(html: string): { title: string; text: string } {
+  let title = "";
+  let text = "";
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    title = doc.title || "";
+    // 不要要素を削除
+    doc
+      .querySelectorAll(
+        "script, style, noscript, iframe, svg, nav, footer, header, aside, form, .ad, .ads, .advertisement",
+      )
+      .forEach((el) => el.remove());
+    const main =
+      doc.querySelector("article") ||
+      doc.querySelector("main") ||
+      doc.querySelector("[role=main]") ||
+      doc.body;
+    text = (main?.textContent ?? "").replace(/\s+/g, " ").trim();
+  } catch {
+    text = html
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return { title, text };
+}
+
+interface AIChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string | AIContentPart[];
+}
+interface AIContentPart {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: { url: string };
+}
+
+async function callOpenAICompatible(
+  settings: AISettings,
+  messages: AIChatMessage[],
+  signal: AbortSignal,
+  onDelta?: (chunk: string) => void,
+): Promise<string> {
+  const base = settings.base.replace(/\/+$/, "");
+  const url = `${base}/chat/completions`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (settings.key) headers["Authorization"] = `Bearer ${settings.key}`;
+  const stream = !!onDelta;
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: settings.model,
+      messages,
+      temperature: 0.4,
+      stream,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = await res.text();
+    } catch {
+      /* noop */
+    }
+    throw new Error(`HTTP ${res.status}: ${detail.slice(0, 500)}`);
+  }
+  if (!stream) {
+    const j = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+      error?: { message?: string };
+    };
+    if (j.error?.message) throw new Error(j.error.message);
+    const content = j.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      throw new Error("APIレスポンスにメッセージがありません");
+    }
+    return content;
+  }
+  // SSE ストリーミング解析
+  if (!res.body) throw new Error("ストリーミング応答が空です");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let acc = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line || !line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data === "[DONE]") return acc;
+      try {
+        const j = JSON.parse(data) as {
+          choices?: { delta?: { content?: string } }[];
+          error?: { message?: string };
+        };
+        if (j.error?.message) throw new Error(j.error.message);
+        const piece = j.choices?.[0]?.delta?.content;
+        if (typeof piece === "string" && piece.length > 0) {
+          acc += piece;
+          onDelta!(piece);
+        }
+      } catch (e) {
+        // パース失敗は無視 (一部プロバイダのコメント行)
+        if (e instanceof Error && e.message.includes("[")) throw e;
+      }
+    }
+  }
+  return acc;
+}
+
+let aiPageCache: { url: string; title: string; text: string } | null = null;
+let aiAbort: AbortController | null = null;
+
+function setupAITool(): void {
+  const presetSel = $id<HTMLSelectElement>("ai-preset");
+  const presetApply = $id<HTMLButtonElement>("ai-preset-apply");
+  const baseEl = $id<HTMLInputElement>("ai-base");
+  const modelEl = $id<HTMLInputElement>("ai-model");
+  const keyEl = $id<HTMLInputElement>("ai-key");
+  const keyToggle = $id<HTMLButtonElement>("ai-key-toggle");
+  const saveBtn = $id<HTMLButtonElement>("ai-save");
+  const sumBtn = $id<HTMLButtonElement>("ai-summarize");
+  const trBtn = $id<HTMLButtonElement>("ai-translate");
+  const tagBtn = $id<HTMLButtonElement>("ai-tags");
+  const buzzBtn = $id<HTMLButtonElement>("ai-buzz");
+  const tldrBtn = $id<HTMLButtonElement>("ai-tldr");
+  const cancelBtn = $id<HTMLButtonElement>("ai-cancel");
+  const askBtn = $id<HTMLButtonElement>("ai-ask");
+  const questionEl = $id<HTMLInputElement>("ai-question");
+  const incUrl = $id<HTMLInputElement>("ai-include-url");
+  const fetchFresh = $id<HTMLInputElement>("ai-fetch-fresh");
+  const maxCharsEl = $id<HTMLInputElement>("ai-maxchars");
+  const out = $id<HTMLTextAreaElement>("ai-output");
+  const statusEl = $id<HTMLSpanElement>("ai-status");
+  const copyBtn = $id<HTMLButtonElement>("ai-copy");
+  const dlBtn = $id<HTMLButtonElement>("ai-download");
+  const clearBtn = $id<HTMLButtonElement>("ai-clear");
+  if (!baseEl || !modelEl || !keyEl || !out) return;
+
+  // 初期値ロード
+  const init = loadAISettings();
+  baseEl.value = init.base;
+  modelEl.value = init.model;
+  keyEl.value = init.key;
+
+  presetApply?.addEventListener("click", () => {
+    const k = presetSel?.value ?? "openai";
+    const p = AI_PRESETS[k];
+    if (!p) return;
+    if (k !== "custom") {
+      baseEl.value = p.base;
+      modelEl.value = p.model;
+    }
+  });
+  keyToggle?.addEventListener("click", () => {
+    if (keyEl.type === "password") {
+      keyEl.type = "text";
+      keyToggle.textContent = "隠す";
+    } else {
+      keyEl.type = "password";
+      keyToggle.textContent = "表示";
+    }
+  });
+  saveBtn?.addEventListener("click", () => {
+    saveAISettings({
+      base: baseEl.value.trim(),
+      model: modelEl.value.trim(),
+      key: keyEl.value,
+    });
+    if (statusEl) statusEl.textContent = "設定を保存しました";
+  });
+  // 入力時にも自動保存 (キーは blur 時のみ)
+  baseEl.addEventListener("change", () =>
+    saveAISettings({
+      base: baseEl.value.trim(),
+      model: modelEl.value.trim(),
+      key: keyEl.value,
+    }),
+  );
+  modelEl.addEventListener("change", () =>
+    saveAISettings({
+      base: baseEl.value.trim(),
+      model: modelEl.value.trim(),
+      key: keyEl.value,
+    }),
+  );
+
+  const setBusy = (busy: boolean): void => {
+    [sumBtn, trBtn, tagBtn, buzzBtn, tldrBtn, askBtn].forEach((b) => {
+      if (b) b.disabled = busy;
+    });
+    if (cancelBtn) cancelBtn.disabled = !busy;
+  };
+
+  cancelBtn?.addEventListener("click", () => {
+    aiAbort?.abort();
+    aiAbort = null;
+    setBusy(false);
+    if (statusEl) statusEl.textContent = "停止しました";
+  });
+
+  copyBtn?.addEventListener("click", async () => {
+    if (!out.value) return;
+    try {
+      await navigator.clipboard.writeText(out.value);
+      if (statusEl) statusEl.textContent = "コピーしました";
+    } catch {
+      if (statusEl) statusEl.textContent = "コピー失敗";
+    }
+  });
+  dlBtn?.addEventListener("click", () => {
+    if (!out.value) return;
+    const blob = new Blob([out.value], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `yuzu-ai-${stamp}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  clearBtn?.addEventListener("click", () => {
+    out.value = "";
+    aiPageCache = null;
+    if (statusEl) statusEl.textContent = "クリアしました";
+  });
+
+  /** 現在タブの本文を取得 (キャッシュあり) */
+  const ensurePage = async (): Promise<{
+    url: string;
+    title: string;
+    text: string;
+  }> => {
+    const a = activeTab();
+    if (!a) throw new Error("アクティブなタブがありません");
+    if (
+      !fetchFresh?.checked &&
+      aiPageCache &&
+      aiPageCache.url === a.url &&
+      aiPageCache.text
+    ) {
+      return aiPageCache;
+    }
+    if (!/^https?:\/\//i.test(a.url)) {
+      throw new Error("http(s) のページのみ対応しています");
+    }
+    if (statusEl) statusEl.textContent = "ページを取得中…";
+    const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+      url: a.url,
+      userAgent: null,
+    });
+    const { title, text } = extractMainText(r.body);
+    const cache = { url: a.url, title: title || a.title || a.url, text };
+    aiPageCache = cache;
+    return cache;
+  };
+
+  const truncate = (s: string): string => {
+    const max = Math.max(
+      500,
+      Math.min(200000, Number(maxCharsEl?.value) || 20000),
+    );
+    return s.length > max ? s.slice(0, max) + "\n\n[…以下省略]" : s;
+  };
+
+  const buildContext = (page: {
+    url: string;
+    title: string;
+    text: string;
+  }): string => {
+    const parts: string[] = [];
+    parts.push(`# タイトル\n${page.title}`);
+    if (incUrl?.checked) parts.push(`# URL\n${page.url}`);
+    parts.push(`# 本文\n${truncate(page.text)}`);
+    return parts.join("\n\n");
+  };
+
+  const run = async (
+    actionLabel: string,
+    systemPrompt: string,
+    userTemplate: (ctx: string) => string,
+  ): Promise<void> => {
+    const settings: AISettings = {
+      base: baseEl.value.trim(),
+      model: modelEl.value.trim(),
+      key: keyEl.value,
+    };
+    if (!settings.base || !settings.model) {
+      if (statusEl)
+        statusEl.textContent = "Base URL とモデルを設定してください";
+      return;
+    }
+    saveAISettings(settings);
+    setBusy(true);
+    aiAbort = new AbortController();
+    try {
+      const page = await ensurePage();
+      const ctx = buildContext(page);
+      if (statusEl)
+        statusEl.textContent = `${actionLabel}中… (${page.text.length} chars)`;
+      const streamEl = $id<HTMLInputElement>("ai-stream");
+      const useStream = streamEl?.checked !== false;
+      out.value = "";
+      const onDelta = useStream
+        ? (chunk: string): void => {
+            out.value += chunk;
+            out.scrollTop = out.scrollHeight;
+          }
+        : undefined;
+      const result = await callOpenAICompatible(
+        settings,
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userTemplate(ctx) },
+        ],
+        aiAbort.signal,
+        onDelta,
+      );
+      if (!useStream) out.value = result.trim();
+      if (statusEl) statusEl.textContent = `${actionLabel} 完了`;
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    } finally {
+      setBusy(false);
+      aiAbort = null;
+    }
+  };
+
+  sumBtn?.addEventListener("click", () => {
+    void run(
+      "要約",
+      "あなたは優秀な技術ライターです。Web ページの内容を読みやすい日本語の Markdown で要約してください。",
+      (ctx) =>
+        `次の Web ページを Markdown で要約してください。\n\n要件:\n- 冒頭に 2〜3 行の概要\n- ## 要点 セクションに箇条書きで 5〜8 個\n- ## 詳細 セクションに段落で深掘り\n- 末尾に ## キーワード として 5 個程度のタグ\n- 出力は Markdown のみ。前置きは不要。\n\n${ctx}`,
+    );
+  });
+  tldrBtn?.addEventListener("click", () => {
+    void run(
+      "TL;DR",
+      "あなたは要点抽出のプロです。回答は厳密に 3 行、絵文字なし、日本語。",
+      (ctx) =>
+        `次のページを 3 行で要約してください。各行は 60 文字以内。出力は箇条書き 3 行のみ。\n\n${ctx}`,
+    );
+  });
+  trBtn?.addEventListener("click", () => {
+    void run(
+      "翻訳",
+      "あなたは正確な翻訳者です。ページ本文を自然な日本語に翻訳して Markdown で返してください。",
+      (ctx) =>
+        `次の Web ページの本文を、見出し構造を保ったまま自然な日本語の Markdown に翻訳してください。固有名詞や URL はそのまま。前置き不要。\n\n${ctx}`,
+    );
+  });
+  tagBtn?.addEventListener("click", () => {
+    void run(
+      "タグ抽出",
+      "あなたは SEO/SNS マーケターです。日本語で簡潔に。",
+      (ctx) =>
+        `次のページから以下を Markdown で出力してください:\n\n## 主要キーワード\n- (10 個)\n\n## SEO 用ロングテール\n- (5 個)\n\n## SNS ハッシュタグ\n#tag1 #tag2 ... (10 個、半角 #、スペース区切り)\n\n${ctx}`,
+    );
+  });
+  buzzBtn?.addEventListener("click", () => {
+    void run(
+      "SNS 文生成",
+      "あなたは X (旧 Twitter) のバズ投稿を量産する SNS の達人です。釣りすぎず、要点を引き、続きが気になる書き方をします。",
+      (ctx) =>
+        `次のページを紹介するための SNS 投稿案を Markdown で 5 案出してください。\n\n各案:\n- 140 文字以内 (URL 含めず)\n- フック→要点→CTA の構成\n- 末尾に 2〜4 個のハッシュタグ\n- 1案ごとに見出し ### 案N (狙い: ...) を付け、本文をコードブロックで囲む\n\n${ctx}`,
+    );
+  });
+  askBtn?.addEventListener("click", () => {
+    const q = (questionEl?.value ?? "").trim();
+    if (!q) {
+      if (statusEl) statusEl.textContent = "質問を入力してください";
+      return;
+    }
+    void run(
+      "回答",
+      "あなたは Web ページの内容に基づいて質問に答えるアシスタントです。ページに書かれていない事は推測せず、根拠が無ければそう述べてください。回答は日本語の Markdown。",
+      (ctx) => `# 質問\n${q}\n\n# 参照ページ\n${ctx}`,
+    );
+  });
+  questionEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      askBtn?.click();
+    }
+  });
+
+  setupAIExtras();
+}
+
+// ===== AI 拡張機能 =====
+
+function getAISettingsOrAlert(statusFn?: (s: string) => void): AISettings | null {
+  const s = loadAISettings();
+  // 入力欄優先
+  const baseEl = document.getElementById("ai-base") as HTMLInputElement | null;
+  const modelEl = document.getElementById("ai-model") as HTMLInputElement | null;
+  const keyEl = document.getElementById("ai-key") as HTMLInputElement | null;
+  const merged: AISettings = {
+    base: (baseEl?.value || s.base).trim(),
+    model: (modelEl?.value || s.model).trim(),
+    key: keyEl?.value || s.key,
+  };
+  if (!merged.base || !merged.model) {
+    statusFn?.("AI 設定 (Base URL / モデル) を入力してください");
+    return null;
+  }
+  return merged;
+}
+
+async function aiEnsurePage(): Promise<{
+  url: string;
+  title: string;
+  text: string;
+}> {
+  const a = activeTab();
+  if (!a) throw new Error("アクティブなタブがありません");
+  if (aiPageCache && aiPageCache.url === a.url && aiPageCache.text) {
+    return aiPageCache;
+  }
+  if (!/^https?:\/\//i.test(a.url)) {
+    throw new Error("http(s) のページのみ対応");
+  }
+  const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+    url: a.url,
+    userAgent: null,
+  });
+  const { title, text } = extractMainText(r.body);
+  const cache = { url: a.url, title: title || a.title || a.url, text };
+  aiPageCache = cache;
+  return cache;
+}
+
+/** AI ツールセクションを開いて指定 ID にフォーカス */
+function aiOpenTool(focusId?: string): void {
+  void openToolboxPanel().then(() => {
+    document
+      .querySelectorAll<HTMLButtonElement>("#toolbox-nav .toolbox-nav-item")
+      .forEach((b) => {
+        b.classList.toggle("active", b.dataset.tool === "ai");
+      });
+    document
+      .querySelectorAll<HTMLElement>("#toolbox-content .toolbox-tool")
+      .forEach((s) => {
+        s.hidden = s.dataset.tool !== "ai";
+      });
+    if (focusId) {
+      const el = document.getElementById(focusId);
+      if (el && "focus" in el) (el as HTMLElement).focus();
+    }
+  });
+}
+
+/** アドレスバーから "AI:..." で呼ばれた時の処理: AI ツールを開いて質問を流す */
+async function runAIFromAddressBar(question: string): Promise<void> {
+  aiOpenTool("ai-question");
+  const qEl = document.getElementById("ai-question") as HTMLInputElement | null;
+  if (qEl) qEl.value = question;
+  // 質問ボタンクリック
+  const askBtn = document.getElementById("ai-ask") as HTMLButtonElement | null;
+  setTimeout(() => askBtn?.click(), 100);
+}
+
+/** ストリーミング対応の汎用呼び出し (出力先 textarea を渡す) */
+async function aiInvoke(
+  out: HTMLTextAreaElement,
+  systemPrompt: string,
+  user: string | AIChatMessage[],
+  statusFn?: (s: string) => void,
+  forceModel?: string,
+): Promise<string> {
+  const settings = getAISettingsOrAlert(statusFn);
+  if (!settings) return "";
+  if (forceModel) settings.model = forceModel;
+  aiAbort?.abort();
+  aiAbort = new AbortController();
+  const streamEl = document.getElementById("ai-stream") as HTMLInputElement | null;
+  const useStream = streamEl?.checked !== false;
+  out.value = "";
+  const messages: AIChatMessage[] = Array.isArray(user)
+    ? [{ role: "system", content: systemPrompt }, ...user]
+    : [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: user },
+      ];
+  try {
+    const result = await callOpenAICompatible(
+      settings,
+      messages,
+      aiAbort.signal,
+      useStream
+        ? (chunk) => {
+            out.value += chunk;
+            out.scrollTop = out.scrollHeight;
+          }
+        : undefined,
+    );
+    if (!useStream) out.value = result.trim();
+    statusFn?.("完了");
+    return out.value;
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return "";
+    statusFn?.(`エラー: ${String(e)}`);
+    return "";
+  } finally {
+    aiAbort = null;
+  }
+}
+
+function setupAIExtras(): void {
+  setupAIChat();
+  setupAITextOps();
+  setupAIMedia();
+  setupAIMultiTranslate();
+  setupAIAnki();
+  setupAIBookmarkTag();
+}
+
+// --- 💬 チャット ---
+
+interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+const aiChatHistory: ChatTurn[] = [];
+let aiChatPageUrl: string | null = null;
+
+function renderChatLog(): void {
+  const log = document.getElementById("ai-chat-log");
+  if (!log) return;
+  log.innerHTML = "";
+  for (const t of aiChatHistory) {
+    const row = document.createElement("div");
+    row.style.marginBottom = "8px";
+    const who = document.createElement("strong");
+    who.textContent = t.role === "user" ? "🧑 You: " : "🤖 AI: ";
+    who.style.color = t.role === "user" ? "#4a9" : "#a94";
+    row.appendChild(who);
+    const txt = document.createElement("span");
+    txt.textContent = t.content;
+    row.appendChild(txt);
+    log.appendChild(row);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function setupAIChat(): void {
+  const input = document.getElementById("ai-chat-input") as HTMLInputElement | null;
+  const sendBtn = document.getElementById("ai-chat-send") as HTMLButtonElement | null;
+  const clearBtn = document.getElementById("ai-chat-clear") as HTMLButtonElement | null;
+  const log = document.getElementById("ai-chat-log") as HTMLDivElement | null;
+  if (!input || !sendBtn || !log) return;
+
+  clearBtn?.addEventListener("click", () => {
+    aiChatHistory.length = 0;
+    aiChatPageUrl = null;
+    renderChatLog();
+  });
+
+  const send = async (): Promise<void> => {
+    const q = input.value.trim();
+    if (!q) return;
+    input.value = "";
+    sendBtn.disabled = true;
+    try {
+      const page = await aiEnsurePage();
+      // ページ変更で履歴リセット (推奨)
+      if (aiChatPageUrl && aiChatPageUrl !== page.url) {
+        aiChatHistory.length = 0;
+      }
+      aiChatPageUrl = page.url;
+      aiChatHistory.push({ role: "user", content: q });
+      renderChatLog();
+
+      const settings = getAISettingsOrAlert((s) => {
+        log.innerHTML = `<em>${s}</em>`;
+      });
+      if (!settings) return;
+
+      // システムは初回だけページコンテキストを含めた長文、以降は履歴ベース
+      const sys = `あなたは親切な日本語アシスタントです。以下の Web ページを読んだ上で、ユーザーと連続して会話してください。ページに無い事は推測せず、根拠が無ければそう述べる。\n\n# ページタイトル\n${page.title}\n# URL\n${page.url}\n# 本文 (一部抜粋)\n${page.text.slice(0, 16000)}`;
+      const messages: AIChatMessage[] = [
+        { role: "system", content: sys },
+        ...aiChatHistory.map<AIChatMessage>((t) => ({
+          role: t.role,
+          content: t.content,
+        })),
+      ];
+
+      // ストリーミング表示用に仮のアシスタントターンを追加
+      aiChatHistory.push({ role: "assistant", content: "" });
+      renderChatLog();
+      const lastIdx = aiChatHistory.length - 1;
+
+      aiAbort?.abort();
+      aiAbort = new AbortController();
+      const streamEl = document.getElementById("ai-stream") as HTMLInputElement | null;
+      const useStream = streamEl?.checked !== false;
+      try {
+        const result = await callOpenAICompatible(
+          settings,
+          messages,
+          aiAbort.signal,
+          useStream
+            ? (chunk) => {
+                aiChatHistory[lastIdx].content += chunk;
+                renderChatLog();
+              }
+            : undefined,
+        );
+        if (!useStream) {
+          aiChatHistory[lastIdx].content = result.trim();
+          renderChatLog();
+        }
+      } catch (e) {
+        if ((e as Error).name !== "AbortError") {
+          aiChatHistory[lastIdx].content = `[エラー] ${String(e)}`;
+          renderChatLog();
+        }
+      } finally {
+        aiAbort = null;
+      }
+    } catch (e) {
+      log.innerHTML = `<em>エラー: ${String(e)}</em>`;
+    } finally {
+      sendBtn.disabled = false;
+    }
+  };
+
+  sendBtn.addEventListener("click", () => void send());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      void send();
+    }
+  });
+}
+
+// --- 📋 テキスト操作 ---
+
+function setupAITextOps(): void {
+  const ta = document.getElementById("ai-text-input") as HTMLTextAreaElement | null;
+  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const status = (s: string): void => {
+    if (statusEl) statusEl.textContent = s;
+  };
+  if (!ta || !out) return;
+
+  document.getElementById("ai-text-paste")?.addEventListener("click", async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      ta.value = t;
+      status(`貼り付け ${t.length} 文字`);
+    } catch {
+      status("クリップボードを読めません");
+    }
+  });
+  document.getElementById("ai-text-clear")?.addEventListener("click", () => {
+    ta.value = "";
+  });
+
+  const requireText = (): string | null => {
+    const t = ta.value.trim();
+    if (!t) {
+      status("テキストを入力してください");
+      return null;
+    }
+    return t;
+  };
+
+  document.getElementById("ai-text-translate")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    void aiInvoke(
+      out,
+      "あなたは正確で自然な翻訳者です。原文の言語を自動判定して日本語に翻訳。前置き不要。",
+      `次のテキストを日本語に翻訳してください:\n\n${t}`,
+      status,
+    );
+  });
+  document.getElementById("ai-text-explain")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    void aiInvoke(
+      out,
+      "あなたは分かりやすい日本語の解説者です。中学生にも分かるように。",
+      `次のテキストを日本語で噛み砕いて解説してください。専門用語は (補足) で簡潔に説明。\n\n${t}`,
+      status,
+    );
+  });
+  document.getElementById("ai-text-rewrite")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    void aiInvoke(
+      out,
+      "あなたは文章校正の専門家です。意味を変えずに自然で読みやすい日本語にします。",
+      `次の文章を、意味を変えずに自然な日本語に書き直してください。誤字脱字も修正。出力は本文のみ。\n\n${t}`,
+      status,
+    );
+  });
+  document.getElementById("ai-text-code")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    const lang = (document.getElementById("ai-code-lang") as HTMLInputElement | null)?.value.trim() || "auto";
+    void aiInvoke(
+      out,
+      "あなたは熟練のソフトウェアエンジニアです。コードを正確に日本語で説明します。",
+      `次のコード (言語: ${lang}) を Markdown で説明してください。\n\n# 出力フォーマット\n## 概要\n## 行ごとの解説 (重要箇所のみ)\n## 注意点 / バグ可能性\n## より良い書き方の提案 (あれば)\n\n\`\`\`${lang === "auto" ? "" : lang}\n${t}\n\`\`\``,
+      status,
+    );
+  });
+  document.getElementById("ai-text-json")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    void aiInvoke(
+      out,
+      "あなたは API/データ構造の解説者です。",
+      `次の JSON/データ構造を日本語で説明してください。\n\n# 出力\n## 概要\n## フィールド一覧 (Markdown 表: 名前 | 型 | 意味)\n## サンプル用途\n\n\`\`\`json\n${t}\n\`\`\``,
+      status,
+    );
+  });
+  document.getElementById("ai-text-mail")?.addEventListener("click", () => {
+    const t = requireText();
+    if (!t) return;
+    const tone = (document.getElementById("ai-mail-tone") as HTMLSelectElement | null)?.value || "ビジネス丁寧";
+    void aiInvoke(
+      out,
+      "あなたは日本語ビジネスメールのプロです。簡潔・敬意・要点を明確に。",
+      `次の受信メールに対する返信案を「${tone}」のトーンで 2 案作ってください。\n\n# 出力\n## 案1\n件名: ...\n本文:\n...\n\n## 案2\n件名: ...\n本文:\n...\n\n# 受信メール\n${t}`,
+      status,
+    );
+  });
+}
+
+// --- 🎬 メディア (YouTube / 画像 Vision / ファイル) ---
+
+async function fetchYoutubeTranscript(videoUrl: string): Promise<string> {
+  const m = videoUrl.match(/[?&]v=([\w-]{11})/) || videoUrl.match(/youtu\.be\/([\w-]{11})/);
+  if (!m) throw new Error("YouTube 動画 URL ではありません");
+  const id = m[1];
+  // ページ HTML から captionTracks を取り出す
+  const watch = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+    url: `https://www.youtube.com/watch?v=${id}`,
+    userAgent: null,
+  });
+  const html = watch.body;
+  const tracksMatch = html.match(/"captionTracks":(\[.*?\])/);
+  if (!tracksMatch) throw new Error("字幕トラックが見つかりません");
+  let tracks: { baseUrl: string; languageCode?: string; vssId?: string }[] = [];
+  try {
+    tracks = JSON.parse(tracksMatch[1].replace(/\\u0026/g, "&"));
+  } catch {
+    throw new Error("字幕トラックの解析に失敗");
+  }
+  if (tracks.length === 0) throw new Error("字幕がありません");
+  // ja → en → 先頭 の優先で選ぶ
+  const pick =
+    tracks.find((t) => t.languageCode === "ja") ||
+    tracks.find((t) => t.languageCode === "en") ||
+    tracks[0];
+  const url = pick.baseUrl.replace(/&fmt=\w+/, "") + "&fmt=vtt";
+  const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+    url,
+    userAgent: null,
+  });
+  // VTT → プレーンテキスト
+  const lines: string[] = [];
+  for (const line of r.body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/^WEBVTT/.test(t)) continue;
+    if (/^\d+$/.test(t)) continue;
+    if (/-->/.test(t)) continue;
+    if (/^NOTE\b/.test(t)) continue;
+    if (/^STYLE/.test(t)) continue;
+    lines.push(t.replace(/<[^>]+>/g, ""));
+  }
+  return lines.join(" ").replace(/\s+/g, " ").trim();
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+
+async function fileToText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsText(file);
+  });
+}
+
+function setupAIMedia(): void {
+  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const status = (s: string): void => {
+    if (statusEl) statusEl.textContent = s;
+  };
+  if (!out) return;
+
+  document.getElementById("ai-yt-summarize")?.addEventListener("click", async () => {
+    const a = activeTab();
+    if (!a) {
+      status("アクティブなタブがありません");
+      return;
+    }
+    status("YouTube 字幕取得中…");
+    try {
+      const transcript = await fetchYoutubeTranscript(a.url);
+      const max = 30000;
+      const text = transcript.length > max ? transcript.slice(0, max) + " […省略]" : transcript;
+      void aiInvoke(
+        out,
+        "あなたは動画内容の要約者です。冗長な相槌は省き、要点を構造化して日本語 Markdown で返します。",
+        `以下は YouTube 動画の字幕全文です。日本語で要約してください。\n\n# 出力\n## 一言でいうと\n## 章立て要約 (5〜10 個、見出し+1〜2 行)\n## 重要キーワード\n## 結論 / 学び\n\n# 字幕\n${text}`,
+        status,
+      );
+    } catch (e) {
+      status(`エラー: ${String(e)}`);
+    }
+  });
+
+  const imgFile = document.getElementById("ai-image-file") as HTMLInputElement | null;
+
+  const runVision = async (prompt: string, sysPrompt: string): Promise<void> => {
+    const f = imgFile?.files?.[0];
+    if (!f) {
+      status("画像を選択してください");
+      return;
+    }
+    status("画像を送信中…");
+    try {
+      const dataUrl = await fileToDataUrl(f);
+      void aiInvoke(
+        out,
+        sysPrompt,
+        [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+        status,
+      );
+    } catch (e) {
+      status(`エラー: ${String(e)}`);
+    }
+  };
+
+  document.getElementById("ai-image-ocr")?.addEventListener("click", () => {
+    void runVision(
+      "この画像に写っている全てのテキストを正確に書き起こしてください。レイアウトは保ちつつ、純粋なテキストのみを返してください。前置き不要。",
+      "あなたは高精度 OCR エンジンです。",
+    );
+  });
+  document.getElementById("ai-image-describe")?.addEventListener("click", () => {
+    void runVision(
+      "この画像の内容を日本語で詳細に説明してください。被写体・構図・推測される文脈・読み取れるテキストの順で。",
+      "あなたは画像の説明者です。日本語で。",
+    );
+  });
+
+  const fileEl = document.getElementById("ai-file-input") as HTMLInputElement | null;
+  document.getElementById("ai-file-summarize")?.addEventListener("click", async () => {
+    const f = fileEl?.files?.[0];
+    if (!f) {
+      status("ファイルを選択してください");
+      return;
+    }
+    status(`ファイル読込中 (${f.name})…`);
+    try {
+      let text = await fileToText(f);
+      // HTML 系は本文抽出
+      if (/\.html?$/i.test(f.name)) {
+        text = extractMainText(text).text;
+      }
+      // SRT/VTT は時刻削除
+      if (/\.(srt|vtt)$/i.test(f.name)) {
+        text = text
+          .split(/\r?\n/)
+          .filter(
+            (l) =>
+              l.trim() &&
+              !/^\d+$/.test(l.trim()) &&
+              !/-->/.test(l) &&
+              !/^WEBVTT/.test(l),
+          )
+          .join(" ");
+      }
+      const max = 60000;
+      if (text.length > max) text = text.slice(0, max) + "\n\n[…以下省略]";
+      void aiInvoke(
+        out,
+        "あなたは正確な要約者です。日本語 Markdown で簡潔に。",
+        `次のファイル (${f.name}) を日本語で要約してください。\n\n# 出力\n## 概要 (3 行)\n## 要点\n## 詳細\n## キーワード\n\n# 内容\n${text}`,
+        status,
+      );
+    } catch (e) {
+      status(`エラー: ${String(e)}`);
+    }
+  });
+}
+
+// --- 🌍 多言語翻訳 (新タブ) ---
+
+function setupAIMultiTranslate(): void {
+  const goBtn = document.getElementById("ai-mt-go") as HTMLButtonElement | null;
+  const langSel = document.getElementById("ai-mt-lang") as HTMLSelectElement | null;
+  const parallelEl = document.getElementById("ai-mt-parallel") as HTMLInputElement | null;
+  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const status = (s: string): void => {
+    if (statusEl) statusEl.textContent = s;
+  };
+  if (!goBtn || !langSel) return;
+
+  goBtn.addEventListener("click", async () => {
+    const lang = langSel.value;
+    const parallel = !!parallelEl?.checked;
+    const settings = getAISettingsOrAlert(status);
+    if (!settings) return;
+    try {
+      status(`${lang} に翻訳中…`);
+      const page = await aiEnsurePage();
+      const max = 30000;
+      const src = page.text.length > max ? page.text.slice(0, max) + " […省略]" : page.text;
+      aiAbort?.abort();
+      aiAbort = new AbortController();
+      const result = await callOpenAICompatible(
+        settings,
+        [
+          {
+            role: "system",
+            content: `あなたは正確な翻訳者です。出力は ${lang} のみ。前置きや解説は不要。Markdown 構造を保つ。`,
+          },
+          {
+            role: "user",
+            content: `次のページを ${lang} に翻訳してください。\n\n# タイトル\n${page.title}\n\n# 本文\n${src}`,
+          },
+        ],
+        aiAbort.signal,
+      );
+      aiAbort = null;
+      const escaped = (s: string): string =>
+        s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      const body = parallel
+        ? `<div class="col"><h2>原文</h2><pre>${escaped(page.text.slice(0, max))}</pre></div><div class="col"><h2>${escaped(lang)}</h2><pre>${escaped(result)}</pre></div>`
+        : `<div class="col full"><h2>${escaped(lang)}</h2><pre>${escaped(result)}</pre></div>`;
+      const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${escaped(page.title)} - ${escaped(lang)} 翻訳</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:16px;background:#fafafa;color:#222;line-height:1.7}
+h1{font-size:18px;margin:0 0 12px}
+h2{font-size:14px;margin:0 0 8px;color:#666;border-bottom:1px solid #ddd;padding-bottom:4px}
+.wrap{display:flex;gap:16px}
+.col{flex:1;min-width:0;background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px}
+.col.full{flex:1}
+pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:0;font-size:14px}
+.src{font-size:12px;color:#888;margin-bottom:12px}
+.src a{color:#48a}
+</style></head><body>
+<h1>🌍 ${escaped(lang)} 翻訳</h1>
+<div class="src">原文: <a href="${escaped(page.url)}">${escaped(page.url)}</a></div>
+<div class="wrap">${body}</div>
+</body></html>`;
+      const dataUrl = "data:text/html;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(html)));
+      await tabNew(dataUrl);
+      status(`${lang} 翻訳タブを開きました`);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") status(`エラー: ${String(e)}`);
+    }
+  });
+}
+
+// --- 🎴 Anki カード ---
+
+let aiAnkiLastCsv = "";
+
+function setupAIAnki(): void {
+  const goBtn = document.getElementById("ai-anki-go") as HTMLButtonElement | null;
+  const csvBtn = document.getElementById("ai-anki-csv") as HTMLButtonElement | null;
+  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const status = (s: string): void => {
+    if (statusEl) statusEl.textContent = s;
+  };
+  if (!goBtn || !out) return;
+
+  goBtn.addEventListener("click", async () => {
+    const count = Math.max(
+      3,
+      Math.min(40, Number((document.getElementById("ai-anki-count") as HTMLInputElement | null)?.value) || 10),
+    );
+    const level = (document.getElementById("ai-anki-level") as HTMLSelectElement | null)?.value || "標準";
+    try {
+      status("ページ取得中…");
+      const page = await aiEnsurePage();
+      const text = await aiInvoke(
+        out,
+        "あなたは熟練の学習設計者です。出力は厳密に JSON 配列のみ (前置きや ``` も付けない)。各要素は { front, back } の 2 フィールドだけ。",
+        `次のページから「${level}」レベルの暗記カードを ${count} 枚生成してください。\n- front: 50 文字以内の問い\n- back: 200 文字以内の答え (具体的に)\n- 重複を避け、ページ内容に基づく事実のみ\n\n# ページタイトル\n${page.title}\n\n# 本文\n${page.text.slice(0, 30000)}`,
+        status,
+      );
+      // JSON 抽出
+      const m = text.match(/\[[\s\S]*\]/);
+      if (!m) {
+        status("JSON が抽出できませんでした");
+        return;
+      }
+      const cards = JSON.parse(m[0]) as { front: string; back: string }[];
+      const csv = cards
+        .filter((c) => c && c.front && c.back)
+        .map(
+          (c) =>
+            `${c.front.replace(/[\t\r\n]/g, " ")}\t${c.back.replace(/[\t\r\n]/g, " ")}`,
+        )
+        .join("\n");
+      aiAnkiLastCsv = csv;
+      out.value = `# ${cards.length} 枚生成しました\n\n${cards
+        .map((c, i) => `## ${i + 1}. ${c.front}\n${c.back}`)
+        .join("\n\n")}\n\n---\n\n# Anki 用 TSV (CSV ボタンで保存)\n\n\`\`\`\n${csv}\n\`\`\``;
+      status(`${cards.length} 枚生成完了`);
+    } catch (e) {
+      status(`エラー: ${String(e)}`);
+    }
+  });
+
+  csvBtn?.addEventListener("click", () => {
+    if (!aiAnkiLastCsv) {
+      status("先にカードを生成してください");
+      return;
+    }
+    const blob = new Blob([aiAnkiLastCsv], { type: "text/tab-separated-values;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `anki-${stamp}.tsv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+}
+
+// --- 🔖 ブックマーク AI 分類 ---
+
+function setupAIBookmarkTag(): void {
+  const goBtn = document.getElementById("ai-bm-go") as HTMLButtonElement | null;
+  const limitEl = document.getElementById("ai-bm-limit") as HTMLInputElement | null;
+  const fetchEl = document.getElementById("ai-bm-fetch") as HTMLInputElement | null;
+  const statusEl = document.getElementById("ai-bm-status") as HTMLSpanElement | null;
+  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
+  const status = (s: string): void => {
+    if (statusEl) statusEl.textContent = s;
+  };
+  if (!goBtn || !out) return;
+
+  goBtn.addEventListener("click", async () => {
+    const limit = Math.max(1, Math.min(200, Number(limitEl?.value) || 20));
+    const fetchBody = !!fetchEl?.checked;
+    const settings = getAISettingsOrAlert(status);
+    if (!settings) return;
+    if (bookmarks.length === 0) {
+      status("ブックマークがありません");
+      return;
+    }
+    const items = bookmarks.slice(0, limit);
+    out.value = `| # | タイトル | カテゴリ | タグ | 一言メモ |\n|---|---|---|---|---|\n`;
+    aiAbort?.abort();
+    aiAbort = new AbortController();
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const b = items[i];
+        status(`分類中… (${i + 1}/${items.length})`);
+        let snippet = "";
+        if (fetchBody) {
+          try {
+            const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+              url: b.url,
+              userAgent: null,
+            });
+            snippet = extractMainText(r.body).text.slice(0, 2000);
+          } catch {
+            /* noop */
+          }
+        }
+        const userMsg = `URL: ${b.url}\nタイトル: ${b.title}\n${snippet ? `本文抜粋: ${snippet}` : ""}\n\n上記を分類してください。出力は JSON のみ: {"category":"...","tags":["..","..","..","..","..(最大5)"],"memo":"30 文字以内の一言"}`;
+        try {
+          const r = await callOpenAICompatible(
+            settings,
+            [
+              {
+                role: "system",
+                content:
+                  "あなたは情報整理の専門家です。出力は厳密に JSON 1 オブジェクトのみ (``` 不要)。日本語で。",
+              },
+              { role: "user", content: userMsg },
+            ],
+            aiAbort.signal,
+          );
+          const m = r.match(/\{[\s\S]*\}/);
+          if (!m) throw new Error("JSON 抽出失敗");
+          const j = JSON.parse(m[0]) as {
+            category?: string;
+            tags?: string[];
+            memo?: string;
+          };
+          const tags = (j.tags || []).join(", ");
+          const esc = (s: string): string =>
+            s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+          out.value += `| ${i + 1} | [${esc(b.title || b.url)}](${b.url}) | ${esc(j.category || "?")} | ${esc(tags)} | ${esc(j.memo || "")} |\n`;
+          out.scrollTop = out.scrollHeight;
+        } catch (e) {
+          if ((e as Error).name === "AbortError") {
+            status("中断しました");
+            return;
+          }
+          out.value += `| ${i + 1} | ${b.title} | (エラー) | | ${String(e).slice(0, 40)} |\n`;
+        }
+      }
+      status(`完了: ${items.length} 件`);
+    } finally {
+      aiAbort = null;
+    }
+  });
 }

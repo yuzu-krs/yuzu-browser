@@ -190,6 +190,10 @@
             <span class="toolbox-nav-icon">🎮</span>
             <span>ミニゲーム</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="ai">
+            <span class="toolbox-nav-icon">✨</span>
+            <span>AI アシスタント</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -1262,6 +1266,346 @@
             <p class="toolbox-hint" id="minigame-help">
               操作: スペース / ↑ でジャンプ。矢印キーで操作。
             </p>
+          </section>
+
+          <section class="toolbox-tool" data-tool="ai" hidden>
+            <h3>✨ AI アシスタント (BYOK)</h3>
+            <p class="toolbox-note">
+              OpenAI 互換 API を使ってページを要約・翻訳・タグ抽出・SNS
+              文生成・Q&amp;A します。API キーはお使いの端末の localStorage
+              にのみ保存されます。
+            </p>
+            <details class="toolbox-row" open>
+              <summary>API 設定 (プロバイダ / モデル / キー)</summary>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <label>プリセット</label>
+                <select id="ai-preset">
+                  <option value="openai">OpenAI</option>
+                  <option value="groq">Groq (高速・無料枠あり)</option>
+                  <option value="openrouter">OpenRouter (多数モデル)</option>
+                  <option value="ollama">Ollama (ローカル)</option>
+                  <option value="custom">カスタム</option>
+                </select>
+                <button type="button" id="ai-preset-apply">
+                  プリセット適用
+                </button>
+              </div>
+              <div class="toolbox-row">
+                <label for="ai-base">Base URL</label>
+                <input
+                  id="ai-base"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="https://api.openai.com/v1"
+                  style="flex: 1"
+                />
+              </div>
+              <div class="toolbox-row">
+                <label for="ai-model">モデル</label>
+                <input
+                  id="ai-model"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="gpt-4o-mini"
+                  style="flex: 1"
+                />
+              </div>
+              <div class="toolbox-row">
+                <label for="ai-key">API キー</label>
+                <input
+                  id="ai-key"
+                  type="password"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="sk-..."
+                  style="flex: 1"
+                />
+                <button type="button" id="ai-key-toggle">表示</button>
+                <button type="button" id="ai-save">保存</button>
+              </div>
+            </details>
+            <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
+              <button type="button" id="ai-summarize" class="toolbox-primary">
+                📝 ページを要約
+              </button>
+              <button type="button" id="ai-translate">🌐 日本語に翻訳</button>
+              <button type="button" id="ai-tags">🏷️ タグ/SEOキーワード</button>
+              <button type="button" id="ai-buzz">🔥 SNS バズり投稿</button>
+              <button type="button" id="ai-tldr">⚡ 3行 TL;DR</button>
+              <button type="button" id="ai-cancel" disabled>停止</button>
+              <span id="ai-status" class="toolbox-status"></span>
+            </div>
+            <div class="toolbox-row">
+              <label for="ai-question">質問</label>
+              <input
+                id="ai-question"
+                type="text"
+                placeholder="このページについて質問する… (例: 結論を教えて)"
+                style="flex: 1"
+              />
+              <button type="button" id="ai-ask">💬 質問</button>
+            </div>
+            <div class="toolbox-row">
+              <label
+                ><input id="ai-include-url" type="checkbox" checked /> URL
+                も渡す</label
+              >
+              <label
+                ><input id="ai-fetch-fresh" type="checkbox" checked /> 毎回 HTML
+                を再取得</label
+              >
+              <label
+                >最大文字数
+                <input
+                  id="ai-maxchars"
+                  type="number"
+                  min="500"
+                  max="200000"
+                  step="500"
+                  value="20000"
+                  style="width: 7em"
+                />
+              </label>
+            </div>
+            <textarea
+              id="ai-output"
+              class="toolbox-textarea"
+              readonly
+              placeholder="ここに AI からの応答 (Markdown) が表示されます"
+              style="min-height: 220px"
+            ></textarea>
+            <div class="toolbox-row toolbox-actions">
+              <button type="button" id="ai-copy">📋 コピー</button>
+              <button type="button" id="ai-download">
+                💾 .md ダウンロード
+              </button>
+              <button type="button" id="ai-clear">クリア</button>
+              <label
+                ><input id="ai-stream" type="checkbox" checked />
+                ストリーミング</label
+              >
+            </div>
+
+            <hr style="opacity: 0.2; margin: 14px 0" />
+
+            <details class="toolbox-row">
+              <summary>💬 ページとチャット (会話継続)</summary>
+              <p class="toolbox-note" style="margin-top: 6px">
+                同じページに対して連続で質問できます。履歴を踏まえて回答します。
+              </p>
+              <div
+                id="ai-chat-log"
+                class="toolbox-textarea"
+                style="
+                  min-height: 160px;
+                  max-height: 300px;
+                  overflow-y: auto;
+                  white-space: pre-wrap;
+                  font-family: inherit;
+                  padding: 8px;
+                "
+              ></div>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <input
+                  id="ai-chat-input"
+                  type="text"
+                  placeholder="メッセージ… (Enter で送信)"
+                  style="flex: 1"
+                />
+                <button type="button" id="ai-chat-send" class="toolbox-primary">
+                  送信
+                </button>
+                <button type="button" id="ai-chat-clear">履歴クリア</button>
+              </div>
+            </details>
+
+            <details class="toolbox-row">
+              <summary>📋 テキスト操作 (貼り付け / 選択範囲)</summary>
+              <p class="toolbox-note" style="margin-top: 6px">
+                ブラウザ上で選択 → Ctrl+C でコピー → 下のボタンで貼り付けると
+                各種 AI 操作が使えます。
+              </p>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <button type="button" id="ai-text-paste">
+                  📥 クリップボードから貼り付け
+                </button>
+                <button type="button" id="ai-text-clear">クリア</button>
+              </div>
+              <textarea
+                id="ai-text-input"
+                class="toolbox-textarea"
+                placeholder="ここにテキストを貼り付け…"
+                style="min-height: 100px"
+              ></textarea>
+              <div
+                class="toolbox-row toolbox-actions"
+                style="flex-wrap: wrap; margin-top: 6px"
+              >
+                <button type="button" id="ai-text-translate">
+                  🌐 翻訳 (日本語)
+                </button>
+                <button type="button" id="ai-text-explain">📖 解説</button>
+                <button type="button" id="ai-text-rewrite">
+                  ✍️ 自然に書き直し
+                </button>
+                <button type="button" id="ai-text-code">💻 コード説明</button>
+                <button type="button" id="ai-text-json">🧾 JSON 説明</button>
+                <button type="button" id="ai-text-mail">📧 メール返信案</button>
+              </div>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <label>メールトーン</label>
+                <select id="ai-mail-tone">
+                  <option value="ビジネス丁寧">ビジネス丁寧</option>
+                  <option value="フランク">フランク</option>
+                  <option value="お断り">お断り</option>
+                  <option value="感謝">感謝</option>
+                  <option value="謝罪">謝罪</option>
+                </select>
+                <label>コード言語</label>
+                <input
+                  id="ai-code-lang"
+                  type="text"
+                  placeholder="auto/typescript/rust 等"
+                  style="width: 12em"
+                />
+              </div>
+            </details>
+
+            <details class="toolbox-row">
+              <summary>
+                🎬 メディア (YouTube字幕 / 画像 Vision / ファイル)
+              </summary>
+              <div
+                class="toolbox-row toolbox-actions"
+                style="flex-wrap: wrap; margin-top: 6px"
+              >
+                <button type="button" id="ai-yt-summarize">
+                  ▶️ YouTube 字幕を要約
+                </button>
+                <span class="toolbox-note">
+                  現在タブが youtube.com/watch の場合に有効
+                </span>
+              </div>
+              <div class="toolbox-row" style="margin-top: 8px">
+                <label for="ai-image-file">画像</label>
+                <input
+                  id="ai-image-file"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                />
+                <button type="button" id="ai-image-ocr">🖼️ OCR</button>
+                <button type="button" id="ai-image-describe">
+                  🖼️ 内容説明
+                </button>
+                <span class="toolbox-note">
+                  Vision 対応モデルが必要 (gpt-4o-mini 等)
+                </span>
+              </div>
+              <div class="toolbox-row" style="margin-top: 8px">
+                <label for="ai-file-input">ファイル</label>
+                <input
+                  id="ai-file-input"
+                  type="file"
+                  accept=".txt,.md,.html,.htm,.json,.csv,.tsv,.log,.xml,.srt,.vtt"
+                />
+                <button type="button" id="ai-file-summarize">
+                  📄 ファイル要約
+                </button>
+                <span class="toolbox-note">
+                  テキスト系ファイルのみ (PDF/EPUB は未対応)
+                </span>
+              </div>
+            </details>
+
+            <details class="toolbox-row">
+              <summary>🌍 多言語翻訳 (新しいタブで開く)</summary>
+              <div class="toolbox-row" style="margin-top: 6px; flex-wrap: wrap">
+                <label for="ai-mt-lang">言語</label>
+                <select id="ai-mt-lang">
+                  <option value="日本語">日本語</option>
+                  <option value="英語">英語 (English)</option>
+                  <option value="中国語(簡体)">中国語 (簡体)</option>
+                  <option value="中国語(繁体)">中国語 (繁体)</option>
+                  <option value="韓国語">韓国語</option>
+                  <option value="フランス語">フランス語</option>
+                  <option value="ドイツ語">ドイツ語</option>
+                  <option value="スペイン語">スペイン語</option>
+                  <option value="イタリア語">イタリア語</option>
+                  <option value="ポルトガル語">ポルトガル語</option>
+                  <option value="ロシア語">ロシア語</option>
+                  <option value="アラビア語">アラビア語</option>
+                  <option value="ヒンディー語">ヒンディー語</option>
+                  <option value="タイ語">タイ語</option>
+                  <option value="ベトナム語">ベトナム語</option>
+                  <option value="インドネシア語">インドネシア語</option>
+                </select>
+                <label
+                  ><input id="ai-mt-parallel" type="checkbox" checked />
+                  原文と並列表示</label
+                >
+                <button type="button" id="ai-mt-go" class="toolbox-primary">
+                  🌍 別タブで翻訳表示
+                </button>
+              </div>
+            </details>
+
+            <details class="toolbox-row">
+              <summary>🎴 Anki 学習カード生成 (CSV)</summary>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <label>枚数</label>
+                <input
+                  id="ai-anki-count"
+                  type="number"
+                  min="3"
+                  max="40"
+                  value="10"
+                  style="width: 5em"
+                />
+                <label>難易度</label>
+                <select id="ai-anki-level">
+                  <option value="入門">入門</option>
+                  <option value="標準" selected>標準</option>
+                  <option value="上級">上級</option>
+                </select>
+                <button type="button" id="ai-anki-go" class="toolbox-primary">
+                  🎴 カード生成
+                </button>
+                <button type="button" id="ai-anki-csv">
+                  💾 CSV ダウンロード
+                </button>
+              </div>
+              <p class="toolbox-note">
+                出力はタブ区切り (表面&lt;TAB&gt;裏面)。Anki
+                にそのままインポート可能。
+              </p>
+            </details>
+
+            <details class="toolbox-row">
+              <summary>🔖 ブックマーク AI 自動分類 / タグ付け</summary>
+              <p class="toolbox-note" style="margin-top: 6px">
+                既存ブックマークを 1 件ずつ AI で分類しタグを生成。結果は
+                Markdown 表で出力されます。
+              </p>
+              <div class="toolbox-row">
+                <label>最大件数</label>
+                <input
+                  id="ai-bm-limit"
+                  type="number"
+                  min="1"
+                  max="200"
+                  value="20"
+                  style="width: 5em"
+                />
+                <label
+                  ><input id="ai-bm-fetch" type="checkbox" /> 本文も取得
+                  (遅い)</label
+                >
+                <button type="button" id="ai-bm-go" class="toolbox-primary">
+                  🔖 分類実行
+                </button>
+                <span id="ai-bm-status" class="toolbox-status"></span>
+              </div>
+            </details>
           </section>
         </div>
       </div>
