@@ -4371,6 +4371,8 @@ pub fn run() {
             toolbox_remove_audio_picture,
             toolbox_get_generic_meta,
             toolbox_save_generic_meta,
+            pentest_port_scan,
+            pentest_http_request,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
@@ -4475,4 +4477,228 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ===== ペネトレーションテスト ツール =====
+
+#[derive(serde::Serialize)]
+struct PortScanResult {
+    port: u16,
+    open: bool,
+    banner: Option<String>,
+}
+
+#[tauri::command]
+async fn pentest_port_scan(
+    host: String,
+    ports: Vec<u16>,
+    timeout_ms: Option<u64>,
+    grab_banner: Option<bool>,
+) -> Result<Vec<PortScanResult>, String> {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err("ホスト名を入力してください".to_string());
+    }
+    if ports.is_empty() {
+        return Err("ポート番号を入力してください".to_string());
+    }
+    if ports.len() > 2000 {
+        return Err("一度にスキャンできるのは 2000 ポートまでです".to_string());
+    }
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(800).clamp(50, 10_000));
+    let grab = grab_banner.unwrap_or(false);
+
+    // ホスト名を解決
+    let probe = format!("{}:{}", host, ports[0]);
+    let resolved = probe
+        .to_socket_addrs()
+        .map_err(|e| format!("ホスト解決失敗: {}", e))?
+        .next()
+        .ok_or_else(|| "ホストが解決できません".to_string())?;
+    let ip = resolved.ip();
+
+    let results: Arc<Mutex<Vec<PortScanResult>>> = Arc::new(Mutex::new(Vec::new()));
+    let chunks: Vec<Vec<u16>> = ports
+        .chunks(64)
+        .map(|c| c.to_vec())
+        .collect();
+
+    let mut handles = Vec::new();
+    for chunk in chunks {
+        let ip = ip;
+        let results = Arc::clone(&results);
+        let h = thread::spawn(move || {
+            for port in chunk {
+                let addr = SocketAddr::new(ip, port);
+                match TcpStream::connect_timeout(&addr, timeout) {
+                    Ok(mut stream) => {
+                        let mut banner = None;
+                        if grab {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+                            // HTTPっぽいポートには軽くプローブ
+                            if matches!(port, 80 | 8000 | 8080 | 8888 | 3000 | 5000) {
+                                let _ = stream.write_all(
+                                    format!("HEAD / HTTP/1.0\r\nHost: {}\r\n\r\n", ip).as_bytes(),
+                                );
+                            }
+                            let mut buf = [0u8; 256];
+                            if let Ok(n) = stream.read(&mut buf) {
+                                if n > 0 {
+                                    let s = String::from_utf8_lossy(&buf[..n])
+                                        .to_string()
+                                        .replace('\r', "")
+                                        .lines()
+                                        .next()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    if !s.is_empty() {
+                                        banner = Some(s);
+                                    }
+                                }
+                            }
+                        }
+                        if let Ok(mut g) = results.lock() {
+                            g.push(PortScanResult {
+                                port,
+                                open: true,
+                                banner,
+                            });
+                        }
+                    }
+                    Err(_) => {
+                        // 閉じているポートは結果に含めない
+                    }
+                }
+            }
+        });
+        handles.push(h);
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+    let mut out = Arc::try_unwrap(results)
+        .map_err(|_| "並列処理エラー".to_string())?
+        .into_inner()
+        .map_err(|e| format!("ロックエラー: {}", e))?;
+    out.sort_by_key(|r| r.port);
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+struct HttpReqResult {
+    status: u16,
+    status_text: String,
+    headers: Vec<(String, String)>,
+    body: String,
+    bytes: usize,
+    content_type: String,
+    time_ms: u64,
+    final_url: String,
+}
+
+#[tauri::command]
+fn pentest_http_request(
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    timeout_ms: Option<u64>,
+    follow_redirects: Option<bool>,
+) -> Result<HttpReqResult, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL を入力してください".to_string());
+    }
+    let parsed = url::Url::parse(&url).map_err(|e| format!("URL が不正です: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("http/https を指定してください".to_string());
+    }
+    let method_up = method.trim().to_uppercase();
+    if method_up.is_empty() {
+        return Err("メソッドが空です".to_string());
+    }
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(15_000).clamp(500, 60_000));
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(if follow_redirects.unwrap_or(true) { 5 } else { 0 })
+        .build();
+    let mut req = agent.request(&method_up, &url);
+    let mut has_ua = false;
+    let mut has_ct = false;
+    for (k, v) in &headers {
+        let kt = k.trim();
+        if kt.is_empty() {
+            continue;
+        }
+        if kt.eq_ignore_ascii_case("user-agent") {
+            has_ua = true;
+        }
+        if kt.eq_ignore_ascii_case("content-type") {
+            has_ct = true;
+        }
+        req = req.set(kt, v);
+    }
+    if !has_ua {
+        req = req.set(
+            "User-Agent",
+            "Mozilla/5.0 (yuzu-browser pentest tool)",
+        );
+    }
+    if body.is_some() && !has_ct {
+        req = req.set("Content-Type", "application/x-www-form-urlencoded");
+    }
+    let start = std::time::Instant::now();
+    let resp_result = match body {
+        Some(b) if !b.is_empty() => req.send_string(&b),
+        _ => req.call(),
+    };
+    let resp = match resp_result {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format!("リクエスト失敗: {}", e)),
+    };
+    let status = resp.status();
+    let status_text = resp.status_text().to_string();
+    let content_type = resp.content_type().to_string();
+    let final_url = resp.get_url().to_string();
+    let mut hdrs: Vec<(String, String)> = Vec::new();
+    for name in resp.headers_names() {
+        if let Some(v) = resp.header(&name) {
+            hdrs.push((name, v.to_string()));
+        }
+    }
+    let mut reader = resp.into_reader();
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 16384];
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf)
+            .map_err(|e| format!("読込失敗: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if bytes.len() > 5 * 1024 * 1024 {
+            break;
+        }
+    }
+    let elapsed = start.elapsed().as_millis() as u64;
+    let len = bytes.len();
+    let body_str = String::from_utf8_lossy(&bytes).to_string();
+    Ok(HttpReqResult {
+        status,
+        status_text,
+        headers: hdrs,
+        body: body_str,
+        bytes: len,
+        content_type,
+        time_ms: elapsed,
+        final_url,
+    })
 }

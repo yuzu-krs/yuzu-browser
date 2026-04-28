@@ -31,15 +31,8 @@
         <span id="zoom-display" class="zoom-display">100%</span>
         <button id="zoom-in" class="nav-btn zoom-btn" type="button">＋</button>
       </div>
-      <div
-        class="zoom-control"
-        title="ページ翻訳 (言語選択で翻訳、原文で復元)"
-      >
-        <select
-          id="translate-lang"
-          class="zoom-display"
-          style="padding: 0 4px"
-        >
+      <div class="zoom-control" title="ページ翻訳 (言語選択で翻訳、原文で復元)">
+        <select id="translate-lang" class="zoom-display" style="padding: 0 4px">
           <option value="">原文</option>
           <option value="ja">日本語</option>
           <option value="en">English</option>
@@ -220,13 +213,21 @@
             <span class="toolbox-nav-icon">🐵</span>
             <span>ユーザースクリプト</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="techprofile">
+          <button
+            type="button"
+            class="toolbox-nav-item"
+            data-tool="techprofile"
+          >
             <span class="toolbox-nav-icon">🔬</span>
             <span>技術プロファイラ</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="ogp">
             <span class="toolbox-nav-icon">🏷️</span>
             <span>OGP チェッカー</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="pentest">
+            <span class="toolbox-nav-icon">🛡️</span>
+            <span>ペネトレ ツール</span>
           </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
@@ -1769,8 +1770,9 @@ document.title = '✨ ' + document.title;"
           <section class="toolbox-tool" data-tool="techprofile" hidden>
             <h3>🔬 技術プロファイラ (Wappalyzer 風)</h3>
             <p class="toolbox-note">
-              ページの HTML / レスポンスヘッダ / Cookie 名 / グローバル変数を解析して、
-              使用されている CMS・フレームワーク・ライブラリ・解析ツールなどを推定します。
+              ページの HTML / レスポンスヘッダ / Cookie 名 /
+              グローバル変数を解析して、 使用されている
+              CMS・フレームワーク・ライブラリ・解析ツールなどを推定します。
             </p>
             <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
               <button type="button" id="tech-scan" class="toolbox-primary">
@@ -1799,8 +1801,8 @@ document.title = '✨ ' + document.title;"
           <section class="toolbox-tool" data-tool="ogp" hidden>
             <h3>🏷️ OGP / メタタグチェッカー</h3>
             <p class="toolbox-note">
-              ページの Open Graph / Twitter Card / 標準メタタグを取得し、
-              SNS でのプレビュー表示をシミュレートします。
+              ページの Open Graph / Twitter Card / 標準メタタグを取得し、 SNS
+              でのプレビュー表示をシミュレートします。
             </p>
             <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
               <button type="button" id="ogp-scan" class="toolbox-primary">
@@ -1815,10 +1817,7 @@ document.title = '✨ ' + document.title;"
               <button type="button" id="ogp-scan-url">URL を解析</button>
               <span id="ogp-status" class="toolbox-status"></span>
             </div>
-            <div
-              id="ogp-preview"
-              style="margin-top: 8px; display: none"
-            ></div>
+            <div id="ogp-preview" style="margin-top: 8px; display: none"></div>
             <details style="margin-top: 8px">
               <summary>🐦 Twitter / X カードプレビュー</summary>
               <div id="ogp-twitter" style="margin-top: 8px"></div>
@@ -1837,7 +1836,570 @@ document.title = '✨ ' + document.title;"
             </details>
             <details style="margin-top: 8px">
               <summary>⚠️ 推奨タグのチェック結果</summary>
-              <ul id="ogp-checks" style="margin: 8px 0; padding-left: 20px"></ul>
+              <ul
+                id="ogp-checks"
+                style="margin: 8px 0; padding-left: 20px"
+              ></ul>
+            </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="pentest" hidden>
+            <h3>🛡️ ペネトレーション テストキット</h3>
+            <p class="toolbox-note">
+              TryHackMe のルーム攻略でよく使うツール群をブラウザに集約。
+              <strong style="color: #cf222e"
+                >必ず自分の管理下にある対象 (THM のターゲットマシンなど)
+                でのみ使用してください。</strong
+              >
+            </p>
+
+            <details open>
+              <summary>🌐 ポートスキャナ (nmap 風)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <input
+                    id="ps-host"
+                    type="text"
+                    placeholder="ホスト or IP (例: 10.10.10.1)"
+                    style="flex: 1; min-width: 14em"
+                  />
+                  <select id="ps-preset">
+                    <option value="top">Top 100 ポート</option>
+                    <option value="common">よく使う 24 ポート</option>
+                    <option value="all">1-1024 (well-known)</option>
+                    <option value="custom">カスタム</option>
+                  </select>
+                  <input
+                    id="ps-ports"
+                    type="text"
+                    placeholder="例: 22,80,443,8000-8100"
+                    style="flex: 1; min-width: 14em"
+                  />
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    ><input
+                      type="checkbox"
+                      id="ps-banner"
+                      checked
+                    />バナー取得</label
+                  >
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    >タイムアウト<input
+                      id="ps-timeout"
+                      type="number"
+                      value="800"
+                      min="100"
+                      max="10000"
+                      style="width: 6em"
+                    />ms</label
+                  >
+                  <button type="button" id="ps-run" class="toolbox-primary">
+                    スキャン
+                  </button>
+                  <span id="ps-status" class="toolbox-status"></span>
+                </div>
+                <pre
+                  id="ps-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 260px;
+                    overflow: auto;
+                    font-size: 11px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📡 HTTP リクエスト (curl / Burp Repeater 風)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="hr-method" style="width: 6em">
+                    <option>GET</option>
+                    <option>POST</option>
+                    <option>PUT</option>
+                    <option>DELETE</option>
+                    <option>HEAD</option>
+                    <option>OPTIONS</option>
+                    <option>PATCH</option>
+                  </select>
+                  <input
+                    id="hr-url"
+                    type="text"
+                    placeholder="http://target/path"
+                    style="flex: 1"
+                  />
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    ><input type="checkbox" id="hr-follow" checked />Redirect
+                    追従</label
+                  >
+                  <button type="button" id="hr-send" class="toolbox-primary">
+                    送信
+                  </button>
+                </div>
+                <details style="margin-top: 6px">
+                  <summary>
+                    📋 raw HTTP リクエストを貼り付けて読み込み (Burp/devtools
+                    コピー)
+                  </summary>
+                  <textarea
+                    id="hr-raw"
+                    class="toolbox-textarea"
+                    rows="6"
+                    placeholder="POST /login HTTP/1.1&#10;Host: target&#10;Content-Type: ...&#10;&#10;username=admin&password=admin"
+                  ></textarea>
+                  <button type="button" id="hr-raw-load">
+                    ↑ raw からロード
+                  </button>
+                </details>
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 6px;
+                    margin-top: 6px;
+                  "
+                >
+                  <div>
+                    <div style="font-size: 11px; color: #666">
+                      ヘッダ (Key: Value 1 行ごと)
+                    </div>
+                    <textarea
+                      id="hr-headers"
+                      class="toolbox-textarea"
+                      rows="6"
+                      placeholder="User-Agent: Mozilla/5.0&#10;Cookie: session=abc"
+                    ></textarea>
+                  </div>
+                  <div>
+                    <div style="font-size: 11px; color: #666">ボディ</div>
+                    <textarea
+                      id="hr-body"
+                      class="toolbox-textarea"
+                      rows="6"
+                      placeholder="username=admin&password=admin"
+                    ></textarea>
+                  </div>
+                </div>
+                <div
+                  id="hr-status"
+                  class="toolbox-status"
+                  style="margin-top: 6px"
+                ></div>
+                <details style="margin-top: 6px" open>
+                  <summary>レスポンスヘッダ</summary>
+                  <pre
+                    id="hr-resp-headers"
+                    class="toolbox-textarea"
+                    style="
+                      min-height: 60px;
+                      max-height: 160px;
+                      overflow: auto;
+                      font-size: 11px;
+                    "
+                  ></pre>
+                </details>
+                <details style="margin-top: 6px" open>
+                  <summary>レスポンスボディ</summary>
+                  <pre
+                    id="hr-resp-body"
+                    class="toolbox-textarea"
+                    style="
+                      min-height: 100px;
+                      max-height: 300px;
+                      overflow: auto;
+                      font-size: 11px;
+                    "
+                  ></pre>
+                </details>
+              </div>
+            </details>
+
+            <details>
+              <summary>📁 ディレクトリ探索 (gobuster / dirb 風)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <input
+                    id="db-base"
+                    type="text"
+                    placeholder="ベースURL (例: http://10.10.10.1)"
+                    style="flex: 1; min-width: 18em"
+                  />
+                  <input
+                    id="db-ext"
+                    type="text"
+                    placeholder="拡張子 (例: php,html,txt)"
+                    style="width: 14em"
+                  />
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    >並列<input
+                      id="db-conc"
+                      type="number"
+                      value="10"
+                      min="1"
+                      max="30"
+                      style="width: 4em"
+                  /></label>
+                  <button type="button" id="db-run" class="toolbox-primary">
+                    開始
+                  </button>
+                  <button type="button" id="db-stop">中断</button>
+                  <span id="db-status" class="toolbox-status"></span>
+                </div>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 4px">
+                  <select id="db-wordlist">
+                    <option value="common">common (約 100 語)</option>
+                    <option value="dirb-small">
+                      dirb 風 small (約 200 語)
+                    </option>
+                    <option value="custom">カスタム (下記)</option>
+                  </select>
+                  <span style="font-size: 11px; color: #666"
+                    >ステータスコード除外</span
+                  >
+                  <input
+                    id="db-exclude"
+                    type="text"
+                    value="404"
+                    style="width: 8em"
+                  />
+                </div>
+                <textarea
+                  id="db-words"
+                  class="toolbox-textarea"
+                  rows="4"
+                  placeholder="カスタムワードリスト (1 行 1 語)"
+                  style="margin-top: 4px"
+                ></textarea>
+                <pre
+                  id="db-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 300px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>💉 SQLi テスター (sqlmap-lite)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sqli-url"
+                    type="text"
+                    placeholder="URL (パラメータ含む 例: http://x/page?id=1)"
+                    style="flex: 1"
+                  />
+                  <select id="sqli-method">
+                    <option>GET</option>
+                    <option>POST</option>
+                  </select>
+                  <button type="button" id="sqli-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <textarea
+                  id="sqli-body"
+                  class="toolbox-textarea"
+                  rows="3"
+                  placeholder="POST 時のボディ。テストしたいパラメータの値に &lt;FUZZ&gt; を入れる例: username=&lt;FUZZ&gt;&password=x"
+                  style="margin-top: 4px"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 4px">
+                  <span style="font-size: 11px; color: #666">追加ヘッダ</span>
+                  <input
+                    id="sqli-headers"
+                    type="text"
+                    placeholder="Cookie: PHPSESSID=..."
+                    style="flex: 1"
+                  />
+                </div>
+                <pre
+                  id="sqli-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 300px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔓 ハッシュ識別 (hashid 風)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hi-input"
+                    type="text"
+                    placeholder="ハッシュを貼り付け"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hi-run" class="toolbox-primary">
+                    識別
+                  </button>
+                </div>
+                <div id="hi-out" style="margin-top: 6px; font-size: 13px"></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔑 ハッシュ生成 (MD5/SHA1/SHA256/SHA512)</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="hg-input"
+                  class="toolbox-textarea"
+                  rows="3"
+                  placeholder="テキストを入力"
+                ></textarea>
+                <button
+                  type="button"
+                  id="hg-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  生成
+                </button>
+                <pre
+                  id="hg-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 200px;
+                    overflow: auto;
+                    font-size: 12px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                🔐 エンコード / デコード (base64 / URL / HTML / hex)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="enc-mode">
+                    <option value="b64e">Base64 エンコード</option>
+                    <option value="b64d">Base64 デコード</option>
+                    <option value="urle">URL エンコード</option>
+                    <option value="urld">URL デコード</option>
+                    <option value="htme">HTML エンティティ エンコード</option>
+                    <option value="htmd">HTML エンティティ デコード</option>
+                    <option value="hexe">Hex エンコード</option>
+                    <option value="hexd">Hex デコード</option>
+                    <option value="rot13">ROT13</option>
+                  </select>
+                  <button type="button" id="enc-run" class="toolbox-primary">
+                    変換
+                  </button>
+                </div>
+                <textarea
+                  id="enc-input"
+                  class="toolbox-textarea"
+                  rows="4"
+                  style="margin-top: 4px"
+                  placeholder="入力"
+                ></textarea>
+                <textarea
+                  id="enc-output"
+                  class="toolbox-textarea"
+                  rows="4"
+                  style="margin-top: 4px"
+                  placeholder="出力"
+                  readonly
+                ></textarea>
+              </div>
+            </details>
+
+            <details>
+              <summary>🐚 リバースシェル ジェネレータ</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+                  <label
+                    >LHOST<input
+                      id="rs-host"
+                      type="text"
+                      value="10.10.14.1"
+                      style="width: 10em"
+                  /></label>
+                  <label
+                    >LPORT<input
+                      id="rs-port"
+                      type="number"
+                      value="4444"
+                      style="width: 6em"
+                  /></label>
+                  <label
+                    >シェル<select id="rs-shell">
+                      <option>/bin/bash</option>
+                      <option>/bin/sh</option>
+                      <option>cmd.exe</option>
+                      <option>powershell.exe</option>
+                    </select></label
+                  >
+                </div>
+                <pre
+                  id="rs-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 200px;
+                    max-height: 400px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🎫 JWT デコーダ</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="jwt-input"
+                  class="toolbox-textarea"
+                  rows="3"
+                  placeholder="eyJhbGciOiJIUzI1NiIs..."
+                ></textarea>
+                <button
+                  type="button"
+                  id="jwt-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  デコード
+                </button>
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 6px;
+                    margin-top: 6px;
+                  "
+                >
+                  <div>
+                    <div style="font-size: 11px; color: #666">ヘッダ</div>
+                    <pre
+                      id="jwt-header"
+                      class="toolbox-textarea"
+                      style="min-height: 120px; font-size: 11px"
+                    ></pre>
+                  </div>
+                  <div>
+                    <div style="font-size: 11px; color: #666">ペイロード</div>
+                    <pre
+                      id="jwt-payload"
+                      class="toolbox-textarea"
+                      style="min-height: 120px; font-size: 11px"
+                    ></pre>
+                  </div>
+                </div>
+                <div style="font-size: 11px; color: #666; margin-top: 4px">
+                  署名 (検証は未実装)
+                </div>
+                <pre
+                  id="jwt-sig"
+                  class="toolbox-textarea"
+                  style="min-height: 40px; font-size: 11px"
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🌍 DNS / IP 情報 (DoH)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="dns-host"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <select id="dns-type">
+                    <option>A</option>
+                    <option>AAAA</option>
+                    <option>MX</option>
+                    <option>TXT</option>
+                    <option>NS</option>
+                    <option>CNAME</option>
+                    <option>ANY</option>
+                  </select>
+                  <button type="button" id="dns-run" class="toolbox-primary">
+                    クエリ
+                  </button>
+                </div>
+                <pre
+                  id="dns-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 240px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                🔎 共通機微ファイルチェッカー (robots/sitemap/.git/.env など)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sf-base"
+                    type="text"
+                    placeholder="ベースURL (例: https://target.com)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="sf-run" class="toolbox-primary">
+                    チェック
+                  </button>
+                </div>
+                <pre
+                  id="sf-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📚 THM チートシート (覚えておきたいコマンド)</summary>
+              <div style="padding: 8px; font-size: 12px">
+                <pre
+                  id="thm-cheat"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    max-height: 400px;
+                    overflow: auto;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                  "
+                ></pre>
+              </div>
             </details>
           </section>
         </div>

