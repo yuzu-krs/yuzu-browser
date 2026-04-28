@@ -456,9 +456,13 @@ window.addEventListener("DOMContentLoaded", () => {
   input = document.getElementById("address") as HTMLInputElement;
   tabsEl = document.getElementById("tabs") as HTMLDivElement;
   const form = document.getElementById("address-form") as HTMLFormElement;
-  const backBtn = document.getElementById("back") as HTMLButtonElement;
-  const forwardBtn = document.getElementById("forward") as HTMLButtonElement;
-  const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
+  const backBtn = document.getElementById("back") as HTMLButtonElement | null;
+  const forwardBtn = document.getElementById(
+    "forward",
+  ) as HTMLButtonElement | null;
+  const reloadBtn = document.getElementById(
+    "reload",
+  ) as HTMLButtonElement | null;
   const newTabBtn = document.getElementById("new-tab") as HTMLButtonElement;
 
   form.addEventListener("submit", (e) => {
@@ -484,9 +488,9 @@ window.addEventListener("DOMContentLoaded", () => {
     input.select();
   });
 
-  backBtn.addEventListener("click", () => void history("back"));
-  forwardBtn.addEventListener("click", () => void history("forward"));
-  reloadBtn.addEventListener("click", () => void history("reload"));
+  backBtn?.addEventListener("click", () => void history("back"));
+  forwardBtn?.addEventListener("click", () => void history("forward"));
+  reloadBtn?.addEventListener("click", () => void history("reload"));
   newTabBtn.addEventListener("click", () => void tabNew());
 
   // タブバーへの URL ドラッグ&ドロップ → 新しいタブで開く。
@@ -562,6 +566,9 @@ window.addEventListener("DOMContentLoaded", () => {
       );
     });
   }
+
+  // ページ翻訳ボタン
+  setupPageTranslate();
 
   // UI webview 上での Ctrl+ホイール（ツールバー上など）もズームに使う
   window.addEventListener(
@@ -6388,4 +6395,181 @@ function setupUserScriptTool(): void {
 
   renderUserScriptList();
   loadSelectedToEditor();
+}
+
+// ===== 🌐 ページ翻訳 (Google translate gtx 無料エンドポイント) =====
+
+const TRANSLATE_LANG_KEY = "yuzu-translate-lang-v1";
+
+function setupPageTranslate(): void {
+  const sel = document.getElementById(
+    "translate-lang",
+  ) as HTMLSelectElement | null;
+  if (!sel) return;
+
+  // 「原文」(空) で初期化。言語設定の保存は復元しない (ページごとに選択し直す)。
+  sel.value = "";
+
+  function apply(mode: "translate" | "restore", target: string): void {
+    const a = activeTab();
+    if (!a) return;
+    const script = buildTranslatePayload(target || "ja", mode);
+    void invoke("tab_eval_script", { id: a.id, script }).catch((e) => {
+      console.error("translate inject failed:", e);
+    });
+  }
+
+  sel.addEventListener("change", () => {
+    const v = sel.value;
+    if (!v) {
+      // 「原文」選択時は復元
+      apply("restore", "");
+    } else {
+      // 既に翻訳済みの可能性があるので一旦復元してから翻訳
+      apply("restore", "");
+      setTimeout(() => apply("translate", v), 100);
+    }
+    localStorage.setItem(TRANSLATE_LANG_KEY, v);
+  });
+}
+
+/** ページ内に注入する自己完結スクリプト */
+function buildTranslatePayload(
+  target: string,
+  mode: "translate" | "restore" = "translate",
+): string {
+  return `(function(){
+  try {
+    var TARGET = ${JSON.stringify(target)};
+    var MODE = ${JSON.stringify(mode)};
+    var W = window;
+    // 復元
+    if (MODE === 'restore') {
+      if (W.__yuzuTranslateState && W.__yuzuTranslateState.active) {
+        var st = W.__yuzuTranslateState;
+        st.entries.forEach(function(e){
+          try { e.node.nodeValue = e.original; } catch(_) {}
+        });
+        st.active = false;
+      }
+      try {
+        var b0 = document.getElementById('__yuzu_translate_banner');
+        if (b0) b0.remove();
+      } catch(_) {}
+      return;
+    }
+    // 翻訳モード: 既に翻訳済みなら何もしない
+    if (W.__yuzuTranslateState && W.__yuzuTranslateState.active) {
+      return;
+    }
+    // バナー
+    var banner = document.createElement('div');
+    banner.id = '__yuzu_translate_banner';
+    banner.textContent = '🌐 翻訳中... (' + TARGET + ')';
+    banner.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;background:#1f6feb;color:#fff;padding:6px 12px;border-radius:6px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+    document.documentElement.appendChild(banner);
+
+    // テキストノード収集
+    var SKIP_TAGS = {SCRIPT:1,STYLE:1,NOSCRIPT:1,CODE:1,PRE:1,TEXTAREA:1,KBD:1,SAMP:1,VAR:1};
+    var entries = [];
+    var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(n){
+        if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
+        var t = n.nodeValue.replace(/\\s+/g,'').trim();
+        if (!t) return NodeFilter.FILTER_REJECT;
+        if (t.length < 2) return NodeFilter.FILTER_REJECT;
+        var p = n.parentElement;
+        while (p) {
+          if (SKIP_TAGS[p.tagName]) return NodeFilter.FILTER_REJECT;
+          if (p.isContentEditable) return NodeFilter.FILTER_REJECT;
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var node;
+    while ((node = walker.nextNode())) {
+      entries.push({ node: node, original: node.nodeValue });
+    }
+    if (entries.length === 0) {
+      banner.textContent = '🌐 翻訳対象なし';
+      setTimeout(function(){ try{ banner.remove(); }catch(_){} }, 1500);
+      return;
+    }
+
+    W.__yuzuTranslateState = { active: true, entries: entries };
+
+    // バッチング: 1リクエスト 4000 文字目安、区切り \\n\\n___YZ___\\n\\n
+    var SEP = '\\n\\n___YZ___\\n\\n';
+    var batches = [];
+    var cur = [];
+    var curLen = 0;
+    for (var i = 0; i < entries.length; i++) {
+      var t = entries[i].original;
+      if (curLen + t.length > 3500 && cur.length > 0) {
+        batches.push(cur);
+        cur = [];
+        curLen = 0;
+      }
+      cur.push(i);
+      curLen += t.length + SEP.length;
+    }
+    if (cur.length) batches.push(cur);
+
+    var done = 0;
+    var total = batches.length;
+    function update(){
+      banner.textContent = '🌐 翻訳中... ' + done + '/' + total;
+    }
+    update();
+
+    function translateBatch(idxs){
+      var srcText = idxs.map(function(i){ return entries[i].original; }).join(SEP);
+      var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + encodeURIComponent(TARGET) + '&dt=t&q=' + encodeURIComponent(srcText);
+      return fetch(url, { credentials: 'omit' })
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+          // data[0] は [translated, original, ...][]
+          var combined = '';
+          if (data && data[0]) {
+            for (var k = 0; k < data[0].length; k++) {
+              var seg = data[0][k];
+              if (seg && seg[0]) combined += seg[0];
+            }
+          }
+          var parts = combined.split(SEP);
+          // 区切りが翻訳で崩れる場合のフォールバック: 個別リクエスト
+          if (parts.length !== idxs.length) {
+            return Promise.all(idxs.map(function(i){
+              var u = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + encodeURIComponent(TARGET) + '&dt=t&q=' + encodeURIComponent(entries[i].original);
+              return fetch(u, { credentials: 'omit' }).then(function(r){ return r.json(); }).then(function(d){
+                var t = '';
+                if (d && d[0]) for (var x=0;x<d[0].length;x++) if (d[0][x] && d[0][x][0]) t += d[0][x][0];
+                try { entries[i].node.nodeValue = t || entries[i].original; } catch(_){}
+              }).catch(function(){});
+            }));
+          }
+          for (var j = 0; j < idxs.length; j++) {
+            try { entries[idxs[j]].node.nodeValue = parts[j]; } catch(_){}
+          }
+        })
+        .catch(function(e){ console.warn('[yuzu translate]', e); })
+        .then(function(){ done++; update(); });
+    }
+
+    // 並列度 3
+    var queue = batches.slice();
+    function worker(){
+      if (queue.length === 0) return Promise.resolve();
+      return translateBatch(queue.shift()).then(worker);
+    }
+    Promise.all([worker(), worker(), worker()]).then(function(){
+      banner.textContent = '🌐 翻訳完了 (もう一度クリックで元に戻す)';
+      banner.style.background = '#2da44e';
+      setTimeout(function(){ try{ banner.remove(); }catch(_){} }, 2500);
+    });
+  } catch(err) {
+    console.error('[yuzu translate]', err);
+  }
+})();`;
 }
