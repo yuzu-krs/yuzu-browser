@@ -673,7 +673,11 @@ window.addEventListener("DOMContentLoaded", () => {
     );
   }
   if (bookmarksOpenBtn) {
-    bookmarksOpenBtn.addEventListener("click", () => void openBookmarksPanel());
+    bookmarksOpenBtn.addEventListener(
+      "click",
+      () =>
+        void (bookmarksPanelOpen ? closeBookmarksPanel() : openBookmarksPanel()),
+    );
   }
   if (bookmarksCloseBtn) {
     bookmarksCloseBtn.addEventListener(
