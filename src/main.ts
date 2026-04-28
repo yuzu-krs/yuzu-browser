@@ -631,6 +631,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   void listen<{ id: number; url: string }>("view-navigated", (event) => {
     onViewNavigated(event.payload);
+    // ユーザースクリプト注入 (URL マッチで自動)
+    void injectUserScriptsForTab(event.payload.id, event.payload.url);
   });
   void listen<TabInfo[]>("tabs-updated", (event) => {
     onTabsUpdated(event.payload);
@@ -1312,6 +1314,7 @@ async function setupToolbox(): Promise<void> {
   setupGenericMetaTool();
   setupMiniGameTool();
   setupAITool();
+  setupUserScriptTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -4950,11 +4953,15 @@ function setupAITool(): void {
 
 // ===== AI 拡張機能 =====
 
-function getAISettingsOrAlert(statusFn?: (s: string) => void): AISettings | null {
+function getAISettingsOrAlert(
+  statusFn?: (s: string) => void,
+): AISettings | null {
   const s = loadAISettings();
   // 入力欄優先
   const baseEl = document.getElementById("ai-base") as HTMLInputElement | null;
-  const modelEl = document.getElementById("ai-model") as HTMLInputElement | null;
+  const modelEl = document.getElementById(
+    "ai-model",
+  ) as HTMLInputElement | null;
   const keyEl = document.getElementById("ai-key") as HTMLInputElement | null;
   const merged: AISettings = {
     base: (baseEl?.value || s.base).trim(),
@@ -5034,7 +5041,9 @@ async function aiInvoke(
   if (forceModel) settings.model = forceModel;
   aiAbort?.abort();
   aiAbort = new AbortController();
-  const streamEl = document.getElementById("ai-stream") as HTMLInputElement | null;
+  const streamEl = document.getElementById(
+    "ai-stream",
+  ) as HTMLInputElement | null;
   const useStream = streamEl?.checked !== false;
   out.value = "";
   const messages: AIChatMessage[] = Array.isArray(user)
@@ -5105,9 +5114,15 @@ function renderChatLog(): void {
 }
 
 function setupAIChat(): void {
-  const input = document.getElementById("ai-chat-input") as HTMLInputElement | null;
-  const sendBtn = document.getElementById("ai-chat-send") as HTMLButtonElement | null;
-  const clearBtn = document.getElementById("ai-chat-clear") as HTMLButtonElement | null;
+  const input = document.getElementById(
+    "ai-chat-input",
+  ) as HTMLInputElement | null;
+  const sendBtn = document.getElementById(
+    "ai-chat-send",
+  ) as HTMLButtonElement | null;
+  const clearBtn = document.getElementById(
+    "ai-chat-clear",
+  ) as HTMLButtonElement | null;
   const log = document.getElementById("ai-chat-log") as HTMLDivElement | null;
   if (!input || !sendBtn || !log) return;
 
@@ -5154,7 +5169,9 @@ function setupAIChat(): void {
 
       aiAbort?.abort();
       aiAbort = new AbortController();
-      const streamEl = document.getElementById("ai-stream") as HTMLInputElement | null;
+      const streamEl = document.getElementById(
+        "ai-stream",
+      ) as HTMLInputElement | null;
       const useStream = streamEl?.checked !== false;
       try {
         const result = await callOpenAICompatible(
@@ -5199,23 +5216,31 @@ function setupAIChat(): void {
 // --- 📋 テキスト操作 ---
 
 function setupAITextOps(): void {
-  const ta = document.getElementById("ai-text-input") as HTMLTextAreaElement | null;
-  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
-  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const ta = document.getElementById(
+    "ai-text-input",
+  ) as HTMLTextAreaElement | null;
+  const out = document.getElementById(
+    "ai-output",
+  ) as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById(
+    "ai-status",
+  ) as HTMLSpanElement | null;
   const status = (s: string): void => {
     if (statusEl) statusEl.textContent = s;
   };
   if (!ta || !out) return;
 
-  document.getElementById("ai-text-paste")?.addEventListener("click", async () => {
-    try {
-      const t = await navigator.clipboard.readText();
-      ta.value = t;
-      status(`貼り付け ${t.length} 文字`);
-    } catch {
-      status("クリップボードを読めません");
-    }
-  });
+  document
+    .getElementById("ai-text-paste")
+    ?.addEventListener("click", async () => {
+      try {
+        const t = await navigator.clipboard.readText();
+        ta.value = t;
+        status(`貼り付け ${t.length} 文字`);
+      } catch {
+        status("クリップボードを読めません");
+      }
+    });
   document.getElementById("ai-text-clear")?.addEventListener("click", () => {
     ta.value = "";
   });
@@ -5229,16 +5254,18 @@ function setupAITextOps(): void {
     return t;
   };
 
-  document.getElementById("ai-text-translate")?.addEventListener("click", () => {
-    const t = requireText();
-    if (!t) return;
-    void aiInvoke(
-      out,
-      "あなたは正確で自然な翻訳者です。原文の言語を自動判定して日本語に翻訳。前置き不要。",
-      `次のテキストを日本語に翻訳してください:\n\n${t}`,
-      status,
-    );
-  });
+  document
+    .getElementById("ai-text-translate")
+    ?.addEventListener("click", () => {
+      const t = requireText();
+      if (!t) return;
+      void aiInvoke(
+        out,
+        "あなたは正確で自然な翻訳者です。原文の言語を自動判定して日本語に翻訳。前置き不要。",
+        `次のテキストを日本語に翻訳してください:\n\n${t}`,
+        status,
+      );
+    });
   document.getElementById("ai-text-explain")?.addEventListener("click", () => {
     const t = requireText();
     if (!t) return;
@@ -5262,7 +5289,10 @@ function setupAITextOps(): void {
   document.getElementById("ai-text-code")?.addEventListener("click", () => {
     const t = requireText();
     if (!t) return;
-    const lang = (document.getElementById("ai-code-lang") as HTMLInputElement | null)?.value.trim() || "auto";
+    const lang =
+      (
+        document.getElementById("ai-code-lang") as HTMLInputElement | null
+      )?.value.trim() || "auto";
     void aiInvoke(
       out,
       "あなたは熟練のソフトウェアエンジニアです。コードを正確に日本語で説明します。",
@@ -5283,7 +5313,9 @@ function setupAITextOps(): void {
   document.getElementById("ai-text-mail")?.addEventListener("click", () => {
     const t = requireText();
     if (!t) return;
-    const tone = (document.getElementById("ai-mail-tone") as HTMLSelectElement | null)?.value || "ビジネス丁寧";
+    const tone =
+      (document.getElementById("ai-mail-tone") as HTMLSelectElement | null)
+        ?.value || "ビジネス丁寧";
     void aiInvoke(
       out,
       "あなたは日本語ビジネスメールのプロです。簡潔・敬意・要点を明確に。",
@@ -5296,7 +5328,9 @@ function setupAITextOps(): void {
 // --- 🎬 メディア (YouTube / 画像 Vision / ファイル) ---
 
 async function fetchYoutubeTranscript(videoUrl: string): Promise<string> {
-  const m = videoUrl.match(/[?&]v=([\w-]{11})/) || videoUrl.match(/youtu\.be\/([\w-]{11})/);
+  const m =
+    videoUrl.match(/[?&]v=([\w-]{11})/) ||
+    videoUrl.match(/youtu\.be\/([\w-]{11})/);
   if (!m) throw new Error("YouTube 動画 URL ではありません");
   const id = m[1];
   // ページ HTML から captionTracks を取り出す
@@ -5358,38 +5392,52 @@ async function fileToText(file: File): Promise<string> {
 }
 
 function setupAIMedia(): void {
-  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
-  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const out = document.getElementById(
+    "ai-output",
+  ) as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById(
+    "ai-status",
+  ) as HTMLSpanElement | null;
   const status = (s: string): void => {
     if (statusEl) statusEl.textContent = s;
   };
   if (!out) return;
 
-  document.getElementById("ai-yt-summarize")?.addEventListener("click", async () => {
-    const a = activeTab();
-    if (!a) {
-      status("アクティブなタブがありません");
-      return;
-    }
-    status("YouTube 字幕取得中…");
-    try {
-      const transcript = await fetchYoutubeTranscript(a.url);
-      const max = 30000;
-      const text = transcript.length > max ? transcript.slice(0, max) + " […省略]" : transcript;
-      void aiInvoke(
-        out,
-        "あなたは動画内容の要約者です。冗長な相槌は省き、要点を構造化して日本語 Markdown で返します。",
-        `以下は YouTube 動画の字幕全文です。日本語で要約してください。\n\n# 出力\n## 一言でいうと\n## 章立て要約 (5〜10 個、見出し+1〜2 行)\n## 重要キーワード\n## 結論 / 学び\n\n# 字幕\n${text}`,
-        status,
-      );
-    } catch (e) {
-      status(`エラー: ${String(e)}`);
-    }
-  });
+  document
+    .getElementById("ai-yt-summarize")
+    ?.addEventListener("click", async () => {
+      const a = activeTab();
+      if (!a) {
+        status("アクティブなタブがありません");
+        return;
+      }
+      status("YouTube 字幕取得中…");
+      try {
+        const transcript = await fetchYoutubeTranscript(a.url);
+        const max = 30000;
+        const text =
+          transcript.length > max
+            ? transcript.slice(0, max) + " […省略]"
+            : transcript;
+        void aiInvoke(
+          out,
+          "あなたは動画内容の要約者です。冗長な相槌は省き、要点を構造化して日本語 Markdown で返します。",
+          `以下は YouTube 動画の字幕全文です。日本語で要約してください。\n\n# 出力\n## 一言でいうと\n## 章立て要約 (5〜10 個、見出し+1〜2 行)\n## 重要キーワード\n## 結論 / 学び\n\n# 字幕\n${text}`,
+          status,
+        );
+      } catch (e) {
+        status(`エラー: ${String(e)}`);
+      }
+    });
 
-  const imgFile = document.getElementById("ai-image-file") as HTMLInputElement | null;
+  const imgFile = document.getElementById(
+    "ai-image-file",
+  ) as HTMLInputElement | null;
 
-  const runVision = async (prompt: string, sysPrompt: string): Promise<void> => {
+  const runVision = async (
+    prompt: string,
+    sysPrompt: string,
+  ): Promise<void> => {
     const f = imgFile?.files?.[0];
     if (!f) {
       status("画像を選択してください");
@@ -5423,61 +5471,73 @@ function setupAIMedia(): void {
       "あなたは高精度 OCR エンジンです。",
     );
   });
-  document.getElementById("ai-image-describe")?.addEventListener("click", () => {
-    void runVision(
-      "この画像の内容を日本語で詳細に説明してください。被写体・構図・推測される文脈・読み取れるテキストの順で。",
-      "あなたは画像の説明者です。日本語で。",
-    );
-  });
-
-  const fileEl = document.getElementById("ai-file-input") as HTMLInputElement | null;
-  document.getElementById("ai-file-summarize")?.addEventListener("click", async () => {
-    const f = fileEl?.files?.[0];
-    if (!f) {
-      status("ファイルを選択してください");
-      return;
-    }
-    status(`ファイル読込中 (${f.name})…`);
-    try {
-      let text = await fileToText(f);
-      // HTML 系は本文抽出
-      if (/\.html?$/i.test(f.name)) {
-        text = extractMainText(text).text;
-      }
-      // SRT/VTT は時刻削除
-      if (/\.(srt|vtt)$/i.test(f.name)) {
-        text = text
-          .split(/\r?\n/)
-          .filter(
-            (l) =>
-              l.trim() &&
-              !/^\d+$/.test(l.trim()) &&
-              !/-->/.test(l) &&
-              !/^WEBVTT/.test(l),
-          )
-          .join(" ");
-      }
-      const max = 60000;
-      if (text.length > max) text = text.slice(0, max) + "\n\n[…以下省略]";
-      void aiInvoke(
-        out,
-        "あなたは正確な要約者です。日本語 Markdown で簡潔に。",
-        `次のファイル (${f.name}) を日本語で要約してください。\n\n# 出力\n## 概要 (3 行)\n## 要点\n## 詳細\n## キーワード\n\n# 内容\n${text}`,
-        status,
+  document
+    .getElementById("ai-image-describe")
+    ?.addEventListener("click", () => {
+      void runVision(
+        "この画像の内容を日本語で詳細に説明してください。被写体・構図・推測される文脈・読み取れるテキストの順で。",
+        "あなたは画像の説明者です。日本語で。",
       );
-    } catch (e) {
-      status(`エラー: ${String(e)}`);
-    }
-  });
+    });
+
+  const fileEl = document.getElementById(
+    "ai-file-input",
+  ) as HTMLInputElement | null;
+  document
+    .getElementById("ai-file-summarize")
+    ?.addEventListener("click", async () => {
+      const f = fileEl?.files?.[0];
+      if (!f) {
+        status("ファイルを選択してください");
+        return;
+      }
+      status(`ファイル読込中 (${f.name})…`);
+      try {
+        let text = await fileToText(f);
+        // HTML 系は本文抽出
+        if (/\.html?$/i.test(f.name)) {
+          text = extractMainText(text).text;
+        }
+        // SRT/VTT は時刻削除
+        if (/\.(srt|vtt)$/i.test(f.name)) {
+          text = text
+            .split(/\r?\n/)
+            .filter(
+              (l) =>
+                l.trim() &&
+                !/^\d+$/.test(l.trim()) &&
+                !/-->/.test(l) &&
+                !/^WEBVTT/.test(l),
+            )
+            .join(" ");
+        }
+        const max = 60000;
+        if (text.length > max) text = text.slice(0, max) + "\n\n[…以下省略]";
+        void aiInvoke(
+          out,
+          "あなたは正確な要約者です。日本語 Markdown で簡潔に。",
+          `次のファイル (${f.name}) を日本語で要約してください。\n\n# 出力\n## 概要 (3 行)\n## 要点\n## 詳細\n## キーワード\n\n# 内容\n${text}`,
+          status,
+        );
+      } catch (e) {
+        status(`エラー: ${String(e)}`);
+      }
+    });
 }
 
 // --- 🌍 多言語翻訳 (新タブ) ---
 
 function setupAIMultiTranslate(): void {
   const goBtn = document.getElementById("ai-mt-go") as HTMLButtonElement | null;
-  const langSel = document.getElementById("ai-mt-lang") as HTMLSelectElement | null;
-  const parallelEl = document.getElementById("ai-mt-parallel") as HTMLInputElement | null;
-  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const langSel = document.getElementById(
+    "ai-mt-lang",
+  ) as HTMLSelectElement | null;
+  const parallelEl = document.getElementById(
+    "ai-mt-parallel",
+  ) as HTMLInputElement | null;
+  const statusEl = document.getElementById(
+    "ai-status",
+  ) as HTMLSpanElement | null;
   const status = (s: string): void => {
     if (statusEl) statusEl.textContent = s;
   };
@@ -5492,7 +5552,10 @@ function setupAIMultiTranslate(): void {
       status(`${lang} に翻訳中…`);
       const page = await aiEnsurePage();
       const max = 30000;
-      const src = page.text.length > max ? page.text.slice(0, max) + " […省略]" : page.text;
+      const src =
+        page.text.length > max
+          ? page.text.slice(0, max) + " […省略]"
+          : page.text;
       aiAbort?.abort();
       aiAbort = new AbortController();
       const result = await callOpenAICompatible(
@@ -5511,10 +5574,7 @@ function setupAIMultiTranslate(): void {
       );
       aiAbort = null;
       const escaped = (s: string): string =>
-        s
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
+        s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const body = parallel
         ? `<div class="col"><h2>原文</h2><pre>${escaped(page.text.slice(0, max))}</pre></div><div class="col"><h2>${escaped(lang)}</h2><pre>${escaped(result)}</pre></div>`
         : `<div class="col full"><h2>${escaped(lang)}</h2><pre>${escaped(result)}</pre></div>`;
@@ -5534,7 +5594,9 @@ pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:0;font-
 <div class="src">原文: <a href="${escaped(page.url)}">${escaped(page.url)}</a></div>
 <div class="wrap">${body}</div>
 </body></html>`;
-      const dataUrl = "data:text/html;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(html)));
+      const dataUrl =
+        "data:text/html;charset=utf-8;base64," +
+        btoa(unescape(encodeURIComponent(html)));
       await tabNew(dataUrl);
       status(`${lang} 翻訳タブを開きました`);
     } catch (e) {
@@ -5548,10 +5610,18 @@ pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:0;font-
 let aiAnkiLastCsv = "";
 
 function setupAIAnki(): void {
-  const goBtn = document.getElementById("ai-anki-go") as HTMLButtonElement | null;
-  const csvBtn = document.getElementById("ai-anki-csv") as HTMLButtonElement | null;
-  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
-  const statusEl = document.getElementById("ai-status") as HTMLSpanElement | null;
+  const goBtn = document.getElementById(
+    "ai-anki-go",
+  ) as HTMLButtonElement | null;
+  const csvBtn = document.getElementById(
+    "ai-anki-csv",
+  ) as HTMLButtonElement | null;
+  const out = document.getElementById(
+    "ai-output",
+  ) as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById(
+    "ai-status",
+  ) as HTMLSpanElement | null;
   const status = (s: string): void => {
     if (statusEl) statusEl.textContent = s;
   };
@@ -5560,9 +5630,17 @@ function setupAIAnki(): void {
   goBtn.addEventListener("click", async () => {
     const count = Math.max(
       3,
-      Math.min(40, Number((document.getElementById("ai-anki-count") as HTMLInputElement | null)?.value) || 10),
+      Math.min(
+        40,
+        Number(
+          (document.getElementById("ai-anki-count") as HTMLInputElement | null)
+            ?.value,
+        ) || 10,
+      ),
     );
-    const level = (document.getElementById("ai-anki-level") as HTMLSelectElement | null)?.value || "標準";
+    const level =
+      (document.getElementById("ai-anki-level") as HTMLSelectElement | null)
+        ?.value || "標準";
     try {
       status("ページ取得中…");
       const page = await aiEnsurePage();
@@ -5589,7 +5667,9 @@ function setupAIAnki(): void {
       aiAnkiLastCsv = csv;
       out.value = `# ${cards.length} 枚生成しました\n\n${cards
         .map((c, i) => `## ${i + 1}. ${c.front}\n${c.back}`)
-        .join("\n\n")}\n\n---\n\n# Anki 用 TSV (CSV ボタンで保存)\n\n\`\`\`\n${csv}\n\`\`\``;
+        .join(
+          "\n\n",
+        )}\n\n---\n\n# Anki 用 TSV (CSV ボタンで保存)\n\n\`\`\`\n${csv}\n\`\`\``;
       status(`${cards.length} 枚生成完了`);
     } catch (e) {
       status(`エラー: ${String(e)}`);
@@ -5601,7 +5681,9 @@ function setupAIAnki(): void {
       status("先にカードを生成してください");
       return;
     }
-    const blob = new Blob([aiAnkiLastCsv], { type: "text/tab-separated-values;charset=utf-8" });
+    const blob = new Blob([aiAnkiLastCsv], {
+      type: "text/tab-separated-values;charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -5618,10 +5700,18 @@ function setupAIAnki(): void {
 
 function setupAIBookmarkTag(): void {
   const goBtn = document.getElementById("ai-bm-go") as HTMLButtonElement | null;
-  const limitEl = document.getElementById("ai-bm-limit") as HTMLInputElement | null;
-  const fetchEl = document.getElementById("ai-bm-fetch") as HTMLInputElement | null;
-  const statusEl = document.getElementById("ai-bm-status") as HTMLSpanElement | null;
-  const out = document.getElementById("ai-output") as HTMLTextAreaElement | null;
+  const limitEl = document.getElementById(
+    "ai-bm-limit",
+  ) as HTMLInputElement | null;
+  const fetchEl = document.getElementById(
+    "ai-bm-fetch",
+  ) as HTMLInputElement | null;
+  const statusEl = document.getElementById(
+    "ai-bm-status",
+  ) as HTMLSpanElement | null;
+  const out = document.getElementById(
+    "ai-output",
+  ) as HTMLTextAreaElement | null;
   const status = (s: string): void => {
     if (statusEl) statusEl.textContent = s;
   };
@@ -5695,4 +5785,607 @@ function setupAIBookmarkTag(): void {
       aiAbort = null;
     }
   });
+}
+
+// ===== 🐵 ユーザースクリプト (Tampermonkey 風) =====
+
+interface UserScript {
+  id: string;
+  name: string;
+  source: string;
+  enabled: boolean;
+  updatedAt: number;
+}
+
+interface UserScriptMeta {
+  name: string;
+  matches: string[];
+  excludes: string[];
+  runAt: "document-start" | "document-end" | "document-idle";
+  grants: string[];
+  noFrames: boolean;
+}
+
+const US_STORAGE_KEY = "yuzu-userscripts-v1";
+const US_MASTER_KEY = "yuzu-userscripts-enabled-v1";
+const US_GM_VALUES_PREFIX = "yuzu-gm-values-";
+
+let userScripts: UserScript[] = [];
+let usSelectedId: string | null = null;
+
+function loadUserScripts(): UserScript[] {
+  try {
+    const raw = localStorage.getItem(US_STORAGE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as UserScript[];
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((s) => s && typeof s.source === "string");
+  } catch {
+    return [];
+  }
+}
+
+function saveUserScripts(): void {
+  try {
+    localStorage.setItem(US_STORAGE_KEY, JSON.stringify(userScripts));
+  } catch (e) {
+    console.error("saveUserScripts failed:", e);
+  }
+}
+
+function isUserScriptsEnabled(): boolean {
+  return localStorage.getItem(US_MASTER_KEY) !== "0";
+}
+
+function setUserScriptsEnabled(b: boolean): void {
+  localStorage.setItem(US_MASTER_KEY, b ? "1" : "0");
+}
+
+/** Greasemonkey ヘッダのパース */
+function parseUserScriptMeta(source: string): UserScriptMeta {
+  const meta: UserScriptMeta = {
+    name: "",
+    matches: [],
+    excludes: [],
+    runAt: "document-end",
+    grants: [],
+    noFrames: false,
+  };
+  const headerMatch = source.match(
+    /\/\/\s*==UserScript==([\s\S]*?)\/\/\s*==\/UserScript==/,
+  );
+  if (!headerMatch) return meta;
+  const lines = headerMatch[1].split(/\r?\n/);
+  for (const line of lines) {
+    const m = line.match(/^\s*\/\/\s*@(\S+)\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    const val = (m[2] || "").trim();
+    if (key === "name" && val) meta.name = val;
+    else if (key === "match" || key === "include") meta.matches.push(val);
+    else if (key === "exclude" || key === "exclude-match")
+      meta.excludes.push(val);
+    else if (key === "run-at") {
+      const v = val.toLowerCase();
+      if (
+        v === "document-start" ||
+        v === "document-end" ||
+        v === "document-idle"
+      )
+        meta.runAt = v;
+    } else if (key === "grant") meta.grants.push(val);
+    else if (key === "noframes") meta.noFrames = true;
+  }
+  return meta;
+}
+
+/** Greasemonkey @match / @include パターンを RegExp に変換 */
+function userScriptPatternToRegex(pattern: string): RegExp | null {
+  if (!pattern) return null;
+  if (pattern === "<all_urls>" || pattern === "*") return /^https?:\/\//i;
+  // 正規表現リテラル形式 /.../flags
+  const reLit = pattern.match(/^\/(.+)\/([a-z]*)$/);
+  if (reLit) {
+    try {
+      return new RegExp(reLit[1], reLit[2]);
+    } catch {
+      return null;
+    }
+  }
+  // glob 風 → regex
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  try {
+    return new RegExp("^" + escaped + "$");
+  } catch {
+    return null;
+  }
+}
+
+function urlMatchesUserScript(meta: UserScriptMeta, url: string): boolean {
+  if (meta.matches.length === 0) return false;
+  const matched = meta.matches.some((p) => {
+    const r = userScriptPatternToRegex(p);
+    return !!r && r.test(url);
+  });
+  if (!matched) return false;
+  const excluded = meta.excludes.some((p) => {
+    const r = userScriptPatternToRegex(p);
+    return !!r && r.test(url);
+  });
+  return !excluded;
+}
+
+/** スクリプトを GM ラッパーで包んでページに注入する文字列を作る */
+function buildUserScriptPayload(s: UserScript, meta: UserScriptMeta): string {
+  const valueKey = US_GM_VALUES_PREFIX + s.id;
+  const payload = {
+    id: s.id,
+    name: meta.name || s.name,
+    source: s.source,
+    grants: meta.grants,
+    valueKey,
+  };
+  // ページ側に注入する関数本体 (IIFE)
+  // 文字列リテラル化に注意: ユーザーソースは JSON.stringify で安全に渡す
+  const fn = `(function(){
+    try {
+      var __cfg = ${JSON.stringify(payload)};
+      // GM 値ストレージは window 内のメモリのみ (永続化は postMessage で UI 側に依頼するのが理想だが省略)
+      var __gmValues = {};
+      try {
+        var raw = sessionStorage.getItem(__cfg.valueKey);
+        if (raw) __gmValues = JSON.parse(raw);
+      } catch(e){}
+      function persist(){
+        try { sessionStorage.setItem(__cfg.valueKey, JSON.stringify(__gmValues)); } catch(e){}
+      }
+      var GM_setValue = function(k, v){ __gmValues[k] = v; persist(); };
+      var GM_getValue = function(k, d){ return Object.prototype.hasOwnProperty.call(__gmValues,k) ? __gmValues[k] : d; };
+      var GM_deleteValue = function(k){ delete __gmValues[k]; persist(); };
+      var GM_listValues = function(){ return Object.keys(__gmValues); };
+      var GM_addStyle = function(css){
+        var st = document.createElement('style');
+        st.type = 'text/css';
+        st.textContent = String(css);
+        (document.head || document.documentElement).appendChild(st);
+        return st;
+      };
+      var GM_setClipboard = function(text){
+        try { navigator.clipboard.writeText(String(text)); } catch(e){}
+      };
+      var GM_openInTab = function(url){
+        try { window.open(url, '_blank'); } catch(e){}
+      };
+      var GM_log = function(){ try { console.log.apply(console, ['[US:'+__cfg.name+']'].concat([].slice.call(arguments))); } catch(e){} };
+      var GM_xmlhttpRequest = function(opts){
+        opts = opts || {};
+        var ctrl = new AbortController();
+        var headers = opts.headers || {};
+        fetch(opts.url, {
+          method: opts.method || 'GET',
+          headers: headers,
+          body: opts.data,
+          credentials: opts.anonymous ? 'omit' : 'include',
+          signal: ctrl.signal
+        }).then(function(r){
+          return r.text().then(function(t){
+            var resp = {
+              status: r.status,
+              statusText: r.statusText,
+              responseText: t,
+              response: t,
+              responseHeaders: ''
+            };
+            r.headers.forEach(function(v,k){ resp.responseHeaders += k+': '+v+'\\r\\n'; });
+            if (opts.onload) opts.onload(resp);
+          });
+        }).catch(function(e){
+          if (opts.onerror) opts.onerror({error: String(e)});
+        });
+        return { abort: function(){ ctrl.abort(); } };
+      };
+      var GM_registerMenuCommand = function(name, fn){ /* no-op */ };
+      var GM_info = {
+        script: { name: __cfg.name, grant: __cfg.grants, version: '1.0' },
+        scriptHandler: 'yuzu-browser', version: '1.0'
+      };
+      var GM = {
+        setValue: function(k,v){ return new Promise(function(res){ GM_setValue(k,v); res(); }); },
+        getValue: function(k,d){ return Promise.resolve(GM_getValue(k,d)); },
+        deleteValue: function(k){ return new Promise(function(res){ GM_deleteValue(k); res(); }); },
+        listValues: function(){ return Promise.resolve(GM_listValues()); },
+        addStyle: function(css){ return Promise.resolve(GM_addStyle(css)); },
+        setClipboard: function(t){ return Promise.resolve(GM_setClipboard(t)); },
+        openInTab: function(u){ return Promise.resolve(GM_openInTab(u)); },
+        xmlHttpRequest: GM_xmlhttpRequest,
+        info: GM_info
+      };
+      var unsafeWindow = window;
+      // 実行
+      (function(){
+        try {
+          eval(__cfg.source);
+        } catch(e) {
+          console.error('[yuzu UserScript:'+__cfg.name+']', e);
+        }
+      })();
+    } catch(err) {
+      console.error('[yuzu UserScript wrapper error]', err);
+    }
+  })();`;
+  return fn;
+}
+
+function generateScriptId(): string {
+  return (
+    "us-" +
+    Date.now().toString(36) +
+    "-" +
+    Math.random().toString(36).slice(2, 8)
+  );
+}
+
+const DEFAULT_USERSCRIPT_TEMPLATE = `// ==UserScript==
+// @name         New Script
+// @match        *://*/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+
+(function() {
+  'use strict';
+  console.log('Hello from yuzu UserScript!');
+})();`;
+
+/** ユーザースクリプトを指定タブに注入 */
+async function injectUserScriptsForTab(
+  tabId: number,
+  url: string,
+): Promise<void> {
+  if (!isUserScriptsEnabled()) return;
+  if (!/^https?:\/\//i.test(url)) return;
+  let injected = 0;
+  for (const s of userScripts) {
+    if (!s.enabled) continue;
+    const meta = parseUserScriptMeta(s.source);
+    if (!urlMatchesUserScript(meta, url)) continue;
+    const payload = buildUserScriptPayload(s, meta);
+    // run-at による遅延 (document-start は即時、end は ~600ms、idle は ~1500ms)
+    const delay =
+      meta.runAt === "document-start"
+        ? 0
+        : meta.runAt === "document-end"
+          ? 600
+          : 1500;
+    setTimeout(() => {
+      void invoke("tab_eval_script", { id: tabId, script: payload }).catch(
+        (e) => {
+          appendUserScriptLog(
+            `[${meta.name || s.name}] inject failed: ${String(e)}`,
+          );
+        },
+      );
+    }, delay);
+    injected++;
+  }
+  if (injected > 0) {
+    appendUserScriptLog(`▶ ${url} に ${injected} 個のスクリプトを注入予定`);
+  }
+}
+
+function appendUserScriptLog(line: string): void {
+  const log = document.getElementById("us-log") as HTMLPreElement | null;
+  if (!log) return;
+  const ts = new Date().toLocaleTimeString();
+  log.textContent = `[${ts}] ${line}\n` + (log.textContent || "");
+  // ログは最大 200 行に制限
+  const lines = (log.textContent || "").split("\n");
+  if (lines.length > 200) log.textContent = lines.slice(0, 200).join("\n");
+}
+
+function renderUserScriptList(): void {
+  const list = document.getElementById("us-list") as HTMLUListElement | null;
+  const empty = document.getElementById("us-empty") as HTMLDivElement | null;
+  if (!list || !empty) return;
+  list.innerHTML = "";
+  if (userScripts.length === 0) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const s of userScripts) {
+    const meta = parseUserScriptMeta(s.source);
+    const li = document.createElement("li");
+    li.style.cssText =
+      "padding:6px 8px;cursor:pointer;border-bottom:1px solid #eee;display:flex;align-items:center;gap:6px;" +
+      (s.id === usSelectedId ? "background:#e6f0ff;" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = s.enabled;
+    cb.title = "有効/無効";
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", () => {
+      s.enabled = cb.checked;
+      saveUserScripts();
+    });
+    li.appendChild(cb);
+    const span = document.createElement("span");
+    span.style.cssText =
+      "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;";
+    span.textContent = meta.name || s.name || "(無名)";
+    span.title = `${meta.name || s.name}\n${meta.matches.join("\n")}`;
+    li.appendChild(span);
+    li.addEventListener("click", () => {
+      usSelectedId = s.id;
+      loadSelectedToEditor();
+      renderUserScriptList();
+    });
+    list.appendChild(li);
+  }
+}
+
+function loadSelectedToEditor(): void {
+  const nameEl = document.getElementById("us-name") as HTMLInputElement | null;
+  const srcEl = document.getElementById(
+    "us-source",
+  ) as HTMLTextAreaElement | null;
+  const enEl = document.getElementById("us-enabled") as HTMLInputElement | null;
+  if (!nameEl || !srcEl || !enEl) return;
+  const s = userScripts.find((x) => x.id === usSelectedId);
+  if (!s) {
+    nameEl.value = "";
+    srcEl.value = "";
+    enEl.checked = true;
+    return;
+  }
+  nameEl.value = s.name;
+  srcEl.value = s.source;
+  enEl.checked = s.enabled;
+}
+
+function saveCurrentEditor(): boolean {
+  const nameEl = document.getElementById("us-name") as HTMLInputElement | null;
+  const srcEl = document.getElementById(
+    "us-source",
+  ) as HTMLTextAreaElement | null;
+  const enEl = document.getElementById("us-enabled") as HTMLInputElement | null;
+  const statusEl = document.getElementById(
+    "us-status",
+  ) as HTMLSpanElement | null;
+  if (!nameEl || !srcEl || !enEl) return false;
+  const source = srcEl.value;
+  const meta = parseUserScriptMeta(source);
+  const name = (nameEl.value.trim() || meta.name || "(無名)").trim();
+  if (!source.trim()) {
+    if (statusEl) statusEl.textContent = "ソースが空です";
+    return false;
+  }
+  let s = userScripts.find((x) => x.id === usSelectedId);
+  if (!s) {
+    s = {
+      id: generateScriptId(),
+      name,
+      source,
+      enabled: enEl.checked,
+      updatedAt: Date.now(),
+    };
+    userScripts.push(s);
+    usSelectedId = s.id;
+  } else {
+    s.name = name;
+    s.source = source;
+    s.enabled = enEl.checked;
+    s.updatedAt = Date.now();
+  }
+  saveUserScripts();
+  renderUserScriptList();
+  if (statusEl) {
+    statusEl.textContent = `保存: ${name} (@match: ${meta.matches.length}件, ${meta.runAt})`;
+  }
+  return true;
+}
+
+function setupUserScriptTool(): void {
+  userScripts = loadUserScripts();
+  const newBtn = document.getElementById("us-new") as HTMLButtonElement | null;
+  const importBtn = document.getElementById(
+    "us-import",
+  ) as HTMLButtonElement | null;
+  const importUrlBtn = document.getElementById(
+    "us-import-url",
+  ) as HTMLButtonElement | null;
+  const runNowBtn = document.getElementById(
+    "us-run-now",
+  ) as HTMLButtonElement | null;
+  const masterEl = document.getElementById(
+    "us-master-enabled",
+  ) as HTMLInputElement | null;
+  const saveBtn = document.getElementById(
+    "us-save",
+  ) as HTMLButtonElement | null;
+  const delBtn = document.getElementById(
+    "us-delete",
+  ) as HTMLButtonElement | null;
+  const exportBtn = document.getElementById(
+    "us-export",
+  ) as HTMLButtonElement | null;
+  const dupBtn = document.getElementById(
+    "us-duplicate",
+  ) as HTMLButtonElement | null;
+  const srcEl = document.getElementById(
+    "us-source",
+  ) as HTMLTextAreaElement | null;
+  const statusEl = document.getElementById(
+    "us-status",
+  ) as HTMLSpanElement | null;
+  if (!newBtn || !srcEl) return;
+
+  if (masterEl) masterEl.checked = isUserScriptsEnabled();
+  masterEl?.addEventListener("change", () => {
+    setUserScriptsEnabled(!!masterEl.checked);
+    appendUserScriptLog(`全体スイッチ: ${masterEl.checked ? "有効" : "無効"}`);
+  });
+
+  newBtn.addEventListener("click", () => {
+    usSelectedId = null;
+    const nameEl = document.getElementById(
+      "us-name",
+    ) as HTMLInputElement | null;
+    const enEl = document.getElementById(
+      "us-enabled",
+    ) as HTMLInputElement | null;
+    if (nameEl) nameEl.value = "New Script";
+    if (enEl) enEl.checked = true;
+    srcEl.value = DEFAULT_USERSCRIPT_TEMPLATE;
+    renderUserScriptList();
+    srcEl.focus();
+  });
+
+  saveBtn?.addEventListener("click", () => {
+    saveCurrentEditor();
+  });
+
+  delBtn?.addEventListener("click", () => {
+    if (!usSelectedId) return;
+    const s = userScripts.find((x) => x.id === usSelectedId);
+    if (!s) return;
+    if (!confirm(`「${s.name}」を削除しますか?`)) return;
+    userScripts = userScripts.filter((x) => x.id !== usSelectedId);
+    usSelectedId = null;
+    saveUserScripts();
+    renderUserScriptList();
+    loadSelectedToEditor();
+    if (statusEl) statusEl.textContent = "削除しました";
+  });
+
+  exportBtn?.addEventListener("click", () => {
+    const s = userScripts.find((x) => x.id === usSelectedId);
+    if (!s) {
+      if (statusEl) statusEl.textContent = "選択されていません";
+      return;
+    }
+    const blob = new Blob([s.source], {
+      type: "application/javascript;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const safe = s.name.replace(/[^\w\-]+/g, "_") || "script";
+    a.download = `${safe}.user.js`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  dupBtn?.addEventListener("click", () => {
+    const s = userScripts.find((x) => x.id === usSelectedId);
+    if (!s) return;
+    const copy: UserScript = {
+      id: generateScriptId(),
+      name: s.name + " (copy)",
+      source: s.source,
+      enabled: false,
+      updatedAt: Date.now(),
+    };
+    userScripts.push(copy);
+    usSelectedId = copy.id;
+    saveUserScripts();
+    renderUserScriptList();
+    loadSelectedToEditor();
+  });
+
+  importBtn?.addEventListener("click", () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".js,.user.js,text/javascript";
+    inp.onchange = async (): Promise<void> => {
+      const f = inp.files?.[0];
+      if (!f) return;
+      const text = await f.text();
+      const meta = parseUserScriptMeta(text);
+      const s: UserScript = {
+        id: generateScriptId(),
+        name: meta.name || f.name.replace(/\.user\.js$|\.js$/, ""),
+        source: text,
+        enabled: true,
+        updatedAt: Date.now(),
+      };
+      userScripts.push(s);
+      usSelectedId = s.id;
+      saveUserScripts();
+      renderUserScriptList();
+      loadSelectedToEditor();
+      if (statusEl) statusEl.textContent = `インポート: ${s.name}`;
+    };
+    inp.click();
+  });
+
+  importUrlBtn?.addEventListener("click", async () => {
+    const url = prompt("UserScript の URL を入力 (.user.js)");
+    if (!url) return;
+    try {
+      if (statusEl) statusEl.textContent = "取得中…";
+      const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+        url,
+        userAgent: null,
+      });
+      const text = r.body;
+      const meta = parseUserScriptMeta(text);
+      const s: UserScript = {
+        id: generateScriptId(),
+        name: meta.name || url.split("/").pop() || "script",
+        source: text,
+        enabled: true,
+        updatedAt: Date.now(),
+      };
+      userScripts.push(s);
+      usSelectedId = s.id;
+      saveUserScripts();
+      renderUserScriptList();
+      loadSelectedToEditor();
+      if (statusEl) statusEl.textContent = `インポート: ${s.name}`;
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  });
+
+  runNowBtn?.addEventListener("click", () => {
+    const a = activeTab();
+    if (!a) {
+      if (statusEl) statusEl.textContent = "アクティブなタブがありません";
+      return;
+    }
+    const s = userScripts.find((x) => x.id === usSelectedId);
+    if (s) {
+      // 選択中のものを (パターン無視で) 強制実行
+      const meta = parseUserScriptMeta(s.source);
+      const payload = buildUserScriptPayload(s, meta);
+      void invoke("tab_eval_script", { id: a.id, script: payload })
+        .then(() => {
+          if (statusEl) statusEl.textContent = `▶ 実行: ${meta.name || s.name}`;
+        })
+        .catch((e) => {
+          if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+        });
+    } else {
+      // 何も選択していない場合は通常の URL マッチ実行
+      void injectUserScriptsForTab(a.id, a.url);
+      if (statusEl) statusEl.textContent = "URL マッチで再実行";
+    }
+  });
+
+  // Ctrl+S で保存
+  srcEl.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      saveCurrentEditor();
+    }
+  });
+
+  renderUserScriptList();
+  loadSelectedToEditor();
 }

@@ -194,6 +194,10 @@
             <span class="toolbox-nav-icon">✨</span>
             <span>AI アシスタント</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="userscript">
+            <span class="toolbox-nav-icon">🐵</span>
+            <span>ユーザースクリプト</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -1606,6 +1610,130 @@
                 <span id="ai-bm-status" class="toolbox-status"></span>
               </div>
             </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="userscript" hidden>
+            <h3>🐵 ユーザースクリプト (Tampermonkey 風)</h3>
+            <p class="toolbox-note">
+              UserScript を保存して、URL に一致したページで自動実行します。
+              Greasemonkey ヘッダ (<code>// ==UserScript==</code> ...
+              <code>// ==/UserScript==</code>) を解析、<code>@match</code> /
+              <code>@include</code> / <code>@exclude</code> /
+              <code>@run-at</code> (document-start / document-end /
+              document-idle) / <code>@name</code> /
+              <code>@grant</code> に対応。<code>GM_setValue</code> /
+              <code>GM_getValue</code> / <code>GM_xmlhttpRequest</code> /
+              <code>GM_addStyle</code> / <code>GM.info</code> も実装済み。
+            </p>
+
+            <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
+              <button type="button" id="us-new" class="toolbox-primary">
+                ➕ 新規スクリプト
+              </button>
+              <button type="button" id="us-import">
+                📥 インポート (.user.js)
+              </button>
+              <button type="button" id="us-import-url">
+                🔗 URL からインポート
+              </button>
+              <button type="button" id="us-run-now">
+                ⚡ 現在ページで即実行
+              </button>
+              <label style="margin-left: auto"
+                ><input id="us-master-enabled" type="checkbox" checked />
+                全体を有効化</label
+              >
+            </div>
+
+            <div class="toolbox-row" style="align-items: stretch; gap: 8px">
+              <div
+                style="
+                  flex: 0 0 220px;
+                  border: 1px solid #ccc;
+                  border-radius: 6px;
+                  overflow-y: auto;
+                  max-height: 460px;
+                  background: #fff;
+                "
+              >
+                <ul
+                  id="us-list"
+                  style="list-style: none; margin: 0; padding: 4px"
+                ></ul>
+                <div
+                  id="us-empty"
+                  class="toolbox-note"
+                  style="padding: 12px; text-align: center"
+                >
+                  まだスクリプトがありません
+                </div>
+              </div>
+              <div
+                style="
+                  flex: 1;
+                  min-width: 0;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 6px;
+                "
+              >
+                <div class="toolbox-row" style="flex-wrap: wrap">
+                  <input
+                    id="us-name"
+                    type="text"
+                    placeholder="名前 (例: GitHub Dark Patch)"
+                    style="flex: 1; min-width: 12em"
+                  />
+                  <label
+                    ><input id="us-enabled" type="checkbox" checked />
+                    有効</label
+                  >
+                  <button type="button" id="us-save">💾 保存</button>
+                  <button type="button" id="us-delete">🗑️ 削除</button>
+                  <button type="button" id="us-export">📤 エクスポート</button>
+                  <button type="button" id="us-duplicate">📑 複製</button>
+                </div>
+                <textarea
+                  id="us-source"
+                  spellcheck="false"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 360px;
+                    font-family:
+                      ui-monospace, &quot;Cascadia Code&quot;,
+                      &quot;Consolas&quot;, monospace;
+                    font-size: 12px;
+                    white-space: pre;
+                    overflow: auto;
+                  "
+                  placeholder="// ==UserScript==
+// @name         Hello
+// @match        *://example.com/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+
+document.title = '✨ ' + document.title;"
+                ></textarea>
+                <div class="toolbox-row" style="font-size: 12px">
+                  <span id="us-status" class="toolbox-status"></span>
+                  <span style="margin-left: auto" class="toolbox-note"
+                    >Ctrl+S で保存</span
+                  >
+                </div>
+              </div>
+            </div>
+            <pre
+              id="us-log"
+              class="toolbox-textarea"
+              style="
+                min-height: 80px;
+                max-height: 160px;
+                overflow: auto;
+                font-size: 11px;
+                margin-top: 8px;
+              "
+            ></pre>
           </section>
         </div>
       </div>

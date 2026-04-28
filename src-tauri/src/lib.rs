@@ -880,6 +880,16 @@ fn browser_history(
     Ok(())
 }
 
+/// 任意の JS を指定タブで実行 (ユーザースクリプト用)。
+#[tauri::command]
+fn tab_eval_script(window: Window, id: u64, script: String) -> Result<(), String> {
+    let view = window
+        .get_webview(&view_label(id))
+        .ok_or_else(|| format!("view {id} not found"))?;
+    view.eval(&script).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// view 内 JS から呼ばれる。webview ラベルから tab id を逆引きして UI に通知。
 #[tauri::command]
 fn browser_url_changed(
@@ -4326,6 +4336,7 @@ pub fn run() {
             browser_zoom_set,
             active_tab_zoom_delta,
             active_tab_zoom_set,
+            tab_eval_script,
             bookmark_list,
             bookmark_add,
             bookmark_remove,
