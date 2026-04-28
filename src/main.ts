@@ -1322,6 +1322,8 @@ async function setupToolbox(): Promise<void> {
   setupMiniGameTool();
   setupAITool();
   setupUserScriptTool();
+  setupTechProfileTool();
+  setupOGPTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -6572,4 +6574,818 @@ function buildTranslatePayload(
     console.error('[yuzu translate]', err);
   }
 })();`;
+}
+
+// ===== 🔬 技術プロファイラ (Wappalyzer 風) =====
+
+interface TechSignature {
+  name: string;
+  category: string;
+  icon?: string;
+  // HTML/HEAD 文字列に対する正規表現
+  html?: RegExp[];
+  // <script src="..."> や <link href="..."> の URL に対する正規表現
+  url?: RegExp[];
+  // meta タグ generator の正規表現
+  meta?: { name: string; pattern: RegExp }[];
+  // Content-Type ヘッダなど
+  contentType?: RegExp[];
+  // window グローバル変数名 (現在のタブで eval 検出する場合)
+  global?: string[];
+}
+
+const TECH_SIGNATURES: TechSignature[] = [
+  // CMS
+  {
+    name: "WordPress",
+    category: "CMS",
+    icon: "📝",
+    html: [/wp-content\//i, /wp-includes\//i],
+    meta: [{ name: "generator", pattern: /WordPress/i }],
+  },
+  {
+    name: "Drupal",
+    category: "CMS",
+    icon: "📝",
+    html: [/sites\/default\/files/i, /Drupal\.settings/i],
+    meta: [{ name: "generator", pattern: /Drupal/i }],
+  },
+  {
+    name: "Joomla",
+    category: "CMS",
+    icon: "📝",
+    meta: [{ name: "generator", pattern: /Joomla/i }],
+  },
+  {
+    name: "Ghost",
+    category: "CMS",
+    icon: "📝",
+    meta: [{ name: "generator", pattern: /Ghost/i }],
+  },
+  {
+    name: "Shopify",
+    category: "ECサイト",
+    icon: "🛒",
+    html: [/cdn\.shopify\.com/i, /Shopify\.theme/i],
+  },
+  {
+    name: "BASE",
+    category: "ECサイト",
+    icon: "🛒",
+    html: [/thebase\.in/i, /base-cms/i],
+  },
+  {
+    name: "STORES",
+    category: "ECサイト",
+    icon: "🛒",
+    html: [/stores\.jp/i, /static\.stores\.jp/i],
+  },
+  // フレームワーク
+  {
+    name: "Next.js",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/__NEXT_DATA__/i, /_next\/static/i],
+    meta: [{ name: "next-head-count", pattern: /./ }],
+  },
+  {
+    name: "Nuxt.js",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/__NUXT__/i, /_nuxt\//i],
+  },
+  {
+    name: "Gatsby",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/___gatsby/i, /gatsby-/i],
+    meta: [{ name: "generator", pattern: /Gatsby/i }],
+  },
+  {
+    name: "Remix",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/__remixContext/i, /__remixManifest/i],
+  },
+  {
+    name: "SvelteKit",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/__sveltekit_/i, /\/_app\/immutable\//i],
+  },
+  {
+    name: "Astro",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/astro-island/i],
+    meta: [{ name: "generator", pattern: /Astro/i }],
+  },
+  {
+    name: "Hugo",
+    category: "静的サイトジェネレータ",
+    icon: "⚡",
+    meta: [{ name: "generator", pattern: /Hugo/i }],
+  },
+  {
+    name: "Jekyll",
+    category: "静的サイトジェネレータ",
+    icon: "⚡",
+    meta: [{ name: "generator", pattern: /Jekyll/i }],
+  },
+  // JS ライブラリ
+  {
+    name: "React",
+    category: "JSライブラリ",
+    icon: "⚛️",
+    html: [
+      /data-reactroot/i,
+      /react(\.production)?\.min\.js/i,
+      /__REACT_DEVTOOLS/i,
+    ],
+  },
+  {
+    name: "Vue.js",
+    category: "JSライブラリ",
+    icon: "💚",
+    html: [
+      /v-cloak|v-if|v-for/i,
+      /vue(\.runtime)?(\.global)?(\.min)?\.js/i,
+      /data-v-/i,
+    ],
+  },
+  {
+    name: "Angular",
+    category: "JSライブラリ",
+    icon: "🅰️",
+    html: [/ng-(app|controller|repeat|model)/i, /\bangular(\.min)?\.js/i],
+  },
+  {
+    name: "Svelte",
+    category: "JSライブラリ",
+    icon: "🔶",
+    html: [/svelte-[a-z0-9]{4,}/i],
+  },
+  {
+    name: "Preact",
+    category: "JSライブラリ",
+    icon: "⚛️",
+    html: [/preact(\.min)?\.js/i],
+  },
+  {
+    name: "Alpine.js",
+    category: "JSライブラリ",
+    icon: "🏔️",
+    html: [/x-data=|x-init=|x-show=/i, /alpine(\.min)?\.js/i],
+  },
+  {
+    name: "jQuery",
+    category: "JSライブラリ",
+    icon: "💲",
+    html: [/jquery(-\d|\.min)?\.js/i],
+  },
+  {
+    name: "Lodash",
+    category: "JSライブラリ",
+    icon: "🛠️",
+    html: [/lodash(\.min)?\.js/i],
+  },
+  {
+    name: "Three.js",
+    category: "JSライブラリ",
+    icon: "🎮",
+    html: [/three(\.min)?\.js/i],
+  },
+  {
+    name: "D3.js",
+    category: "JSライブラリ",
+    icon: "📊",
+    html: [/d3(\.v[1-9])?(\.min)?\.js/i],
+  },
+  // CSS フレームワーク
+  {
+    name: "Tailwind CSS",
+    category: "CSS",
+    icon: "🎨",
+    html: [
+      /(?:class|className)=["'][^"']*\b(?:bg-|text-|flex|grid|p-\d|m-\d|w-\d|h-\d)/i,
+      /tailwind(\.min)?\.css/i,
+    ],
+  },
+  {
+    name: "Bootstrap",
+    category: "CSS",
+    icon: "🎨",
+    html: [
+      /bootstrap(\.min)?\.css/i,
+      /class="[^"]*\b(container|row|col-(?:xs|sm|md|lg|xl)-)/i,
+    ],
+  },
+  { name: "Bulma", category: "CSS", icon: "🎨", html: [/bulma(\.min)?\.css/i] },
+  {
+    name: "Foundation",
+    category: "CSS",
+    icon: "🎨",
+    html: [/foundation(\.min)?\.css/i],
+  },
+  {
+    name: "Material-UI / MUI",
+    category: "CSS",
+    icon: "🎨",
+    html: [/mui-/i, /material-ui/i],
+  },
+  // 解析・タグマネ
+  {
+    name: "Google Analytics",
+    category: "解析",
+    icon: "📊",
+    html: [
+      /google-analytics\.com\/(ga|analytics)\.js/i,
+      /gtag\(['"]config['"], ?['"]UA-/i,
+    ],
+  },
+  {
+    name: "Google Analytics 4",
+    category: "解析",
+    icon: "📊",
+    html: [/gtag\/js\?id=G-/i, /gtag\(['"]config['"], ?['"]G-/i],
+  },
+  {
+    name: "Google Tag Manager",
+    category: "タグ管理",
+    icon: "🏷️",
+    html: [/googletagmanager\.com\/gtm\.js/i, /GTM-[A-Z0-9]+/i],
+  },
+  {
+    name: "Microsoft Clarity",
+    category: "解析",
+    icon: "📊",
+    html: [/clarity\.ms\/tag\//i],
+  },
+  {
+    name: "Hotjar",
+    category: "解析",
+    icon: "🔥",
+    html: [/static\.hotjar\.com/i, /hjSetting/i],
+  },
+  {
+    name: "Mixpanel",
+    category: "解析",
+    icon: "📊",
+    html: [/cdn\.mixpanel\.com/i, /mixpanel\.init/i],
+  },
+  {
+    name: "Plausible",
+    category: "解析",
+    icon: "📊",
+    html: [/plausible\.io\/js\//i],
+  },
+  {
+    name: "Adobe Analytics",
+    category: "解析",
+    icon: "📊",
+    html: [/s_code\.js|AppMeasurement\.js/i],
+  },
+  {
+    name: "Yahoo! JAPAN タグマネージャ",
+    category: "タグ管理",
+    icon: "🏷️",
+    html: [/s\.yjtag\.jp/i, /YJ_HISTORICAL/i],
+  },
+  // CDN / インフラ
+  {
+    name: "Cloudflare",
+    category: "CDN",
+    icon: "☁️",
+    html: [/cdnjs\.cloudflare\.com/i, /__cf_bm|cf-ray/i],
+  },
+  {
+    name: "jsDelivr",
+    category: "CDN",
+    icon: "📦",
+    html: [/cdn\.jsdelivr\.net/i],
+  },
+  { name: "unpkg", category: "CDN", icon: "📦", html: [/unpkg\.com\//i] },
+  // フォント
+  {
+    name: "Google Fonts",
+    category: "フォント",
+    icon: "🔤",
+    html: [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i],
+  },
+  {
+    name: "Adobe Fonts",
+    category: "フォント",
+    icon: "🔤",
+    html: [/use\.typekit\.net/i],
+  },
+  // 広告
+  {
+    name: "Google AdSense",
+    category: "広告",
+    icon: "💰",
+    html: [/pagead2\.googlesyndication\.com/i, /adsbygoogle/i],
+  },
+  {
+    name: "Google DFP / Ad Manager",
+    category: "広告",
+    icon: "💰",
+    html: [/securepubads\.g\.doubleclick\.net/i, /googletag\.cmd/i],
+  },
+  // 動画埋込
+  {
+    name: "YouTube Embed",
+    category: "メディア",
+    icon: "📺",
+    html: [/<iframe[^>]+(?:youtube\.com\/embed|youtu\.be)/i],
+  },
+  {
+    name: "Vimeo Embed",
+    category: "メディア",
+    icon: "📺",
+    html: [/<iframe[^>]+player\.vimeo\.com/i],
+  },
+  // SNS
+  {
+    name: "Twitter / X Widget",
+    category: "SNS",
+    icon: "🐦",
+    html: [/platform\.twitter\.com\/widgets\.js/i, /twitter-tweet/i],
+  },
+  {
+    name: "Facebook Pixel",
+    category: "解析",
+    icon: "📊",
+    html: [
+      /connect\.facebook\.net\/[^/]+\/fbevents\.js/i,
+      /fbq\(['"]init['"]/i,
+    ],
+  },
+  // 決済
+  { name: "Stripe", category: "決済", icon: "💳", html: [/js\.stripe\.com/i] },
+  {
+    name: "PayPal",
+    category: "決済",
+    icon: "💳",
+    html: [/paypal\.com\/sdk\/js/i, /paypalobjects\.com/i],
+  },
+  // 日本系
+  {
+    name: "Hatena Bookmark Button",
+    category: "SNS",
+    icon: "🇯🇵",
+    html: [/b\.hatena\.ne\.jp\/js\//i],
+  },
+  {
+    name: "LINE Tag",
+    category: "解析",
+    icon: "💬",
+    html: [/d\.line-scdn\.net\/n\/line_tag/i],
+  },
+];
+
+interface DetectedTech {
+  name: string;
+  category: string;
+  icon?: string;
+  matches: string[];
+}
+
+function detectTechFromHtml(html: string, contentType: string): DetectedTech[] {
+  const out: DetectedTech[] = [];
+  const head = html.slice(0, 200000); // 先頭 200KB のみ走査
+  for (const sig of TECH_SIGNATURES) {
+    const reasons: string[] = [];
+    if (sig.html) {
+      for (const re of sig.html) {
+        if (re.test(head)) {
+          reasons.push(`HTML: ${re.source.slice(0, 40)}`);
+          break;
+        }
+      }
+    }
+    if (sig.contentType && contentType) {
+      for (const re of sig.contentType) {
+        if (re.test(contentType)) {
+          reasons.push(`Content-Type: ${re.source}`);
+          break;
+        }
+      }
+    }
+    if (sig.meta) {
+      for (const m of sig.meta) {
+        const re = new RegExp(
+          `<meta[^>]+name=["']${m.name}["'][^>]+content=["']([^"']*)["']`,
+          "i",
+        );
+        const found = head.match(re);
+        if (found && m.pattern.test(found[1])) {
+          reasons.push(`<meta ${m.name}="${found[1].slice(0, 40)}">`);
+          break;
+        }
+      }
+    }
+    if (reasons.length > 0) {
+      out.push({
+        name: sig.name,
+        category: sig.category,
+        icon: sig.icon,
+        matches: reasons,
+      });
+    }
+  }
+  return out;
+}
+
+function setupTechProfileTool(): void {
+  const scanBtn = document.getElementById(
+    "tech-scan",
+  ) as HTMLButtonElement | null;
+  const scanUrlBtn = document.getElementById(
+    "tech-scan-url",
+  ) as HTMLButtonElement | null;
+  const urlEl = document.getElementById("tech-url") as HTMLInputElement | null;
+  const statusEl = document.getElementById(
+    "tech-status",
+  ) as HTMLSpanElement | null;
+  const resultEl = document.getElementById(
+    "tech-result",
+  ) as HTMLDivElement | null;
+  if (!scanBtn || !urlEl || !resultEl) return;
+
+  async function scan(url: string): Promise<void> {
+    if (!url) {
+      if (statusEl) statusEl.textContent = "URL がありません";
+      return;
+    }
+    if (statusEl) statusEl.textContent = "解析中…";
+    resultEl!.innerHTML = "";
+    try {
+      const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+        url,
+        userAgent: null,
+      });
+      const detected = detectTechFromHtml(r.body, r.content_type);
+      if (statusEl)
+        statusEl.textContent = `${detected.length} 件検出 (HTTP ${r.status}, ${r.bytes.toLocaleString()} bytes)`;
+      renderTechResult(url, detected);
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  }
+
+  function renderTechResult(url: string, list: DetectedTech[]): void {
+    if (!resultEl) return;
+    if (list.length === 0) {
+      resultEl.innerHTML = `<div class="toolbox-note">検出された技術はありません: ${escapeHtml(url)}</div>`;
+      return;
+    }
+    // カテゴリ別にグループ
+    const groups = new Map<string, DetectedTech[]>();
+    for (const t of list) {
+      if (!groups.has(t.category)) groups.set(t.category, []);
+      groups.get(t.category)!.push(t);
+    }
+    const html: string[] = [];
+    html.push(
+      `<div class="toolbox-note">対象: <code>${escapeHtml(url)}</code></div>`,
+    );
+    for (const [cat, items] of groups) {
+      html.push(
+        `<div style="border:1px solid #ccc;border-radius:6px;padding:8px;background:#fafafa">`,
+      );
+      html.push(
+        `<div style="font-weight:bold;margin-bottom:4px">${escapeHtml(cat)} <span style="color:#666;font-weight:normal">(${items.length})</span></div>`,
+      );
+      html.push(`<div style="display:flex;flex-wrap:wrap;gap:6px">`);
+      for (const t of items) {
+        const tip = t.matches.join(" / ").replace(/"/g, "&quot;");
+        html.push(
+          `<span title="${tip}" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#fff;border:1px solid #ccc;border-radius:14px;font-size:12px">${t.icon || "🔧"} ${escapeHtml(t.name)}</span>`,
+        );
+      }
+      html.push(`</div></div>`);
+    }
+    resultEl.innerHTML = html.join("");
+  }
+
+  scanBtn.addEventListener("click", () => {
+    const a = activeTab();
+    if (!a) {
+      if (statusEl) statusEl.textContent = "アクティブなタブがありません";
+      return;
+    }
+    void scan(a.url);
+  });
+  scanUrlBtn?.addEventListener("click", () => {
+    void scan(urlEl.value.trim());
+  });
+  urlEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void scan(urlEl.value.trim());
+    }
+  });
+}
+
+// ===== 🏷️ OGP / メタタグチェッカー =====
+
+interface OGPData {
+  url: string;
+  title: string;
+  description: string;
+  canonical: string;
+  language: string;
+  charset: string;
+  favicon: string;
+  // OG
+  ogTitle: string;
+  ogDescription: string;
+  ogImage: string;
+  ogUrl: string;
+  ogType: string;
+  ogSiteName: string;
+  ogLocale: string;
+  // Twitter
+  twitterCard: string;
+  twitterTitle: string;
+  twitterDescription: string;
+  twitterImage: string;
+  twitterSite: string;
+  twitterCreator: string;
+  // 全メタタグ (raw)
+  raw: { key: string; value: string }[];
+}
+
+function extractMeta(html: string, base: string): OGPData {
+  const data: OGPData = {
+    url: base,
+    title: "",
+    description: "",
+    canonical: "",
+    language: "",
+    charset: "",
+    favicon: "",
+    ogTitle: "",
+    ogDescription: "",
+    ogImage: "",
+    ogUrl: "",
+    ogType: "",
+    ogSiteName: "",
+    ogLocale: "",
+    twitterCard: "",
+    twitterTitle: "",
+    twitterDescription: "",
+    twitterImage: "",
+    twitterSite: "",
+    twitterCreator: "",
+    raw: [],
+  };
+
+  const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+  const head = headMatch ? headMatch[1] : html.slice(0, 100000);
+
+  const t = head.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (t) data.title = decodeEntities(t[1].trim());
+
+  // <html lang>
+  const lang = html.match(/<html[^>]+lang=["']([^"']+)["']/i);
+  if (lang) data.language = lang[1];
+  // charset
+  const cs = head.match(/<meta[^>]+charset=["']?([\w-]+)/i);
+  if (cs) data.charset = cs[1];
+
+  // canonical
+  const can = head.match(
+    /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i,
+  );
+  if (can) data.canonical = resolveUrl(can[1], base);
+
+  // favicon
+  const fav = head.match(
+    /<link[^>]+rel=["'](?:shortcut )?icon["'][^>]+href=["']([^"']+)["']/i,
+  );
+  if (fav) data.favicon = resolveUrl(fav[1], base);
+
+  // 全 <meta> 抽出
+  const metaRe = /<meta\s+([^>]+?)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = metaRe.exec(head)) !== null) {
+    const attrs = m[1];
+    const nameM = attrs.match(
+      /(?:^|\s)(?:name|property|http-equiv|itemprop)\s*=\s*["']([^"']+)["']/i,
+    );
+    const contentM = attrs.match(/(?:^|\s)content\s*=\s*["']([^"']*)["']/i);
+    if (!nameM || !contentM) continue;
+    const key = nameM[1];
+    const val = decodeEntities(contentM[1]);
+    data.raw.push({ key, value: val });
+    const lk = key.toLowerCase();
+    if (lk === "description") data.description = val;
+    else if (lk === "og:title") data.ogTitle = val;
+    else if (lk === "og:description") data.ogDescription = val;
+    else if (lk === "og:image") data.ogImage = resolveUrl(val, base);
+    else if (lk === "og:url") data.ogUrl = val;
+    else if (lk === "og:type") data.ogType = val;
+    else if (lk === "og:site_name") data.ogSiteName = val;
+    else if (lk === "og:locale") data.ogLocale = val;
+    else if (lk === "twitter:card") data.twitterCard = val;
+    else if (lk === "twitter:title") data.twitterTitle = val;
+    else if (lk === "twitter:description") data.twitterDescription = val;
+    else if (lk === "twitter:image") data.twitterImage = resolveUrl(val, base);
+    else if (lk === "twitter:site") data.twitterSite = val;
+    else if (lk === "twitter:creator") data.twitterCreator = val;
+  }
+  return data;
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+function resolveUrl(u: string, base: string): string {
+  try {
+    return new URL(u, base).toString();
+  } catch {
+    return u;
+  }
+}
+
+function setupOGPTool(): void {
+  const scanBtn = document.getElementById(
+    "ogp-scan",
+  ) as HTMLButtonElement | null;
+  const scanUrlBtn = document.getElementById(
+    "ogp-scan-url",
+  ) as HTMLButtonElement | null;
+  const urlEl = document.getElementById("ogp-url") as HTMLInputElement | null;
+  const statusEl = document.getElementById(
+    "ogp-status",
+  ) as HTMLSpanElement | null;
+  const previewEl = document.getElementById(
+    "ogp-preview",
+  ) as HTMLDivElement | null;
+  const twitterEl = document.getElementById(
+    "ogp-twitter",
+  ) as HTMLDivElement | null;
+  const tableEl = document.getElementById(
+    "ogp-table",
+  ) as HTMLTableElement | null;
+  const checksEl = document.getElementById(
+    "ogp-checks",
+  ) as HTMLUListElement | null;
+  if (!scanBtn || !urlEl || !previewEl || !tableEl || !checksEl) return;
+
+  async function scan(url: string): Promise<void> {
+    if (!url) {
+      if (statusEl) statusEl.textContent = "URL がありません";
+      return;
+    }
+    if (statusEl) statusEl.textContent = "取得中…";
+    previewEl!.style.display = "none";
+    previewEl!.innerHTML = "";
+    if (twitterEl) twitterEl.innerHTML = "";
+    tableEl!.innerHTML = "";
+    checksEl!.innerHTML = "";
+    try {
+      const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+        url,
+        userAgent: null,
+      });
+      const data = extractMeta(r.body, url);
+      if (statusEl)
+        statusEl.textContent = `OK (HTTP ${r.status}, メタタグ ${data.raw.length} 個)`;
+      renderOGP(data);
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+    }
+  }
+
+  function renderOGP(d: OGPData): void {
+    // Facebook 風プレビュー
+    const fbTitle = d.ogTitle || d.title;
+    const fbDesc = d.ogDescription || d.description;
+    const fbImg = d.ogImage;
+    const fbHost = (() => {
+      try {
+        return new URL(d.ogUrl || d.url).hostname;
+      } catch {
+        return "";
+      }
+    })();
+    previewEl!.style.display = "block";
+    previewEl!.innerHTML = `
+      <div style="border:1px solid #ccd0d5;border-radius:8px;overflow:hidden;max-width:520px;background:#f2f3f5">
+        ${fbImg ? `<div style="width:100%;aspect-ratio:1.91;background:#e4e6eb url('${escapeAttr(fbImg)}') center/cover no-repeat"></div>` : ""}
+        <div style="padding:10px 12px">
+          <div style="text-transform:uppercase;color:#606770;font-size:12px;margin-bottom:4px">${escapeHtml(fbHost)}</div>
+          <div style="font-weight:bold;font-size:16px;color:#1d2129;line-height:1.3;margin-bottom:4px">${escapeHtml(fbTitle || "(タイトルなし)")}</div>
+          <div style="color:#606770;font-size:13px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${escapeHtml(fbDesc || "(説明なし)")}</div>
+        </div>
+      </div>`;
+
+    // Twitter プレビュー
+    if (twitterEl) {
+      const tTitle = d.twitterTitle || d.ogTitle || d.title;
+      const tDesc = d.twitterDescription || d.ogDescription || d.description;
+      const tImg = d.twitterImage || d.ogImage;
+      const isLarge =
+        (d.twitterCard || "").toLowerCase() === "summary_large_image";
+      twitterEl.innerHTML = `
+        <div style="border:1px solid #cfd9de;border-radius:16px;overflow:hidden;max-width:520px">
+          ${
+            tImg
+              ? isLarge
+                ? `<div style="width:100%;aspect-ratio:2;background:#eff3f4 url('${escapeAttr(tImg)}') center/cover no-repeat"></div>`
+                : ""
+              : ""
+          }
+          <div style="display:flex;${isLarge || !tImg ? "" : "min-height:125px"}">
+            ${
+              !isLarge && tImg
+                ? `<div style="flex:0 0 125px;background:#eff3f4 url('${escapeAttr(tImg)}') center/cover no-repeat;border-right:1px solid #cfd9de"></div>`
+                : ""
+            }
+            <div style="padding:12px;flex:1">
+              <div style="color:#536471;font-size:13px;margin-bottom:2px">${escapeHtml(fbHost)}</div>
+              <div style="font-size:15px;color:#0f1419;line-height:1.3;margin-bottom:2px">${escapeHtml(tTitle || "(タイトルなし)")}</div>
+              <div style="color:#536471;font-size:13px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${escapeHtml(tDesc || "")}</div>
+              <div style="color:#536471;font-size:12px;margin-top:4px">card: ${escapeHtml(d.twitterCard || "(未指定)")}</div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    // テーブル
+    const rows: { k: string; v: string }[] = [];
+    rows.push({ k: "title", v: d.title });
+    rows.push({ k: "description", v: d.description });
+    rows.push({ k: "canonical", v: d.canonical });
+    rows.push({ k: "html lang", v: d.language });
+    rows.push({ k: "charset", v: d.charset });
+    rows.push({ k: "favicon", v: d.favicon });
+    for (const r of d.raw) rows.push({ k: r.key, v: r.value });
+    tableEl!.innerHTML =
+      `<thead><tr style="background:#f0f0f0"><th style="text-align:left;padding:4px 6px;border:1px solid #ddd;width:30%">キー</th><th style="text-align:left;padding:4px 6px;border:1px solid #ddd">値</th></tr></thead><tbody>` +
+      rows
+        .filter((r) => r.v)
+        .map(
+          (r) =>
+            `<tr><td style="padding:4px 6px;border:1px solid #ddd;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(r.k)}</td><td style="padding:4px 6px;border:1px solid #ddd;word-break:break-all">${escapeHtml(r.v)}</td></tr>`,
+        )
+        .join("") +
+      `</tbody>`;
+
+    // チェック
+    const checks: { ok: boolean; msg: string }[] = [];
+    checks.push({ ok: !!d.title, msg: "<title> がある" });
+    checks.push({ ok: !!d.description, msg: "<meta description> がある" });
+    checks.push({ ok: !!d.ogTitle, msg: "og:title がある" });
+    checks.push({ ok: !!d.ogDescription, msg: "og:description がある" });
+    checks.push({ ok: !!d.ogImage, msg: "og:image がある" });
+    checks.push({ ok: !!d.ogUrl, msg: "og:url がある" });
+    checks.push({ ok: !!d.ogType, msg: "og:type がある" });
+    checks.push({ ok: !!d.twitterCard, msg: "twitter:card がある" });
+    checks.push({ ok: !!d.canonical, msg: "rel=canonical がある" });
+    checksEl!.innerHTML = checks
+      .map(
+        (c) =>
+          `<li style="color:${c.ok ? "#1a7f37" : "#cf222e"}">${c.ok ? "✅" : "❌"} ${escapeHtml(c.msg)}</li>`,
+      )
+      .join("");
+  }
+
+  scanBtn.addEventListener("click", () => {
+    const a = activeTab();
+    if (!a) {
+      if (statusEl) statusEl.textContent = "アクティブなタブがありません";
+      return;
+    }
+    void scan(a.url);
+  });
+  scanUrlBtn?.addEventListener("click", () => void scan(urlEl.value.trim()));
+  urlEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void scan(urlEl.value.trim());
+    }
+  });
+}
+
+function escapeAttr(s: string): string {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

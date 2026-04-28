@@ -220,6 +220,14 @@
             <span class="toolbox-nav-icon">🐵</span>
             <span>ユーザースクリプト</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="techprofile">
+            <span class="toolbox-nav-icon">🔬</span>
+            <span>技術プロファイラ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="ogp">
+            <span class="toolbox-nav-icon">🏷️</span>
+            <span>OGP チェッカー</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -1756,6 +1764,81 @@ document.title = '✨ ' + document.title;"
                 margin-top: 8px;
               "
             ></pre>
+          </section>
+
+          <section class="toolbox-tool" data-tool="techprofile" hidden>
+            <h3>🔬 技術プロファイラ (Wappalyzer 風)</h3>
+            <p class="toolbox-note">
+              ページの HTML / レスポンスヘッダ / Cookie 名 / グローバル変数を解析して、
+              使用されている CMS・フレームワーク・ライブラリ・解析ツールなどを推定します。
+            </p>
+            <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
+              <button type="button" id="tech-scan" class="toolbox-primary">
+                🔍 現在のタブを解析
+              </button>
+              <input
+                id="tech-url"
+                type="text"
+                placeholder="または URL を直接入力"
+                style="flex: 1; min-width: 16em"
+              />
+              <button type="button" id="tech-scan-url">URL を解析</button>
+              <span id="tech-status" class="toolbox-status"></span>
+            </div>
+            <div
+              id="tech-result"
+              style="
+                margin-top: 8px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+              "
+            ></div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="ogp" hidden>
+            <h3>🏷️ OGP / メタタグチェッカー</h3>
+            <p class="toolbox-note">
+              ページの Open Graph / Twitter Card / 標準メタタグを取得し、
+              SNS でのプレビュー表示をシミュレートします。
+            </p>
+            <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
+              <button type="button" id="ogp-scan" class="toolbox-primary">
+                🔍 現在のタブを解析
+              </button>
+              <input
+                id="ogp-url"
+                type="text"
+                placeholder="または URL を直接入力"
+                style="flex: 1; min-width: 16em"
+              />
+              <button type="button" id="ogp-scan-url">URL を解析</button>
+              <span id="ogp-status" class="toolbox-status"></span>
+            </div>
+            <div
+              id="ogp-preview"
+              style="margin-top: 8px; display: none"
+            ></div>
+            <details style="margin-top: 8px">
+              <summary>🐦 Twitter / X カードプレビュー</summary>
+              <div id="ogp-twitter" style="margin-top: 8px"></div>
+            </details>
+            <details style="margin-top: 8px" open>
+              <summary>📋 検出されたメタタグ一覧</summary>
+              <table
+                id="ogp-table"
+                style="
+                  width: 100%;
+                  border-collapse: collapse;
+                  margin-top: 8px;
+                  font-size: 12px;
+                "
+              ></table>
+            </details>
+            <details style="margin-top: 8px">
+              <summary>⚠️ 推奨タグのチェック結果</summary>
+              <ul id="ogp-checks" style="margin: 8px 0; padding-left: 20px"></ul>
+            </details>
           </section>
         </div>
       </div>
