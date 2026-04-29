@@ -807,3 +807,107 @@ body {
   border: 0;
   background: #ffffff;
 }
+
+/* ===== charcount / todo / clock cards ===== */
+.cc-card {
+  background: #f6f8fa;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  text-align: center;
+}
+.cc-card-label {
+  font-size: 11px;
+  color: #666;
+}
+.cc-card-value {
+  font-size: 22px;
+  font-weight: bold;
+  color: #1f883d;
+}
+.cc-bar {
+  width: 100%;
+  height: 8px;
+  background: #e1e4e8;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.cc-bar-fill {
+  height: 100%;
+  width: 0%;
+  transition: width 0.2s;
+}
+.todo-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: #fff;
+}
+.todo-item.done {
+  opacity: 0.55;
+  background: #f0f0f0;
+}
+.todo-item.done .todo-text {
+  text-decoration: line-through;
+}
+.todo-text {
+  flex: 1;
+  cursor: pointer;
+}
+.todo-pri-low { color: #6c757d; }
+.todo-pri-medium { color: #0969da; }
+.todo-pri-high { color: #cf222e; font-weight: bold; }
+.todo-meta {
+  font-size: 10px;
+  color: #888;
+  display: flex;
+  gap: 6px;
+}
+.todo-tag {
+  background: #ddf4ff;
+  color: #0969da;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 10px;
+}
+.todo-overdue { color: #cf222e !important; font-weight: bold; }
+.cl-tab.active {
+  background: #2f6fdb !important;
+  color: #fff !important;
+}
+.cl-wc-item, .cl-al-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: #fff;
+}
+.tm-tab {
+  padding: 4px 10px;
+  border: 1px solid #888;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  background: #2a2a2a;
+  color: #ccc;
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.tm-tab.active {
+  background: #0a0a0a;
+  color: #fff;
+  border-bottom-color: #0a0a0a;
+}
+.tm-tab-close {
+  margin-left: 6px;
+  color: #888;
+  cursor: pointer;
+}
+.tm-tab-close:hover { color: #cf222e; }

@@ -233,6 +233,22 @@
             <span class="toolbox-nav-icon">📶</span>
             <span>スピードテスト</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="charcount">
+            <span class="toolbox-nav-icon">🔢</span>
+            <span>文字数カウント</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="todo">
+            <span class="toolbox-nav-icon">✅</span>
+            <span>Todo</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="clock">
+            <span class="toolbox-nav-icon">⏰</span>
+            <span>クロック</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="terminal">
+            <span class="toolbox-nav-icon">💻</span>
+            <span>ターミナル</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -2784,6 +2800,613 @@ document.title = '✨ ' + document.title;"
                 </table>
               </div>
             </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="charcount" hidden>
+            <h3>🔢 文字数カウント</h3>
+            <p class="toolbox-note">
+              文字数 / バイト数 (UTF-8) / 行数 / 単語数 /
+              全角・半角内訳をリアルタイム集計。Twitter / SMS
+              の制限プログレスバー付き。
+            </p>
+            <textarea
+              id="cc-input"
+              class="toolbox-textarea"
+              placeholder="ここにテキストを入力／貼り付け"
+              style="
+                min-height: 220px;
+                font-family: ui-monospace, Consolas, monospace;
+              "
+            ></textarea>
+            <div
+              class="toolbox-row toolbox-actions"
+              style="flex-wrap: wrap; gap: 6px"
+            >
+              <button type="button" id="cc-paste">
+                📥 クリップボードから貼り付け
+              </button>
+              <button type="button" id="cc-copy">📋 入力をコピー</button>
+              <button type="button" id="cc-clear">クリア</button>
+              <label class="toolbox-inline-check"
+                ><input id="cc-trim" type="checkbox" /> 前後の空白を trim</label
+              >
+              <label class="toolbox-inline-check"
+                ><input id="cc-collapse" type="checkbox" /> 連続空白を 1
+                個に</label
+              >
+              <span id="cc-status" class="toolbox-status"></span>
+            </div>
+            <div
+              style="
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 8px;
+                margin-top: 8px;
+              "
+            >
+              <div class="cc-card">
+                <div class="cc-card-label">文字数 (空白含む)</div>
+                <div id="cc-chars" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">文字数 (空白なし)</div>
+                <div id="cc-chars-ns" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">バイト数 (UTF-8)</div>
+                <div id="cc-bytes" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">行数</div>
+                <div id="cc-lines" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">単語数</div>
+                <div id="cc-words" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">段落数</div>
+                <div id="cc-paragraphs" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">全角文字</div>
+                <div id="cc-fullwidth" class="cc-card-value">0</div>
+              </div>
+              <div class="cc-card">
+                <div class="cc-card-label">半角文字</div>
+                <div id="cc-halfwidth" class="cc-card-value">0</div>
+              </div>
+            </div>
+            <div style="margin-top: 12px">
+              <div
+                style="
+                  font-size: 12px;
+                  color: #555;
+                  display: flex;
+                  justify-content: space-between;
+                "
+              >
+                <span>Twitter / X (280 文字)</span>
+                <span id="cc-twitter-text">0 / 280</span>
+              </div>
+              <div class="cc-bar">
+                <div
+                  id="cc-twitter-bar"
+                  class="cc-bar-fill"
+                  style="background: #1da1f2"
+                ></div>
+              </div>
+            </div>
+            <div style="margin-top: 8px">
+              <div
+                style="
+                  font-size: 12px;
+                  color: #555;
+                  display: flex;
+                  justify-content: space-between;
+                "
+              >
+                <span>SMS (160 文字 / GSM-7)</span>
+                <span id="cc-sms-text">0 / 160</span>
+              </div>
+              <div class="cc-bar">
+                <div
+                  id="cc-sms-bar"
+                  class="cc-bar-fill"
+                  style="background: #20c997"
+                ></div>
+              </div>
+            </div>
+            <div style="margin-top: 8px">
+              <div
+                style="
+                  font-size: 12px;
+                  color: #555;
+                  display: flex;
+                  justify-content: space-between;
+                "
+              >
+                <span>原稿用紙 (400 字)</span>
+                <span id="cc-genko-text">0 枚</span>
+              </div>
+              <div class="cc-bar">
+                <div
+                  id="cc-genko-bar"
+                  class="cc-bar-fill"
+                  style="background: #f59f00"
+                ></div>
+              </div>
+            </div>
+            <details style="margin-top: 12px">
+              <summary>📊 文字種ごとの内訳</summary>
+              <pre
+                id="cc-breakdown"
+                class="toolbox-output"
+                style="min-height: 120px; margin-top: 6px"
+              ></pre>
+            </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="todo" hidden>
+            <h3>✅ Todo リスト</h3>
+            <p class="toolbox-note">
+              ローカル保存
+              (localStorage)。優先度・期限・タグ・検索・フィルタ・並べ替え・JSON
+              エクスポート/インポート対応。
+            </p>
+            <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+              <input
+                id="todo-text"
+                type="text"
+                placeholder="新しいタスク… (Enter で追加)"
+                style="flex: 1; min-width: 16em"
+              />
+              <select id="todo-priority">
+                <option value="low">優先度: 低</option>
+                <option value="medium" selected>優先度: 中</option>
+                <option value="high">優先度: 高</option>
+              </select>
+              <input id="todo-due" type="date" />
+              <input
+                id="todo-tags"
+                type="text"
+                placeholder="タグ (カンマ区切り)"
+                style="width: 14em"
+              />
+              <button id="todo-add" class="toolbox-primary" type="button">
+                追加
+              </button>
+            </div>
+            <div
+              class="toolbox-row"
+              style="gap: 6px; margin-top: 6px; flex-wrap: wrap"
+            >
+              <select id="todo-filter">
+                <option value="all">全て</option>
+                <option value="active">未完了のみ</option>
+                <option value="done">完了のみ</option>
+                <option value="overdue">期限超過</option>
+                <option value="today">今日まで</option>
+              </select>
+              <select id="todo-sort">
+                <option value="created-desc">作成日 (新しい順)</option>
+                <option value="created-asc">作成日 (古い順)</option>
+                <option value="due-asc">期限 (近い順)</option>
+                <option value="priority">優先度</option>
+                <option value="alpha">名前 (A→Z)</option>
+              </select>
+              <input
+                id="todo-search"
+                type="text"
+                placeholder="検索…"
+                style="flex: 1; min-width: 12em"
+              />
+              <button id="todo-clear-done" type="button">完了を削除</button>
+              <button id="todo-export" type="button">エクスポート</button>
+              <button id="todo-import" type="button">インポート</button>
+              <input
+                id="todo-import-file"
+                type="file"
+                accept=".json,application/json"
+                hidden
+              />
+              <span id="todo-status" class="toolbox-status"></span>
+            </div>
+            <div style="margin-top: 8px">
+              <div
+                style="
+                  display: flex;
+                  gap: 8px;
+                  font-size: 12px;
+                  color: #555;
+                  margin-bottom: 4px;
+                "
+              >
+                <span>合計 <strong id="todo-total">0</strong></span>
+                <span>未完了 <strong id="todo-active">0</strong></span>
+                <span>完了 <strong id="todo-done">0</strong></span>
+                <span
+                  >期限超過
+                  <strong id="todo-overdue" style="color: #cf222e"
+                    >0</strong
+                  ></span
+                >
+                <span style="margin-left: auto"
+                  >進捗 <strong id="todo-progress">0%</strong></span
+                >
+              </div>
+              <div class="cc-bar">
+                <div
+                  id="todo-progress-bar"
+                  class="cc-bar-fill"
+                  style="background: #1f883d; width: 0%"
+                ></div>
+              </div>
+            </div>
+            <ul
+              id="todo-list"
+              style="
+                list-style: none;
+                padding: 0;
+                margin: 8px 0 0 0;
+                max-height: 480px;
+                overflow: auto;
+              "
+            ></ul>
+          </section>
+
+          <section class="toolbox-tool" data-tool="clock" hidden>
+            <h3>⏰ クロック (ストップウォッチ / タイマー / 世界時計)</h3>
+            <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+              <button
+                type="button"
+                class="toolbox-tab-btn cl-tab"
+                data-cl-tab="stopwatch"
+              >
+                ⏱ ストップウォッチ
+              </button>
+              <button
+                type="button"
+                class="toolbox-tab-btn cl-tab"
+                data-cl-tab="timer"
+              >
+                ⏲ タイマー
+              </button>
+              <button
+                type="button"
+                class="toolbox-tab-btn cl-tab"
+                data-cl-tab="world"
+              >
+                🌐 世界時計
+              </button>
+              <button
+                type="button"
+                class="toolbox-tab-btn cl-tab"
+                data-cl-tab="alarm"
+              >
+                🔔 アラーム
+              </button>
+            </div>
+
+            <div
+              class="cl-pane"
+              data-cl-pane="stopwatch"
+              style="margin-top: 12px"
+            >
+              <div
+                id="cl-sw-display"
+                style="
+                  text-align: center;
+                  font-size: 56px;
+                  font-family: ui-monospace, Consolas, monospace;
+                  padding: 16px;
+                  background: #111;
+                  color: #0f0;
+                  border-radius: 8px;
+                "
+              >
+                00:00:00.000
+              </div>
+              <div
+                class="toolbox-row toolbox-actions"
+                style="justify-content: center; gap: 6px; margin-top: 8px"
+              >
+                <button type="button" id="cl-sw-start" class="toolbox-primary">
+                  ▶ スタート
+                </button>
+                <button type="button" id="cl-sw-lap">🏁 ラップ</button>
+                <button type="button" id="cl-sw-reset">⟲ リセット</button>
+              </div>
+              <table
+                id="cl-sw-laps"
+                style="
+                  width: 100%;
+                  margin-top: 10px;
+                  font-size: 12px;
+                  border-collapse: collapse;
+                "
+              >
+                <thead style="background: #f6f8fa">
+                  <tr>
+                    <th style="padding: 4px; text-align: left">#</th>
+                    <th style="padding: 4px; text-align: right">ラップ</th>
+                    <th style="padding: 4px; text-align: right">合計</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div
+              class="cl-pane"
+              data-cl-pane="timer"
+              hidden
+              style="margin-top: 12px"
+            >
+              <div
+                class="toolbox-row"
+                style="gap: 4px; justify-content: center"
+              >
+                <input
+                  id="cl-tm-h"
+                  type="number"
+                  min="0"
+                  max="99"
+                  value="0"
+                  style="width: 4em; font-size: 24px; text-align: center"
+                />
+                :
+                <input
+                  id="cl-tm-m"
+                  type="number"
+                  min="0"
+                  max="59"
+                  value="5"
+                  style="width: 4em; font-size: 24px; text-align: center"
+                />
+                :
+                <input
+                  id="cl-tm-s"
+                  type="number"
+                  min="0"
+                  max="59"
+                  value="0"
+                  style="width: 4em; font-size: 24px; text-align: center"
+                />
+              </div>
+              <div
+                class="toolbox-row"
+                style="justify-content: center; gap: 6px; margin-top: 8px"
+              >
+                <button type="button" class="cl-tm-preset" data-sec="60">
+                  1 分
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="180">
+                  3 分
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="300">
+                  5 分
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="600">
+                  10 分
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="900">
+                  15 分
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="1500">
+                  25 分 (ポモドーロ)
+                </button>
+                <button type="button" class="cl-tm-preset" data-sec="3600">
+                  1 時間
+                </button>
+              </div>
+              <div
+                id="cl-tm-display"
+                style="
+                  text-align: center;
+                  font-size: 56px;
+                  font-family: ui-monospace, Consolas, monospace;
+                  padding: 16px;
+                  background: #111;
+                  color: #ff9f43;
+                  border-radius: 8px;
+                  margin-top: 8px;
+                "
+              >
+                00:05:00
+              </div>
+              <div class="cc-bar" style="height: 10px">
+                <div
+                  id="cl-tm-bar"
+                  class="cc-bar-fill"
+                  style="background: #ff9f43; width: 100%"
+                ></div>
+              </div>
+              <div
+                class="toolbox-row toolbox-actions"
+                style="justify-content: center; gap: 6px; margin-top: 8px"
+              >
+                <button type="button" id="cl-tm-start" class="toolbox-primary">
+                  ▶ 開始
+                </button>
+                <button type="button" id="cl-tm-pause">⏸ 一時停止</button>
+                <button type="button" id="cl-tm-reset">⟲ リセット</button>
+                <label class="toolbox-inline-check"
+                  ><input id="cl-tm-beep" type="checkbox" checked />
+                  終了時に音</label
+                >
+                <label class="toolbox-inline-check"
+                  ><input id="cl-tm-loop" type="checkbox" /> ループ</label
+                >
+              </div>
+              <span
+                id="cl-tm-status"
+                class="toolbox-status"
+                style="display: block; text-align: center; margin-top: 4px"
+              ></span>
+            </div>
+
+            <div
+              class="cl-pane"
+              data-cl-pane="world"
+              hidden
+              style="margin-top: 12px"
+            >
+              <div class="toolbox-row" style="gap: 6px">
+                <input
+                  id="cl-wc-add"
+                  type="text"
+                  placeholder="IANA タイムゾーン (例: Europe/London)"
+                  style="flex: 1"
+                />
+                <button
+                  type="button"
+                  id="cl-wc-add-btn"
+                  class="toolbox-primary"
+                >
+                  追加
+                </button>
+                <button type="button" id="cl-wc-reset-btn">
+                  標準セットに戻す
+                </button>
+              </div>
+              <ul
+                id="cl-wc-list"
+                style="list-style: none; padding: 0; margin: 8px 0 0 0"
+              ></ul>
+            </div>
+
+            <div
+              class="cl-pane"
+              data-cl-pane="alarm"
+              hidden
+              style="margin-top: 12px"
+            >
+              <p class="toolbox-note">
+                指定時刻になったらブラウザを最前面に出して音を鳴らします。アプリを開いている必要があります。
+              </p>
+              <div class="toolbox-row" style="gap: 6px">
+                <input id="cl-al-time" type="time" step="1" />
+                <input
+                  id="cl-al-label"
+                  type="text"
+                  placeholder="ラベル"
+                  style="flex: 1"
+                />
+                <button type="button" id="cl-al-add" class="toolbox-primary">
+                  追加
+                </button>
+              </div>
+              <ul
+                id="cl-al-list"
+                style="list-style: none; padding: 0; margin: 8px 0 0 0"
+              ></ul>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="terminal" hidden>
+            <h3>💻 ターミナル (Tabby 風)</h3>
+            <p class="toolbox-note">
+              シェルを起動してタブで管理します。複数セッション並行可。Ctrl+L
+              でクリア、Ctrl+C は SIGINT 相当 (シェルに依存)。
+              <strong>注意:</strong> PTY 非対応のためフルスクリーン TUI (vim,
+              less, htop など)
+              は使用できません。通常の対話シェルコマンドは動作します。
+            </p>
+            <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+              <select id="tm-shell">
+                <option value="cmd">cmd.exe</option>
+                <option value="powershell">PowerShell (powershell.exe)</option>
+                <option value="pwsh">PowerShell 7 (pwsh.exe)</option>
+                <option value="bash">WSL bash</option>
+                <option value="git-bash">Git Bash</option>
+              </select>
+              <input
+                id="tm-cwd"
+                type="text"
+                placeholder="作業ディレクトリ (空でデフォルト)"
+                style="flex: 1; min-width: 16em"
+              />
+              <button type="button" id="tm-pick-cwd">参照…</button>
+              <button type="button" id="tm-new" class="toolbox-primary">
+                ➕ 新しいタブ
+              </button>
+              <button type="button" id="tm-close">✖ 現在のタブを閉じる</button>
+            </div>
+            <div
+              class="toolbox-row"
+              style="
+                gap: 4px;
+                margin-top: 6px;
+                flex-wrap: wrap;
+                align-items: center;
+              "
+              id="tm-tabs"
+            ></div>
+            <pre
+              id="tm-output"
+              tabindex="0"
+              style="
+                margin-top: 8px;
+                background: #0a0a0a;
+                color: #d4d4d4;
+                padding: 10px;
+                min-height: 360px;
+                max-height: 480px;
+                overflow: auto;
+                font-family:
+                  ui-monospace, &quot;Cascadia Code&quot;, Consolas, monospace;
+                font-size: 12px;
+                white-space: pre-wrap;
+                word-break: break-all;
+                border-radius: 6px;
+                outline: none;
+              "
+            ></pre>
+            <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+              <span
+                style="
+                  color: #1f883d;
+                  font-family: monospace;
+                  font-weight: bold;
+                "
+                >&gt;</span
+              >
+              <input
+                id="tm-input"
+                type="text"
+                placeholder="コマンドを入力 (Enter で送信、↑↓ で履歴、Tab は無効)"
+                style="
+                  flex: 1;
+                  font-family: ui-monospace, Consolas, monospace;
+                  font-size: 12px;
+                "
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button type="button" id="tm-send">送信</button>
+              <button
+                type="button"
+                id="tm-sigint"
+                title="Ctrl+C 相当 (\\x03 を送信)"
+              >
+                Ctrl+C
+              </button>
+              <button type="button" id="tm-clear">クリア</button>
+              <label class="toolbox-inline-check"
+                ><input id="tm-ansi-strip" type="checkbox" checked /> ANSI
+                を除去</label
+              >
+              <label class="toolbox-inline-check"
+                ><input id="tm-autoscroll" type="checkbox" checked />
+                自動スクロール</label
+              >
+            </div>
+            <span
+              id="tm-status"
+              class="toolbox-status"
+              style="display: block; margin-top: 4px"
+            ></span>
           </section>
         </div>
       </div>

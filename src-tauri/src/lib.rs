@@ -4311,6 +4311,7 @@ pub fn run() {
         .manage(AppState::default())
         .manage(BookmarksState::default())
         .manage(ToolboxState::default())
+        .manage(TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             tab_new,
             tab_close,
@@ -4376,6 +4377,10 @@ pub fn run() {
             speedtest_download,
             speedtest_upload,
             speedtest_ping,
+            terminal_spawn,
+            terminal_write,
+            terminal_kill,
+            terminal_list,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
@@ -4888,4 +4893,218 @@ fn speedtest_ping(host: String, port: Option<u16>, count: Option<u32>) -> Result
         max_ms: max,
         jitter_ms: jitter,
     })
+}
+
+// ===== ターミナル (Tabby 風 シンプル PTY なし版) =====
+//
+// portable-pty の追加を避けるため std::process::Command + Stdio::piped() で実装。
+// 行バッファされたシェル (cmd / pwsh / bash) で対話的なコマンドを実行可能。
+// stdout/stderr は別スレッドで読み出して "terminal-output" イベントで JS へ送る。
+// 終了は "terminal-exit" イベント。
+
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+struct TerminalSession {
+    child: Child,
+    stdin: Option<ChildStdin>,
+}
+
+#[derive(Default)]
+struct TerminalState(Mutex<HashMap<u64, TerminalSession>>);
+
+static TERMINAL_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Serialize)]
+struct TerminalChunk {
+    session_id: u64,
+    stream: String,
+    data: String,
+}
+
+#[derive(Clone, Serialize)]
+struct TerminalExit {
+    session_id: u64,
+    code: Option<i32>,
+}
+
+fn resolve_shell(spec: &str) -> Result<(String, Vec<String>), String> {
+    let s = spec.trim().to_lowercase();
+    #[cfg(target_os = "windows")]
+    let v = match s.as_str() {
+        "cmd" | "" => ("cmd.exe".to_string(), vec!["/Q".to_string(), "/K".to_string(), "prompt $P$G".to_string()]),
+        "powershell" | "ps" => ("powershell.exe".to_string(), vec!["-NoLogo".to_string(), "-NoProfile".to_string()]),
+        "pwsh" => ("pwsh.exe".to_string(), vec!["-NoLogo".to_string(), "-NoProfile".to_string()]),
+        "bash" | "wsl" => ("wsl.exe".to_string(), vec!["bash".to_string(), "-i".to_string()]),
+        "git-bash" => ("C:\\Program Files\\Git\\bin\\bash.exe".to_string(), vec!["-i".to_string()]),
+        other => (other.to_string(), vec![]),
+    };
+    #[cfg(not(target_os = "windows"))]
+    let v = match s.as_str() {
+        "" | "bash" => ("bash".to_string(), vec!["-i".to_string()]),
+        "zsh" => ("zsh".to_string(), vec!["-i".to_string()]),
+        "sh" => ("sh".to_string(), vec!["-i".to_string()]),
+        other => (other.to_string(), vec![]),
+    };
+    Ok(v)
+}
+
+#[tauri::command]
+fn terminal_spawn(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    shell: String,
+    cwd: Option<String>,
+) -> Result<u64, String> {
+    let (program, args) = resolve_shell(&shell)?;
+    let mut cmd = Command::new(&program);
+    cmd.args(&args);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    if let Some(dir) = cwd.as_ref() {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            cmd.current_dir(trimmed);
+        }
+    }
+    // Windows でコンソールウィンドウが瞬間表示されないように。
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("プロセス起動失敗 ({}): {}", program, e))?;
+    let id = TERMINAL_NEXT_ID.fetch_add(1, Ordering::SeqCst);
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_h = app.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = [0u8; 4096];
+            use std::io::Read;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = app_h.emit(
+                            "terminal-output",
+                            TerminalChunk {
+                                session_id: id,
+                                stream: "stdout".into(),
+                                data: s,
+                            },
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let app_h = app.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = app_h.emit(
+                            "terminal-output",
+                            TerminalChunk {
+                                session_id: id,
+                                stream: "stderr".into(),
+                                data: line.clone(),
+                            },
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    let stdin = child.stdin.take();
+    let session = TerminalSession { child, stdin };
+    state.0.lock().map_err(|e| e.to_string())?.insert(id, session);
+
+    // exit watcher
+    {
+        let app_h = app.clone();
+        let state_arc = app.state::<TerminalState>();
+        let _ = state_arc; // just to ensure type
+        std::thread::spawn(move || {
+            // 100ms ポーリング
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let s: State<'_, TerminalState> = app_h.state();
+                let mut map = match s.0.lock() {
+                    Ok(g) => g,
+                    Err(_) => break,
+                };
+                let entry = match map.get_mut(&id) {
+                    Some(e) => e,
+                    None => break,
+                };
+                match entry.child.try_wait() {
+                    Ok(Some(status)) => {
+                        let code = status.code();
+                        map.remove(&id);
+                        drop(map);
+                        let _ = app_h.emit(
+                            "terminal-exit",
+                            TerminalExit { session_id: id, code },
+                        );
+                        break;
+                    }
+                    Ok(None) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    Ok(id)
+}
+
+#[tauri::command]
+fn terminal_write(
+    state: State<'_, TerminalState>,
+    session_id: u64,
+    data: String,
+) -> Result<(), String> {
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    let entry = map.get_mut(&session_id).ok_or_else(|| "セッションがありません".to_string())?;
+    if let Some(stdin) = entry.stdin.as_mut() {
+        stdin.write_all(data.as_bytes()).map_err(|e| format!("書き込み失敗: {}", e))?;
+        stdin.flush().map_err(|e| format!("flush 失敗: {}", e))?;
+        Ok(())
+    } else {
+        Err("stdin が閉じています".to_string())
+    }
+}
+
+#[tauri::command]
+fn terminal_kill(state: State<'_, TerminalState>, session_id: u64) -> Result<(), String> {
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(mut entry) = map.remove(&session_id) {
+        // stdin を閉じる
+        entry.stdin.take();
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_list(state: State<'_, TerminalState>) -> Result<Vec<u64>, String> {
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    let mut ids: Vec<u64> = map.keys().copied().collect();
+    ids.sort();
+    Ok(ids)
 }

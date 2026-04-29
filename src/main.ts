@@ -1326,6 +1326,10 @@ async function setupToolbox(): Promise<void> {
   setupOGPTool();
   setupPentestTool();
   setupSpeedtestTool();
+  setupCharCountTool();
+  setupTodoTool();
+  setupClockTool();
+  setupTerminalTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -9271,4 +9275,1075 @@ function setupSpeedtestTool(): void {
 
   drawSpeedChart();
   window.addEventListener("resize", () => drawSpeedChart());
+}
+
+// ===== 文字数カウント =====
+function setupCharCountTool(): void {
+  const inputN = document.getElementById(
+    "cc-input",
+  ) as HTMLTextAreaElement | null;
+  if (!inputN) return;
+  const input = inputN;
+  const trim = document.getElementById("cc-trim") as HTMLInputElement;
+  const collapse = document.getElementById("cc-collapse") as HTMLInputElement;
+  const status = document.getElementById("cc-status") as HTMLSpanElement;
+  const elChars = document.getElementById("cc-chars") as HTMLDivElement;
+  const elCharsNs = document.getElementById("cc-chars-ns") as HTMLDivElement;
+  const elBytes = document.getElementById("cc-bytes") as HTMLDivElement;
+  const elLines = document.getElementById("cc-lines") as HTMLDivElement;
+  const elWords = document.getElementById("cc-words") as HTMLDivElement;
+  const elPara = document.getElementById("cc-paragraphs") as HTMLDivElement;
+  const elFw = document.getElementById("cc-fullwidth") as HTMLDivElement;
+  const elHw = document.getElementById("cc-halfwidth") as HTMLDivElement;
+  const tw = document.getElementById("cc-twitter-bar") as HTMLDivElement;
+  const twT = document.getElementById("cc-twitter-text") as HTMLSpanElement;
+  const sm = document.getElementById("cc-sms-bar") as HTMLDivElement;
+  const smT = document.getElementById("cc-sms-text") as HTMLSpanElement;
+  const gk = document.getElementById("cc-genko-bar") as HTMLDivElement;
+  const gkT = document.getElementById("cc-genko-text") as HTMLSpanElement;
+  const breakdown = document.getElementById("cc-breakdown") as HTMLPreElement;
+
+  function isFullWidth(c: string): boolean {
+    const code = c.codePointAt(0) ?? 0;
+    return (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3041 && code <= 0x33ff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xa000 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x20000 && code <= 0x2fffd) ||
+      (code >= 0x30000 && code <= 0x3fffd)
+    );
+  }
+
+  function recompute(): void {
+    let txt = input.value;
+    if (trim.checked) txt = txt.trim();
+    if (collapse.checked) txt = txt.replace(/[ \t\u3000]+/g, " ");
+    const codepoints = Array.from(txt);
+    const chars = codepoints.length;
+    const charsNs = codepoints.filter((c) => !/\s/.test(c)).length;
+    const bytes = new TextEncoder().encode(txt).length;
+    const lines = txt.length === 0 ? 0 : txt.split(/\r\n|\r|\n/).length;
+    const words = (txt.match(/[A-Za-z0-9_'\-]+|[\p{L}\p{N}]+/gu) ?? []).length;
+    const paragraphs = txt
+      .split(/\n\s*\n/)
+      .filter((p) => p.trim().length > 0).length;
+    let fw = 0,
+      hw = 0;
+    let counts: Record<string, number> = {
+      ひらがな: 0,
+      カタカナ: 0,
+      漢字: 0,
+      英字: 0,
+      数字: 0,
+      記号: 0,
+      空白: 0,
+      改行: 0,
+      "絵文字/その他": 0,
+    };
+    for (const c of codepoints) {
+      if (isFullWidth(c)) fw++;
+      else hw++;
+      const cp = c.codePointAt(0) ?? 0;
+      if (cp >= 0x3041 && cp <= 0x309f) counts["ひらがな"]++;
+      else if (cp >= 0x30a0 && cp <= 0x30ff) counts["カタカナ"]++;
+      else if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf))
+        counts["漢字"]++;
+      else if (/[A-Za-z]/.test(c)) counts["英字"]++;
+      else if (/[0-9]/.test(c)) counts["数字"]++;
+      else if (c === "\n" || c === "\r") counts["改行"]++;
+      else if (/\s/.test(c)) counts["空白"]++;
+      else if (cp < 0x80) counts["記号"]++;
+      else if (cp >= 0x2000 && cp < 0x3000) counts["記号"]++;
+      else counts["絵文字/その他"]++;
+    }
+    elChars.textContent = chars.toLocaleString();
+    elCharsNs.textContent = charsNs.toLocaleString();
+    elBytes.textContent = bytes.toLocaleString();
+    elLines.textContent = lines.toLocaleString();
+    elWords.textContent = words.toLocaleString();
+    elPara.textContent = paragraphs.toLocaleString();
+    elFw.textContent = fw.toLocaleString();
+    elHw.textContent = hw.toLocaleString();
+    const twPct = Math.min(100, (chars / 280) * 100);
+    tw.style.width = twPct + "%";
+    tw.style.background = chars > 280 ? "#cf222e" : "#1da1f2";
+    twT.textContent = `${chars} / 280`;
+    const smPct = Math.min(100, (chars / 160) * 100);
+    sm.style.width = smPct + "%";
+    sm.style.background = chars > 160 ? "#cf222e" : "#20c997";
+    smT.textContent = `${chars} / 160`;
+    const sheets = chars / 400;
+    gk.style.width = Math.min(100, (sheets / 5) * 100) + "%";
+    gkT.textContent = `${sheets.toFixed(2)} 枚`;
+    const lines2 = Object.entries(counts)
+      .map(([k, v]) => `  ${k.padEnd(14, " ")} ${String(v).padStart(6, " ")}`)
+      .join("\n");
+    breakdown.textContent = lines2;
+    status.textContent = `更新: ${new Date().toLocaleTimeString()}`;
+  }
+
+  input.addEventListener("input", recompute);
+  trim.addEventListener("change", recompute);
+  collapse.addEventListener("change", recompute);
+  document.getElementById("cc-clear")?.addEventListener("click", () => {
+    input.value = "";
+    recompute();
+  });
+  document.getElementById("cc-copy")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(input.value);
+      status.textContent = "コピーしました";
+    } catch {
+      status.textContent = "コピー失敗";
+    }
+  });
+  document.getElementById("cc-paste")?.addEventListener("click", async () => {
+    try {
+      input.value = await navigator.clipboard.readText();
+      recompute();
+    } catch {
+      status.textContent = "貼り付け失敗";
+    }
+  });
+  recompute();
+}
+
+// ===== Todo =====
+interface TodoItem {
+  id: string;
+  text: string;
+  done: boolean;
+  priority: "low" | "medium" | "high";
+  due: string | null;
+  tags: string[];
+  createdAt: number;
+  doneAt: number | null;
+}
+
+const TODO_STORAGE_KEY = "yuzu-todo-v1";
+
+function setupTodoTool(): void {
+  const inputTextN = document.getElementById(
+    "todo-text",
+  ) as HTMLInputElement | null;
+  if (!inputTextN) return;
+  const inputText = inputTextN;
+  const inputPri = document.getElementById(
+    "todo-priority",
+  ) as HTMLSelectElement;
+  const inputDue = document.getElementById("todo-due") as HTMLInputElement;
+  const inputTags = document.getElementById("todo-tags") as HTMLInputElement;
+  const btnAdd = document.getElementById("todo-add") as HTMLButtonElement;
+  const filter = document.getElementById("todo-filter") as HTMLSelectElement;
+  const sort = document.getElementById("todo-sort") as HTMLSelectElement;
+  const search = document.getElementById("todo-search") as HTMLInputElement;
+  const list = document.getElementById("todo-list") as HTMLUListElement;
+  const status = document.getElementById("todo-status") as HTMLSpanElement;
+  const elTotal = document.getElementById("todo-total") as HTMLElement;
+  const elActive = document.getElementById("todo-active") as HTMLElement;
+  const elDone = document.getElementById("todo-done") as HTMLElement;
+  const elOverdue = document.getElementById("todo-overdue") as HTMLElement;
+  const elProg = document.getElementById("todo-progress") as HTMLElement;
+  const elProgBar = document.getElementById(
+    "todo-progress-bar",
+  ) as HTMLDivElement;
+
+  let items: TodoItem[] = [];
+  try {
+    const raw = localStorage.getItem(TODO_STORAGE_KEY);
+    if (raw) items = JSON.parse(raw);
+  } catch {
+    /* ignore */
+  }
+
+  function save(): void {
+    try {
+      localStorage.setItem(TODO_STORAGE_KEY, JSON.stringify(items));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function isOverdue(t: TodoItem): boolean {
+    if (!t.due || t.done) return false;
+    return new Date(t.due + "T23:59:59").getTime() < Date.now();
+  }
+
+  function render(): void {
+    const q = search.value.trim().toLowerCase();
+    const f = filter.value;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    let visible = items.filter((t) => {
+      if (
+        q &&
+        !(
+          t.text.toLowerCase().includes(q) ||
+          t.tags.some((x) => x.toLowerCase().includes(q))
+        )
+      )
+        return false;
+      if (f === "active" && t.done) return false;
+      if (f === "done" && !t.done) return false;
+      if (f === "overdue" && !isOverdue(t)) return false;
+      if (f === "today" && (!t.due || t.due > todayStr || t.done)) return false;
+      return true;
+    });
+    const priOrder = { high: 0, medium: 1, low: 2 } as const;
+    switch (sort.value) {
+      case "created-asc":
+        visible.sort((a, b) => a.createdAt - b.createdAt);
+        break;
+      case "due-asc":
+        visible.sort((a, b) =>
+          (a.due ?? "9999").localeCompare(b.due ?? "9999"),
+        );
+        break;
+      case "priority":
+        visible.sort((a, b) => priOrder[a.priority] - priOrder[b.priority]);
+        break;
+      case "alpha":
+        visible.sort((a, b) => a.text.localeCompare(b.text));
+        break;
+      default:
+        visible.sort((a, b) => b.createdAt - a.createdAt);
+    }
+    list.textContent = "";
+    for (const t of visible) {
+      const li = document.createElement("li");
+      li.className = "todo-item" + (t.done ? " done" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = t.done;
+      cb.addEventListener("change", () => {
+        t.done = cb.checked;
+        t.doneAt = cb.checked ? Date.now() : null;
+        save();
+        render();
+      });
+      const main = document.createElement("div");
+      main.style.flex = "1";
+      const txt = document.createElement("div");
+      txt.className = "todo-text todo-pri-" + t.priority;
+      txt.textContent = t.text;
+      txt.addEventListener("click", () => {
+        const v = prompt("タスク内容を編集", t.text);
+        if (v != null) {
+          t.text = v;
+          save();
+          render();
+        }
+      });
+      const meta = document.createElement("div");
+      meta.className = "todo-meta";
+      const created = document.createElement("span");
+      created.textContent = "作成: " + new Date(t.createdAt).toLocaleString();
+      meta.appendChild(created);
+      if (t.due) {
+        const d = document.createElement("span");
+        d.textContent = "期限: " + t.due;
+        if (isOverdue(t)) d.className = "todo-overdue";
+        meta.appendChild(d);
+      }
+      const priLabel = document.createElement("span");
+      priLabel.textContent =
+        "優先度: " +
+        ({ low: "低", medium: "中", high: "高" } as Record<string, string>)[
+          t.priority
+        ];
+      meta.appendChild(priLabel);
+      for (const tag of t.tags) {
+        const tg = document.createElement("span");
+        tg.className = "todo-tag";
+        tg.textContent = "#" + tag;
+        meta.appendChild(tg);
+      }
+      main.appendChild(txt);
+      main.appendChild(meta);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "🗑";
+      del.title = "削除";
+      del.addEventListener("click", () => {
+        if (!confirm("削除しますか?")) return;
+        items = items.filter((x) => x.id !== t.id);
+        save();
+        render();
+      });
+      li.appendChild(cb);
+      li.appendChild(main);
+      li.appendChild(del);
+      list.appendChild(li);
+    }
+    const total = items.length;
+    const done = items.filter((t) => t.done).length;
+    const active = total - done;
+    const overdue = items.filter(isOverdue).length;
+    elTotal.textContent = String(total);
+    elActive.textContent = String(active);
+    elDone.textContent = String(done);
+    elOverdue.textContent = String(overdue);
+    const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+    elProg.textContent = pct + "%";
+    elProgBar.style.width = pct + "%";
+    status.textContent = `表示 ${visible.length} / ${total}`;
+  }
+
+  function add(): void {
+    const text = inputText.value.trim();
+    if (!text) return;
+    const item: TodoItem = {
+      id: Math.random().toString(36).slice(2, 11),
+      text,
+      done: false,
+      priority: inputPri.value as TodoItem["priority"],
+      due: inputDue.value || null,
+      tags: inputTags.value
+        .split(/[,、]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+      createdAt: Date.now(),
+      doneAt: null,
+    };
+    items.push(item);
+    save();
+    inputText.value = "";
+    inputTags.value = "";
+    inputDue.value = "";
+    render();
+  }
+
+  btnAdd.addEventListener("click", add);
+  inputText.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") add();
+  });
+  filter.addEventListener("change", render);
+  sort.addEventListener("change", render);
+  search.addEventListener("input", render);
+  document.getElementById("todo-clear-done")?.addEventListener("click", () => {
+    if (!confirm("完了済みを全て削除しますか?")) return;
+    items = items.filter((t) => !t.done);
+    save();
+    render();
+  });
+  document.getElementById("todo-export")?.addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(items, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "todo-" + new Date().toISOString().slice(0, 10) + ".json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  const importBtn = document.getElementById("todo-import") as HTMLButtonElement;
+  const importFile = document.getElementById(
+    "todo-import-file",
+  ) as HTMLInputElement;
+  importBtn.addEventListener("click", () => importFile.click());
+  importFile.addEventListener("change", async () => {
+    const f = importFile.files?.[0];
+    if (!f) return;
+    try {
+      const txt = await f.text();
+      const arr = JSON.parse(txt) as TodoItem[];
+      if (Array.isArray(arr)) {
+        if (
+          confirm(
+            `${arr.length} 件をインポートします。既存に追加しますか? (キャンセル=置き換え)`,
+          )
+        ) {
+          items = items.concat(arr);
+        } else {
+          items = arr;
+        }
+        save();
+        render();
+      }
+    } catch (e) {
+      alert("インポート失敗: " + String(e));
+    }
+    importFile.value = "";
+  });
+  render();
+}
+
+// ===== クロック =====
+function setupClockTool(): void {
+  const tabs = document.querySelectorAll<HTMLButtonElement>(".cl-tab");
+  if (tabs.length === 0) return;
+  const panes = document.querySelectorAll<HTMLDivElement>(".cl-pane");
+  function showPane(id: string): void {
+    tabs.forEach((b) => b.classList.toggle("active", b.dataset.clTab === id));
+    panes.forEach((p) => {
+      p.hidden = p.dataset.clPane !== id;
+    });
+  }
+  tabs.forEach((b) =>
+    b.addEventListener("click", () => showPane(b.dataset.clTab ?? "stopwatch")),
+  );
+  showPane("stopwatch");
+
+  // ---- ストップウォッチ ----
+  const swDisp = document.getElementById("cl-sw-display") as HTMLDivElement;
+  const swStart = document.getElementById("cl-sw-start") as HTMLButtonElement;
+  const swLap = document.getElementById("cl-sw-lap") as HTMLButtonElement;
+  const swReset = document.getElementById("cl-sw-reset") as HTMLButtonElement;
+  const swLapsBody = (
+    document.getElementById("cl-sw-laps") as HTMLTableElement
+  ).querySelector("tbody") as HTMLTableSectionElement;
+  let swStartTs = 0;
+  let swElapsedBeforePause = 0;
+  let swRunning = false;
+  let swTimer: number | null = null;
+  const swLaps: number[] = [];
+  function fmtMs(ms: number): string {
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    const x = Math.floor(ms % 1000);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(x).padStart(3, "0")}`;
+  }
+  function swElapsed(): number {
+    return swRunning
+      ? swElapsedBeforePause + (Date.now() - swStartTs)
+      : swElapsedBeforePause;
+  }
+  function swTick(): void {
+    swDisp.textContent = fmtMs(swElapsed());
+  }
+  swStart.addEventListener("click", () => {
+    if (swRunning) {
+      swElapsedBeforePause += Date.now() - swStartTs;
+      swRunning = false;
+      if (swTimer) {
+        clearInterval(swTimer);
+        swTimer = null;
+      }
+      swStart.textContent = "▶ 再開";
+    } else {
+      swStartTs = Date.now();
+      swRunning = true;
+      swTimer = window.setInterval(swTick, 31);
+      swStart.textContent = "⏸ 停止";
+    }
+  });
+  swLap.addEventListener("click", () => {
+    const t = swElapsed();
+    swLaps.push(t);
+    const tr = document.createElement("tr");
+    const idx = swLaps.length;
+    const lapDelta = idx === 1 ? t : t - swLaps[idx - 2];
+    tr.innerHTML = `<td style="padding:4px">${idx}</td><td style="padding:4px;text-align:right;font-family:monospace">${fmtMs(lapDelta)}</td><td style="padding:4px;text-align:right;font-family:monospace">${fmtMs(t)}</td>`;
+    swLapsBody.insertBefore(tr, swLapsBody.firstChild);
+  });
+  swReset.addEventListener("click", () => {
+    swRunning = false;
+    swElapsedBeforePause = 0;
+    if (swTimer) {
+      clearInterval(swTimer);
+      swTimer = null;
+    }
+    swLaps.length = 0;
+    swLapsBody.textContent = "";
+    swStart.textContent = "▶ スタート";
+    swTick();
+  });
+  swTick();
+
+  // ---- タイマー ----
+  const tmH = document.getElementById("cl-tm-h") as HTMLInputElement;
+  const tmM = document.getElementById("cl-tm-m") as HTMLInputElement;
+  const tmS = document.getElementById("cl-tm-s") as HTMLInputElement;
+  const tmDisp = document.getElementById("cl-tm-display") as HTMLDivElement;
+  const tmBar = document.getElementById("cl-tm-bar") as HTMLDivElement;
+  const tmStart = document.getElementById("cl-tm-start") as HTMLButtonElement;
+  const tmPause = document.getElementById("cl-tm-pause") as HTMLButtonElement;
+  const tmReset = document.getElementById("cl-tm-reset") as HTMLButtonElement;
+  const tmStatus = document.getElementById("cl-tm-status") as HTMLSpanElement;
+  const tmBeep = document.getElementById("cl-tm-beep") as HTMLInputElement;
+  const tmLoop = document.getElementById("cl-tm-loop") as HTMLInputElement;
+  let tmTotalMs = 0;
+  let tmRemainingMs = 0;
+  let tmEndAt = 0;
+  let tmRunning = false;
+  let tmTimer: number | null = null;
+  function tmReadInputs(): number {
+    return (
+      (parseInt(tmH.value || "0") * 3600 +
+        parseInt(tmM.value || "0") * 60 +
+        parseInt(tmS.value || "0")) *
+      1000
+    );
+  }
+  function tmFmt(ms: number): string {
+    if (ms < 0) ms = 0;
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  function tmRender(): void {
+    tmDisp.textContent = tmFmt(tmRemainingMs);
+    const pct = tmTotalMs === 0 ? 0 : (tmRemainingMs / tmTotalMs) * 100;
+    tmBar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  }
+  function tmBeepSound(): void {
+    try {
+      const ctx = new (
+        window.AudioContext || (window as any).webkitAudioContext
+      )();
+      for (let i = 0; i < 3; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 880;
+        osc.type = "sine";
+        gain.gain.value = 0.3;
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.4);
+        osc.stop(ctx.currentTime + i * 0.4 + 0.25);
+      }
+      setTimeout(() => ctx.close(), 2000);
+    } catch {
+      /* ignore */
+    }
+  }
+  function tmFinish(): void {
+    tmRunning = false;
+    if (tmTimer) {
+      clearInterval(tmTimer);
+      tmTimer = null;
+    }
+    tmRemainingMs = 0;
+    tmRender();
+    tmStatus.textContent = "⏰ タイマー終了";
+    if (tmBeep.checked) tmBeepSound();
+    if ("Notification" in window) {
+      try {
+        if (Notification.permission === "granted")
+          new Notification("⏰ タイマー終了");
+        else if (Notification.permission !== "denied")
+          Notification.requestPermission().then((p) => {
+            if (p === "granted") new Notification("⏰ タイマー終了");
+          });
+      } catch {
+        /* ignore */
+      }
+    }
+    if (tmLoop.checked) {
+      tmTotalMs = tmReadInputs();
+      tmRemainingMs = tmTotalMs;
+      tmStart.click();
+    }
+  }
+  function tmTick(): void {
+    tmRemainingMs = tmEndAt - Date.now();
+    if (tmRemainingMs <= 0) {
+      tmFinish();
+      return;
+    }
+    tmRender();
+  }
+  tmStart.addEventListener("click", () => {
+    if (tmRunning) return;
+    if (tmRemainingMs <= 0) {
+      tmTotalMs = tmReadInputs();
+      tmRemainingMs = tmTotalMs;
+    }
+    if (tmRemainingMs <= 0) {
+      tmStatus.textContent = "時間を設定してください";
+      return;
+    }
+    tmEndAt = Date.now() + tmRemainingMs;
+    tmRunning = true;
+    tmTimer = window.setInterval(tmTick, 200);
+    tmStatus.textContent = "実行中…";
+  });
+  tmPause.addEventListener("click", () => {
+    if (!tmRunning) return;
+    tmRemainingMs = tmEndAt - Date.now();
+    tmRunning = false;
+    if (tmTimer) {
+      clearInterval(tmTimer);
+      tmTimer = null;
+    }
+    tmStatus.textContent = "一時停止中";
+  });
+  tmReset.addEventListener("click", () => {
+    tmRunning = false;
+    if (tmTimer) {
+      clearInterval(tmTimer);
+      tmTimer = null;
+    }
+    tmTotalMs = tmReadInputs();
+    tmRemainingMs = tmTotalMs;
+    tmRender();
+    tmStatus.textContent = "";
+  });
+  document
+    .querySelectorAll<HTMLButtonElement>(".cl-tm-preset")
+    .forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sec = parseInt(btn.dataset.sec ?? "0");
+        tmH.value = String(Math.floor(sec / 3600));
+        tmM.value = String(Math.floor((sec % 3600) / 60));
+        tmS.value = String(sec % 60);
+        tmTotalMs = sec * 1000;
+        tmRemainingMs = tmTotalMs;
+        tmRender();
+      });
+    });
+  [tmH, tmM, tmS].forEach((el) =>
+    el.addEventListener("input", () => {
+      if (!tmRunning) {
+        tmTotalMs = tmReadInputs();
+        tmRemainingMs = tmTotalMs;
+        tmRender();
+      }
+    }),
+  );
+  tmTotalMs = tmReadInputs();
+  tmRemainingMs = tmTotalMs;
+  tmRender();
+
+  // ---- 世界時計 ----
+  const WC_KEY = "yuzu-clock-tz-v1";
+  const wcList = document.getElementById("cl-wc-list") as HTMLUListElement;
+  const wcAdd = document.getElementById("cl-wc-add") as HTMLInputElement;
+  const wcAddBtn = document.getElementById(
+    "cl-wc-add-btn",
+  ) as HTMLButtonElement;
+  const defaultTzs = [
+    "Asia/Tokyo",
+    "America/New_York",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Asia/Shanghai",
+    "Australia/Sydney",
+  ];
+  let tzs: string[] = defaultTzs;
+  try {
+    const raw = localStorage.getItem(WC_KEY);
+    if (raw) tzs = JSON.parse(raw);
+  } catch {
+    /* ignore */
+  }
+  function wcRender(): void {
+    wcList.textContent = "";
+    const now = new Date();
+    for (const tz of tzs) {
+      const li = document.createElement("li");
+      li.className = "cl-wc-item";
+      let timeStr = "";
+      let dateStr = "";
+      try {
+        timeStr = new Intl.DateTimeFormat("ja-JP", {
+          timeZone: tz,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(now);
+        dateStr = new Intl.DateTimeFormat("ja-JP", {
+          timeZone: tz,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          weekday: "short",
+        }).format(now);
+      } catch {
+        timeStr = "(invalid TZ)";
+      }
+      li.innerHTML = `<div style="flex:1"><div style="font-weight:bold">${tz}</div><div style="font-size:11px;color:#666">${dateStr}</div></div><div style="font-family:ui-monospace,Consolas,monospace;font-size:24px">${timeStr}</div>`;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "✖";
+      del.addEventListener("click", () => {
+        tzs = tzs.filter((x) => x !== tz);
+        localStorage.setItem(WC_KEY, JSON.stringify(tzs));
+        wcRender();
+      });
+      li.appendChild(del);
+      wcList.appendChild(li);
+    }
+  }
+  wcAddBtn.addEventListener("click", () => {
+    const v = wcAdd.value.trim();
+    if (!v) return;
+    try {
+      new Intl.DateTimeFormat("ja-JP", { timeZone: v });
+    } catch {
+      alert("無効なタイムゾーンです");
+      return;
+    }
+    if (!tzs.includes(v)) tzs.push(v);
+    localStorage.setItem(WC_KEY, JSON.stringify(tzs));
+    wcAdd.value = "";
+    wcRender();
+  });
+  document.getElementById("cl-wc-reset-btn")?.addEventListener("click", () => {
+    tzs = defaultTzs.slice();
+    localStorage.setItem(WC_KEY, JSON.stringify(tzs));
+    wcRender();
+  });
+  wcRender();
+  setInterval(wcRender, 1000);
+
+  // ---- アラーム ----
+  const AL_KEY = "yuzu-clock-alarm-v1";
+  interface Alarm {
+    id: string;
+    time: string;
+    label: string;
+    enabled: boolean;
+    lastFired: string | null;
+  }
+  let alarms: Alarm[] = [];
+  try {
+    const raw = localStorage.getItem(AL_KEY);
+    if (raw) alarms = JSON.parse(raw);
+  } catch {
+    /* ignore */
+  }
+  const alList = document.getElementById("cl-al-list") as HTMLUListElement;
+  function alSave(): void {
+    localStorage.setItem(AL_KEY, JSON.stringify(alarms));
+  }
+  function alRender(): void {
+    alList.textContent = "";
+    for (const a of alarms) {
+      const li = document.createElement("li");
+      li.className = "cl-al-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = a.enabled;
+      cb.addEventListener("change", () => {
+        a.enabled = cb.checked;
+        alSave();
+      });
+      const main = document.createElement("div");
+      main.style.flex = "1";
+      main.innerHTML = `<div style="font-family:ui-monospace,Consolas,monospace;font-size:20px">${a.time}</div><div style="font-size:11px;color:#666">${a.label || "(無題)"}</div>`;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "✖";
+      del.addEventListener("click", () => {
+        alarms = alarms.filter((x) => x.id !== a.id);
+        alSave();
+        alRender();
+      });
+      li.appendChild(cb);
+      li.appendChild(main);
+      li.appendChild(del);
+      alList.appendChild(li);
+    }
+  }
+  document.getElementById("cl-al-add")?.addEventListener("click", () => {
+    const t = (document.getElementById("cl-al-time") as HTMLInputElement).value;
+    const lab = (document.getElementById("cl-al-label") as HTMLInputElement)
+      .value;
+    if (!t) {
+      alert("時刻を入力してください");
+      return;
+    }
+    alarms.push({
+      id: Math.random().toString(36).slice(2, 11),
+      time: t,
+      label: lab,
+      enabled: true,
+      lastFired: null,
+    });
+    alSave();
+    alRender();
+  });
+  alRender();
+  setInterval(() => {
+    const now = new Date();
+    const hms =
+      String(now.getHours()).padStart(2, "0") +
+      ":" +
+      String(now.getMinutes()).padStart(2, "0") +
+      ":" +
+      String(now.getSeconds()).padStart(2, "0");
+    const today = now.toISOString().slice(0, 10);
+    for (const a of alarms) {
+      if (!a.enabled) continue;
+      const at = a.time.length === 5 ? a.time + ":00" : a.time;
+      if (at === hms && a.lastFired !== today + " " + at) {
+        a.lastFired = today + " " + at;
+        alSave();
+        tmBeepSound();
+        if ("Notification" in window) {
+          try {
+            if (Notification.permission === "granted")
+              new Notification("🔔 アラーム", { body: a.label || a.time });
+            else Notification.requestPermission();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+  }, 1000);
+}
+
+// ===== ターミナル =====
+interface TermSession {
+  id: number;
+  shell: string;
+  cwd: string;
+  output: string;
+  history: string[];
+  histIdx: number;
+  alive: boolean;
+}
+
+let termSessions: TermSession[] = [];
+let termActive: number | null = null;
+let termListenerInstalled = false;
+
+function setupTerminalTool(): void {
+  const outN = document.getElementById("tm-output") as HTMLPreElement | null;
+  if (!outN) return;
+  const out = outN;
+  const tabs = document.getElementById("tm-tabs") as HTMLDivElement;
+  const shellSel = document.getElementById("tm-shell") as HTMLSelectElement;
+  const cwdInput = document.getElementById("tm-cwd") as HTMLInputElement;
+  const inputEl = document.getElementById("tm-input") as HTMLInputElement;
+  const status = document.getElementById("tm-status") as HTMLSpanElement;
+  const ansiStrip = document.getElementById(
+    "tm-ansi-strip",
+  ) as HTMLInputElement;
+  const autoscroll = document.getElementById(
+    "tm-autoscroll",
+  ) as HTMLInputElement;
+
+  function ansiStripFn(s: string): string {
+    // CSI sequences + OSC + bell
+    return s
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+      .replace(/\x1b\][^\x07]*\x07/g, "")
+      .replace(/\x1b\[\?[0-9;]*[hl]/g, "")
+      .replace(/\x07/g, "")
+      .replace(/\r(?!\n)/g, "");
+  }
+
+  function getActive(): TermSession | null {
+    if (termActive == null) return null;
+    return termSessions.find((s) => s.id === termActive) ?? null;
+  }
+  function renderTabs(): void {
+    tabs.textContent = "";
+    for (const s of termSessions) {
+      const div = document.createElement("div");
+      div.className = "tm-tab" + (s.id === termActive ? " active" : "");
+      div.textContent = `${s.shell} #${s.id}`;
+      if (!s.alive) div.textContent += " [終了]";
+      div.addEventListener("click", () => {
+        termActive = s.id;
+        renderTabs();
+        renderOutput();
+      });
+      const close = document.createElement("span");
+      close.className = "tm-tab-close";
+      close.textContent = "✖";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (s.alive)
+          invoke("terminal_kill", { sessionId: s.id }).catch(() => undefined);
+        termSessions = termSessions.filter((x) => x.id !== s.id);
+        if (termActive === s.id) termActive = termSessions[0]?.id ?? null;
+        renderTabs();
+        renderOutput();
+      });
+      div.appendChild(close);
+      tabs.appendChild(div);
+    }
+  }
+  function renderOutput(): void {
+    const s = getActive();
+    if (!s) {
+      out.textContent = "(セッションなし — 「新しいタブ」で開始)";
+      status.textContent = "";
+      return;
+    }
+    out.textContent = ansiStrip.checked ? ansiStripFn(s.output) : s.output;
+    if (autoscroll.checked) out.scrollTop = out.scrollHeight;
+    status.textContent = `セッション #${s.id} (${s.shell}) ${s.alive ? "稼働中" : "終了済み"}`;
+  }
+
+  if (!termListenerInstalled) {
+    termListenerInstalled = true;
+    listen<{ session_id: number; stream: string; data: string }>(
+      "terminal-output",
+      (ev) => {
+        const sid = ev.payload.session_id;
+        const sess = termSessions.find((s) => s.id === sid);
+        if (!sess) return;
+        sess.output += ev.payload.data;
+        // limit buffer
+        if (sess.output.length > 500_000)
+          sess.output = sess.output.slice(-400_000);
+        if (sid === termActive) renderOutput();
+      },
+    ).catch(() => undefined);
+    listen<{ session_id: number; code: number | null }>(
+      "terminal-exit",
+      (ev) => {
+        const sess = termSessions.find((s) => s.id === ev.payload.session_id);
+        if (!sess) return;
+        sess.alive = false;
+        sess.output += `\n[プロセスが終了しました (code=${ev.payload.code ?? "?"})]\n`;
+        renderTabs();
+        if (sess.id === termActive) renderOutput();
+      },
+    ).catch(() => undefined);
+  }
+
+  async function newSession(): Promise<void> {
+    try {
+      const shell = shellSel.value;
+      const id = await invoke<number>("terminal_spawn", {
+        shell,
+        cwd: cwdInput.value || null,
+      });
+      const sess: TermSession = {
+        id,
+        shell,
+        cwd: cwdInput.value,
+        output: "",
+        history: [],
+        histIdx: -1,
+        alive: true,
+      };
+      termSessions.push(sess);
+      termActive = id;
+      renderTabs();
+      renderOutput();
+      inputEl.focus();
+    } catch (e) {
+      alert("起動失敗: " + String(e));
+    }
+  }
+
+  document.getElementById("tm-new")?.addEventListener("click", () => {
+    void newSession();
+  });
+  document.getElementById("tm-close")?.addEventListener("click", () => {
+    const s = getActive();
+    if (!s) return;
+    if (s.alive)
+      invoke("terminal_kill", { sessionId: s.id }).catch(() => undefined);
+    termSessions = termSessions.filter((x) => x.id !== s.id);
+    termActive = termSessions[0]?.id ?? null;
+    renderTabs();
+    renderOutput();
+  });
+  document
+    .getElementById("tm-pick-cwd")
+    ?.addEventListener("click", async () => {
+      try {
+        const d = await invoke<string | null>("toolbox_pick_download_dir");
+        if (d) cwdInput.value = d;
+      } catch {
+        /* ignore */
+      }
+    });
+
+  async function send(data: string): Promise<void> {
+    const s = getActive();
+    if (!s) {
+      alert("先にタブを開いてください");
+      return;
+    }
+    if (!s.alive) {
+      alert("このセッションは終了しています");
+      return;
+    }
+    try {
+      await invoke("terminal_write", { sessionId: s.id, data });
+    } catch (e) {
+      status.textContent = "送信失敗: " + String(e);
+    }
+  }
+
+  document.getElementById("tm-send")?.addEventListener("click", () => {
+    const cmd = inputEl.value;
+    const s = getActive();
+    if (s) {
+      s.history.push(cmd);
+      s.histIdx = -1;
+      s.output += "> " + cmd + "\n";
+      renderOutput();
+    }
+    void send(cmd + "\n");
+    inputEl.value = "";
+  });
+  document.getElementById("tm-sigint")?.addEventListener("click", () => {
+    void send("\x03");
+  });
+  document.getElementById("tm-clear")?.addEventListener("click", () => {
+    const s = getActive();
+    if (s) {
+      s.output = "";
+      renderOutput();
+    }
+  });
+
+  inputEl.addEventListener("keydown", (e) => {
+    const s = getActive();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const cmd = inputEl.value;
+      if (s) {
+        s.history.push(cmd);
+        s.histIdx = -1;
+        s.output += "> " + cmd + "\n";
+        renderOutput();
+      }
+      void send(cmd + "\n");
+      inputEl.value = "";
+    } else if (e.key === "ArrowUp") {
+      if (!s || s.history.length === 0) return;
+      e.preventDefault();
+      if (s.histIdx === -1) s.histIdx = s.history.length - 1;
+      else s.histIdx = Math.max(0, s.histIdx - 1);
+      inputEl.value = s.history[s.histIdx] ?? "";
+    } else if (e.key === "ArrowDown") {
+      if (!s || s.history.length === 0) return;
+      e.preventDefault();
+      if (s.histIdx === -1) return;
+      s.histIdx = s.histIdx + 1;
+      if (s.histIdx >= s.history.length) {
+        s.histIdx = -1;
+        inputEl.value = "";
+      } else inputEl.value = s.history[s.histIdx] ?? "";
+    } else if (e.ctrlKey && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      if (s) {
+        s.output = "";
+        renderOutput();
+      }
+    } else if (
+      e.ctrlKey &&
+      e.key.toLowerCase() === "c" &&
+      inputEl.selectionStart === inputEl.selectionEnd
+    ) {
+      e.preventDefault();
+      void send("\x03");
+    }
+  });
+
+  ansiStrip.addEventListener("change", renderOutput);
+  renderTabs();
+  renderOutput();
 }
