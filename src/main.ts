@@ -1325,6 +1325,7 @@ async function setupToolbox(): Promise<void> {
   setupTechProfileTool();
   setupOGPTool();
   setupPentestTool();
+  setupSpeedtestTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -7394,19 +7395,19 @@ function escapeHtml(s: string): string {
 // ===== 🛡️ ペネトレーション テストキット =====
 
 const TOP_100_PORTS = [
-  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995,
-  1723, 3306, 3389, 5900, 8080, 8443,
-  20, 26, 37, 79, 81, 88, 106, 113, 119, 161, 179, 199, 389, 427, 444, 465,
-  513, 514, 515, 543, 544, 548, 554, 587, 631, 646, 873, 902, 990, 1025, 1026,
-  1027, 1028, 1029, 1110, 1433, 1434, 1521, 1755, 1900, 2000, 2001, 2049, 2121,
-  2717, 3128, 3268, 3690, 3986, 4899, 5000, 5009, 5051, 5060, 5101, 5190, 5357,
-  5432, 5631, 5666, 5800, 5985, 5986, 6000, 6001, 6646, 7070, 8000, 8008, 8009,
-  8081, 8888, 9100, 9999, 10000, 32768, 49152, 49153, 49154, 49155, 49156, 49157,
+  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1723,
+  3306, 3389, 5900, 8080, 8443, 20, 26, 37, 79, 81, 88, 106, 113, 119, 161, 179,
+  199, 389, 427, 444, 465, 513, 514, 515, 543, 544, 548, 554, 587, 631, 646,
+  873, 902, 990, 1025, 1026, 1027, 1028, 1029, 1110, 1433, 1434, 1521, 1755,
+  1900, 2000, 2001, 2049, 2121, 2717, 3128, 3268, 3690, 3986, 4899, 5000, 5009,
+  5051, 5060, 5101, 5190, 5357, 5432, 5631, 5666, 5800, 5985, 5986, 6000, 6001,
+  6646, 7070, 8000, 8008, 8009, 8081, 8888, 9100, 9999, 10000, 32768, 49152,
+  49153, 49154, 49155, 49156, 49157,
 ];
 
 const COMMON_24_PORTS = [
-  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 389, 443, 445, 465,
-  587, 993, 995, 1433, 3306, 3389, 5432, 5900, 8080,
+  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 389, 443, 445, 465, 587, 993,
+  995, 1433, 3306, 3389, 5432, 5900, 8080,
 ];
 
 function parsePortSpec(spec: string): number[] {
@@ -7430,14 +7431,42 @@ function parsePortSpec(spec: string): number[] {
 }
 
 const PORT_NAMES: Record<number, string> = {
-  21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 80: "http",
-  110: "pop3", 111: "rpcbind", 135: "msrpc", 139: "netbios-ssn", 143: "imap",
-  389: "ldap", 443: "https", 445: "smb", 465: "smtps", 587: "submission",
-  993: "imaps", 995: "pop3s", 1433: "mssql", 1521: "oracle", 2049: "nfs",
-  3000: "node-dev", 3306: "mysql", 3389: "rdp", 5432: "postgres", 5900: "vnc",
-  5985: "winrm", 6379: "redis", 8000: "http-alt", 8080: "http-proxy",
-  8443: "https-alt", 8888: "http-alt", 9090: "http-alt", 9200: "elasticsearch",
-  11211: "memcached", 27017: "mongodb",
+  21: "ftp",
+  22: "ssh",
+  23: "telnet",
+  25: "smtp",
+  53: "dns",
+  80: "http",
+  110: "pop3",
+  111: "rpcbind",
+  135: "msrpc",
+  139: "netbios-ssn",
+  143: "imap",
+  389: "ldap",
+  443: "https",
+  445: "smb",
+  465: "smtps",
+  587: "submission",
+  993: "imaps",
+  995: "pop3s",
+  1433: "mssql",
+  1521: "oracle",
+  2049: "nfs",
+  3000: "node-dev",
+  3306: "mysql",
+  3389: "rdp",
+  5432: "postgres",
+  5900: "vnc",
+  5985: "winrm",
+  6379: "redis",
+  8000: "http-alt",
+  8080: "http-proxy",
+  8443: "https-alt",
+  8888: "http-alt",
+  9090: "http-alt",
+  9200: "elasticsearch",
+  11211: "memcached",
+  27017: "mongodb",
 };
 
 interface PortScanRow {
@@ -7448,12 +7477,22 @@ interface PortScanRow {
 
 function setupPortScannerSub(): void {
   const hostEl = document.getElementById("ps-host") as HTMLInputElement | null;
-  const presetEl = document.getElementById("ps-preset") as HTMLSelectElement | null;
-  const portsEl = document.getElementById("ps-ports") as HTMLInputElement | null;
-  const bannerEl = document.getElementById("ps-banner") as HTMLInputElement | null;
-  const timeoutEl = document.getElementById("ps-timeout") as HTMLInputElement | null;
+  const presetEl = document.getElementById(
+    "ps-preset",
+  ) as HTMLSelectElement | null;
+  const portsEl = document.getElementById(
+    "ps-ports",
+  ) as HTMLInputElement | null;
+  const bannerEl = document.getElementById(
+    "ps-banner",
+  ) as HTMLInputElement | null;
+  const timeoutEl = document.getElementById(
+    "ps-timeout",
+  ) as HTMLInputElement | null;
   const runBtn = document.getElementById("ps-run") as HTMLButtonElement | null;
-  const statusEl = document.getElementById("ps-status") as HTMLSpanElement | null;
+  const statusEl = document.getElementById(
+    "ps-status",
+  ) as HTMLSpanElement | null;
   const outEl = document.getElementById("ps-out") as HTMLPreElement | null;
   if (!hostEl || !runBtn || !outEl) return;
 
@@ -7538,17 +7577,35 @@ function parseHeaderLines(text: string): [string, string][] {
 }
 
 function setupHttpReqSub(): void {
-  const methodEl = document.getElementById("hr-method") as HTMLSelectElement | null;
+  const methodEl = document.getElementById(
+    "hr-method",
+  ) as HTMLSelectElement | null;
   const urlEl = document.getElementById("hr-url") as HTMLInputElement | null;
-  const followEl = document.getElementById("hr-follow") as HTMLInputElement | null;
-  const sendBtn = document.getElementById("hr-send") as HTMLButtonElement | null;
-  const headersEl = document.getElementById("hr-headers") as HTMLTextAreaElement | null;
-  const bodyEl = document.getElementById("hr-body") as HTMLTextAreaElement | null;
+  const followEl = document.getElementById(
+    "hr-follow",
+  ) as HTMLInputElement | null;
+  const sendBtn = document.getElementById(
+    "hr-send",
+  ) as HTMLButtonElement | null;
+  const headersEl = document.getElementById(
+    "hr-headers",
+  ) as HTMLTextAreaElement | null;
+  const bodyEl = document.getElementById(
+    "hr-body",
+  ) as HTMLTextAreaElement | null;
   const rawEl = document.getElementById("hr-raw") as HTMLTextAreaElement | null;
-  const rawLoadBtn = document.getElementById("hr-raw-load") as HTMLButtonElement | null;
-  const statusEl = document.getElementById("hr-status") as HTMLDivElement | null;
-  const respHeadersEl = document.getElementById("hr-resp-headers") as HTMLPreElement | null;
-  const respBodyEl = document.getElementById("hr-resp-body") as HTMLPreElement | null;
+  const rawLoadBtn = document.getElementById(
+    "hr-raw-load",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById(
+    "hr-status",
+  ) as HTMLDivElement | null;
+  const respHeadersEl = document.getElementById(
+    "hr-resp-headers",
+  ) as HTMLPreElement | null;
+  const respBodyEl = document.getElementById(
+    "hr-resp-body",
+  ) as HTMLPreElement | null;
   if (!sendBtn || !urlEl) return;
 
   rawLoadBtn?.addEventListener("click", () => {
@@ -7579,7 +7636,8 @@ function setupHttpReqSub(): void {
     if (methodEl) methodEl.value = method;
     const scheme = host.includes(":443") ? "https" : "http";
     if (host && urlEl) urlEl.value = `${scheme}://${host}${path}`;
-    if (headersEl) headersEl.value = hdrLines.filter((l) => !/^host:/i.test(l)).join("\n");
+    if (headersEl)
+      headersEl.value = hdrLines.filter((l) => !/^host:/i.test(l)).join("\n");
     if (bodyEl) bodyEl.value = body;
   });
 
@@ -7604,7 +7662,9 @@ function setupHttpReqSub(): void {
       if (statusEl)
         statusEl.textContent = `${r.status} ${r.status_text} • ${r.bytes.toLocaleString()} bytes • ${r.time_ms}ms • ${r.content_type} • → ${r.final_url}`;
       if (respHeadersEl)
-        respHeadersEl.textContent = r.headers.map(([k, v]) => `${k}: ${v}`).join("\n");
+        respHeadersEl.textContent = r.headers
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n");
       if (respBodyEl) respBodyEl.textContent = r.body;
     } catch (e) {
       if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
@@ -7858,12 +7918,22 @@ function setupDirBusterSub(): void {
   const baseEl = document.getElementById("db-base") as HTMLInputElement | null;
   const extEl = document.getElementById("db-ext") as HTMLInputElement | null;
   const concEl = document.getElementById("db-conc") as HTMLInputElement | null;
-  const wlEl = document.getElementById("db-wordlist") as HTMLSelectElement | null;
-  const wordsEl = document.getElementById("db-words") as HTMLTextAreaElement | null;
-  const excludeEl = document.getElementById("db-exclude") as HTMLInputElement | null;
+  const wlEl = document.getElementById(
+    "db-wordlist",
+  ) as HTMLSelectElement | null;
+  const wordsEl = document.getElementById(
+    "db-words",
+  ) as HTMLTextAreaElement | null;
+  const excludeEl = document.getElementById(
+    "db-exclude",
+  ) as HTMLInputElement | null;
   const runBtn = document.getElementById("db-run") as HTMLButtonElement | null;
-  const stopBtn = document.getElementById("db-stop") as HTMLButtonElement | null;
-  const statusEl = document.getElementById("db-status") as HTMLSpanElement | null;
+  const stopBtn = document.getElementById(
+    "db-stop",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById(
+    "db-status",
+  ) as HTMLSpanElement | null;
   const outEl = document.getElementById("db-out") as HTMLPreElement | null;
   if (!baseEl || !runBtn || !outEl) return;
 
@@ -7898,7 +7968,10 @@ function setupDirBusterSub(): void {
         .map((s) => parseInt(s))
         .filter((n) => Number.isFinite(n)),
     );
-    const concurrency = Math.max(1, Math.min(30, parseInt(concEl?.value || "10")));
+    const concurrency = Math.max(
+      1,
+      Math.min(30, parseInt(concEl?.value || "10")),
+    );
     dbAbort = false;
     outEl.textContent = "";
     let done = 0;
@@ -7946,7 +8019,7 @@ const SQLI_PAYLOADS = [
   '"',
   "' OR '1'='1",
   "' OR '1'='1' --",
-  "\" OR \"1\"=\"1",
+  '" OR "1"="1',
   "' OR 1=1 --",
   "') OR ('1'='1",
   "' UNION SELECT NULL --",
@@ -7977,10 +8050,18 @@ const SQL_ERROR_PATTERNS = [
 
 function setupSqliSub(): void {
   const urlEl = document.getElementById("sqli-url") as HTMLInputElement | null;
-  const methodEl = document.getElementById("sqli-method") as HTMLSelectElement | null;
-  const bodyEl = document.getElementById("sqli-body") as HTMLTextAreaElement | null;
-  const headersEl = document.getElementById("sqli-headers") as HTMLInputElement | null;
-  const runBtn = document.getElementById("sqli-run") as HTMLButtonElement | null;
+  const methodEl = document.getElementById(
+    "sqli-method",
+  ) as HTMLSelectElement | null;
+  const bodyEl = document.getElementById(
+    "sqli-body",
+  ) as HTMLTextAreaElement | null;
+  const headersEl = document.getElementById(
+    "sqli-headers",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "sqli-run",
+  ) as HTMLButtonElement | null;
   const outEl = document.getElementById("sqli-out") as HTMLPreElement | null;
   if (!runBtn || !outEl) return;
 
@@ -8019,7 +8100,8 @@ function setupSqliSub(): void {
       let url = baseUrl;
       let body: string | null = null;
       if (method === "GET") {
-        if (baseUrl.includes("<FUZZ>")) url = baseUrl.replace(/<FUZZ>/g, encodeURIComponent(payload));
+        if (baseUrl.includes("<FUZZ>"))
+          url = baseUrl.replace(/<FUZZ>/g, encodeURIComponent(payload));
         else {
           // 最後のパラメータ値に payload を追加
           url = baseUrl.replace(/=([^&]*)$/, `=${encodeURIComponent(payload)}`);
@@ -8062,7 +8144,9 @@ function setupSqliSub(): void {
         outEl.textContent = lines.join("\n");
       }
     }
-    lines.push("\n# ⚠️ マークがついた行は SQLi の可能性あり。sqlmap で詳細確認推奨");
+    lines.push(
+      "\n# ⚠️ マークがついた行は SQLi の可能性あり。sqlmap で詳細確認推奨",
+    );
     outEl.textContent = lines.join("\n");
   });
 }
@@ -8083,17 +8167,45 @@ const HASH_SIGNATURES: HashSig[] = [
   { name: "NTLM", hashcat: "1000", pattern: /^[a-f0-9]{32}$/i },
   { name: "MySQL323", hashcat: "200", pattern: /^[a-f0-9]{16}$/i },
   { name: "MySQL5", hashcat: "300", pattern: /^\*[A-F0-9]{40}$/i },
-  { name: "bcrypt", hashcat: "3200", pattern: /^\$2[abxy]?\$\d+\$[./A-Za-z0-9]{53}$/ },
-  { name: "MD5 crypt ($1$)", hashcat: "500", pattern: /^\$1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/ },
-  { name: "SHA-256 crypt ($5$)", hashcat: "7400", pattern: /^\$5\$[^$]{1,16}\$[./A-Za-z0-9]{43}$/ },
-  { name: "SHA-512 crypt ($6$)", hashcat: "1800", pattern: /^\$6\$[^$]{1,16}\$[./A-Za-z0-9]{86}$/ },
-  { name: "Apache APR1 ($apr1$)", hashcat: "1600", pattern: /^\$apr1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/ },
+  {
+    name: "bcrypt",
+    hashcat: "3200",
+    pattern: /^\$2[abxy]?\$\d+\$[./A-Za-z0-9]{53}$/,
+  },
+  {
+    name: "MD5 crypt ($1$)",
+    hashcat: "500",
+    pattern: /^\$1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/,
+  },
+  {
+    name: "SHA-256 crypt ($5$)",
+    hashcat: "7400",
+    pattern: /^\$5\$[^$]{1,16}\$[./A-Za-z0-9]{43}$/,
+  },
+  {
+    name: "SHA-512 crypt ($6$)",
+    hashcat: "1800",
+    pattern: /^\$6\$[^$]{1,16}\$[./A-Za-z0-9]{86}$/,
+  },
+  {
+    name: "Apache APR1 ($apr1$)",
+    hashcat: "1600",
+    pattern: /^\$apr1\$[^$]{1,8}\$[./A-Za-z0-9]{22}$/,
+  },
   { name: "Argon2", hashcat: "—", pattern: /^\$argon2(id|i|d)\$/ },
   { name: "PBKDF2-SHA256", hashcat: "10900", pattern: /^pbkdf2_sha256\$/ },
   { name: "Django PBKDF2", hashcat: "10000", pattern: /^pbkdf2_sha\d+\$\d+\$/ },
   { name: "phpBB3 ($H$)", hashcat: "400", pattern: /^\$H\$[./A-Za-z0-9]{31}$/ },
-  { name: "WordPress ($P$)", hashcat: "400", pattern: /^\$P\$[./A-Za-z0-9]{31}$/ },
-  { name: "JWT", hashcat: "16500", pattern: /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/ },
+  {
+    name: "WordPress ($P$)",
+    hashcat: "400",
+    pattern: /^\$P\$[./A-Za-z0-9]{31}$/,
+  },
+  {
+    name: "JWT",
+    hashcat: "16500",
+    pattern: /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/,
+  },
   { name: "CRC32", hashcat: "11500", pattern: /^[a-f0-9]{8}$/i },
   { name: "LM", hashcat: "3000", pattern: /^[a-f0-9]{32}$/i },
 ];
@@ -8141,14 +8253,61 @@ function md5(text: string): string {
   function rol(n: number, c: number): number {
     return (n << c) | (n >>> (32 - c));
   }
-  function cmn(q: number, a: number, b: number, x: number, s: number, t: number): number {
+  function cmn(
+    q: number,
+    a: number,
+    b: number,
+    x: number,
+    s: number,
+    t: number,
+  ): number {
     a = add32(add32(a, q), add32(x, t));
     return add32(rol(a, s), b);
   }
-  function ff(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn((b & c) | (~b & d), a, b, x, s, t); }
-  function gg(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn((b & d) | (c & ~d), a, b, x, s, t); }
-  function hh(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn(b ^ c ^ d, a, b, x, s, t); }
-  function ii(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number { return cmn(c ^ (b | ~d), a, b, x, s, t); }
+  function ff(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    t: number,
+  ): number {
+    return cmn((b & c) | (~b & d), a, b, x, s, t);
+  }
+  function gg(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    t: number,
+  ): number {
+    return cmn((b & d) | (c & ~d), a, b, x, s, t);
+  }
+  function hh(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    t: number,
+  ): number {
+    return cmn(b ^ c ^ d, a, b, x, s, t);
+  }
+  function ii(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    t: number,
+  ): number {
+    return cmn(c ^ (b | ~d), a, b, x, s, t);
+  }
   const bytes: number[] = [];
   const enc = new TextEncoder().encode(text);
   for (const b of enc) bytes.push(b);
@@ -8156,7 +8315,10 @@ function md5(text: string): string {
   bytes.push(0x80);
   while (bytes.length % 64 !== 56) bytes.push(0);
   for (let i = 0; i < 8; i++) bytes.push((len >>> (8 * i)) & 0xff);
-  let a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476;
+  let a = 0x67452301,
+    b = 0xefcdab89,
+    c = 0x98badcfe,
+    d = 0x10325476;
   for (let i = 0; i < bytes.length; i += 64) {
     const x: number[] = new Array(16);
     for (let j = 0; j < 16; j++) {
@@ -8166,51 +8328,92 @@ function md5(text: string): string {
         (bytes[i + j * 4 + 2] << 16) |
         (bytes[i + j * 4 + 3] << 24);
     }
-    const aa = a, bb = b, cc = c, dd = d;
-    a = ff(a, b, c, d, x[0], 7, -680876936); d = ff(d, a, b, c, x[1], 12, -389564586);
-    c = ff(c, d, a, b, x[2], 17, 606105819); b = ff(b, c, d, a, x[3], 22, -1044525330);
-    a = ff(a, b, c, d, x[4], 7, -176418897); d = ff(d, a, b, c, x[5], 12, 1200080426);
-    c = ff(c, d, a, b, x[6], 17, -1473231341); b = ff(b, c, d, a, x[7], 22, -45705983);
-    a = ff(a, b, c, d, x[8], 7, 1770035416); d = ff(d, a, b, c, x[9], 12, -1958414417);
-    c = ff(c, d, a, b, x[10], 17, -42063); b = ff(b, c, d, a, x[11], 22, -1990404162);
-    a = ff(a, b, c, d, x[12], 7, 1804603682); d = ff(d, a, b, c, x[13], 12, -40341101);
-    c = ff(c, d, a, b, x[14], 17, -1502002290); b = ff(b, c, d, a, x[15], 22, 1236535329);
-    a = gg(a, b, c, d, x[1], 5, -165796510); d = gg(d, a, b, c, x[6], 9, -1069501632);
-    c = gg(c, d, a, b, x[11], 14, 643717713); b = gg(b, c, d, a, x[0], 20, -373897302);
-    a = gg(a, b, c, d, x[5], 5, -701558691); d = gg(d, a, b, c, x[10], 9, 38016083);
-    c = gg(c, d, a, b, x[15], 14, -660478335); b = gg(b, c, d, a, x[4], 20, -405537848);
-    a = gg(a, b, c, d, x[9], 5, 568446438); d = gg(d, a, b, c, x[14], 9, -1019803690);
-    c = gg(c, d, a, b, x[3], 14, -187363961); b = gg(b, c, d, a, x[8], 20, 1163531501);
-    a = gg(a, b, c, d, x[13], 5, -1444681467); d = gg(d, a, b, c, x[2], 9, -51403784);
-    c = gg(c, d, a, b, x[7], 14, 1735328473); b = gg(b, c, d, a, x[12], 20, -1926607734);
-    a = hh(a, b, c, d, x[5], 4, -378558); d = hh(d, a, b, c, x[8], 11, -2022574463);
-    c = hh(c, d, a, b, x[11], 16, 1839030562); b = hh(b, c, d, a, x[14], 23, -35309556);
-    a = hh(a, b, c, d, x[1], 4, -1530992060); d = hh(d, a, b, c, x[4], 11, 1272893353);
-    c = hh(c, d, a, b, x[7], 16, -155497632); b = hh(b, c, d, a, x[10], 23, -1094730640);
-    a = hh(a, b, c, d, x[13], 4, 681279174); d = hh(d, a, b, c, x[0], 11, -358537222);
-    c = hh(c, d, a, b, x[3], 16, -722521979); b = hh(b, c, d, a, x[6], 23, 76029189);
-    a = hh(a, b, c, d, x[9], 4, -640364487); d = hh(d, a, b, c, x[12], 11, -421815835);
-    c = hh(c, d, a, b, x[15], 16, 530742520); b = hh(b, c, d, a, x[2], 23, -995338651);
-    a = ii(a, b, c, d, x[0], 6, -198630844); d = ii(d, a, b, c, x[7], 10, 1126891415);
-    c = ii(c, d, a, b, x[14], 15, -1416354905); b = ii(b, c, d, a, x[5], 21, -57434055);
-    a = ii(a, b, c, d, x[12], 6, 1700485571); d = ii(d, a, b, c, x[3], 10, -1894986606);
-    c = ii(c, d, a, b, x[10], 15, -1051523); b = ii(b, c, d, a, x[1], 21, -2054922799);
-    a = ii(a, b, c, d, x[8], 6, 1873313359); d = ii(d, a, b, c, x[15], 10, -30611744);
-    c = ii(c, d, a, b, x[6], 15, -1560198380); b = ii(b, c, d, a, x[13], 21, 1309151649);
-    a = ii(a, b, c, d, x[4], 6, -145523070); d = ii(d, a, b, c, x[11], 10, -1120210379);
-    c = ii(c, d, a, b, x[2], 15, 718787259); b = ii(b, c, d, a, x[9], 21, -343485551);
-    a = add32(a, aa); b = add32(b, bb); c = add32(c, cc); d = add32(d, dd);
+    const aa = a,
+      bb = b,
+      cc = c,
+      dd = d;
+    a = ff(a, b, c, d, x[0], 7, -680876936);
+    d = ff(d, a, b, c, x[1], 12, -389564586);
+    c = ff(c, d, a, b, x[2], 17, 606105819);
+    b = ff(b, c, d, a, x[3], 22, -1044525330);
+    a = ff(a, b, c, d, x[4], 7, -176418897);
+    d = ff(d, a, b, c, x[5], 12, 1200080426);
+    c = ff(c, d, a, b, x[6], 17, -1473231341);
+    b = ff(b, c, d, a, x[7], 22, -45705983);
+    a = ff(a, b, c, d, x[8], 7, 1770035416);
+    d = ff(d, a, b, c, x[9], 12, -1958414417);
+    c = ff(c, d, a, b, x[10], 17, -42063);
+    b = ff(b, c, d, a, x[11], 22, -1990404162);
+    a = ff(a, b, c, d, x[12], 7, 1804603682);
+    d = ff(d, a, b, c, x[13], 12, -40341101);
+    c = ff(c, d, a, b, x[14], 17, -1502002290);
+    b = ff(b, c, d, a, x[15], 22, 1236535329);
+    a = gg(a, b, c, d, x[1], 5, -165796510);
+    d = gg(d, a, b, c, x[6], 9, -1069501632);
+    c = gg(c, d, a, b, x[11], 14, 643717713);
+    b = gg(b, c, d, a, x[0], 20, -373897302);
+    a = gg(a, b, c, d, x[5], 5, -701558691);
+    d = gg(d, a, b, c, x[10], 9, 38016083);
+    c = gg(c, d, a, b, x[15], 14, -660478335);
+    b = gg(b, c, d, a, x[4], 20, -405537848);
+    a = gg(a, b, c, d, x[9], 5, 568446438);
+    d = gg(d, a, b, c, x[14], 9, -1019803690);
+    c = gg(c, d, a, b, x[3], 14, -187363961);
+    b = gg(b, c, d, a, x[8], 20, 1163531501);
+    a = gg(a, b, c, d, x[13], 5, -1444681467);
+    d = gg(d, a, b, c, x[2], 9, -51403784);
+    c = gg(c, d, a, b, x[7], 14, 1735328473);
+    b = gg(b, c, d, a, x[12], 20, -1926607734);
+    a = hh(a, b, c, d, x[5], 4, -378558);
+    d = hh(d, a, b, c, x[8], 11, -2022574463);
+    c = hh(c, d, a, b, x[11], 16, 1839030562);
+    b = hh(b, c, d, a, x[14], 23, -35309556);
+    a = hh(a, b, c, d, x[1], 4, -1530992060);
+    d = hh(d, a, b, c, x[4], 11, 1272893353);
+    c = hh(c, d, a, b, x[7], 16, -155497632);
+    b = hh(b, c, d, a, x[10], 23, -1094730640);
+    a = hh(a, b, c, d, x[13], 4, 681279174);
+    d = hh(d, a, b, c, x[0], 11, -358537222);
+    c = hh(c, d, a, b, x[3], 16, -722521979);
+    b = hh(b, c, d, a, x[6], 23, 76029189);
+    a = hh(a, b, c, d, x[9], 4, -640364487);
+    d = hh(d, a, b, c, x[12], 11, -421815835);
+    c = hh(c, d, a, b, x[15], 16, 530742520);
+    b = hh(b, c, d, a, x[2], 23, -995338651);
+    a = ii(a, b, c, d, x[0], 6, -198630844);
+    d = ii(d, a, b, c, x[7], 10, 1126891415);
+    c = ii(c, d, a, b, x[14], 15, -1416354905);
+    b = ii(b, c, d, a, x[5], 21, -57434055);
+    a = ii(a, b, c, d, x[12], 6, 1700485571);
+    d = ii(d, a, b, c, x[3], 10, -1894986606);
+    c = ii(c, d, a, b, x[10], 15, -1051523);
+    b = ii(b, c, d, a, x[1], 21, -2054922799);
+    a = ii(a, b, c, d, x[8], 6, 1873313359);
+    d = ii(d, a, b, c, x[15], 10, -30611744);
+    c = ii(c, d, a, b, x[6], 15, -1560198380);
+    b = ii(b, c, d, a, x[13], 21, 1309151649);
+    a = ii(a, b, c, d, x[4], 6, -145523070);
+    d = ii(d, a, b, c, x[11], 10, -1120210379);
+    c = ii(c, d, a, b, x[2], 15, 718787259);
+    b = ii(b, c, d, a, x[9], 21, -343485551);
+    a = add32(a, aa);
+    b = add32(b, bb);
+    c = add32(c, cc);
+    d = add32(d, dd);
   }
   function hex(n: number): string {
     let s = "";
-    for (let i = 0; i < 4; i++) s += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
+    for (let i = 0; i < 4; i++)
+      s += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
     return s;
   }
   return hex(a) + hex(b) + hex(c) + hex(d);
 }
 
 function setupHashGenSub(): void {
-  const inEl = document.getElementById("hg-input") as HTMLTextAreaElement | null;
+  const inEl = document.getElementById(
+    "hg-input",
+  ) as HTMLTextAreaElement | null;
   const runBtn = document.getElementById("hg-run") as HTMLButtonElement | null;
   const outEl = document.getElementById("hg-out") as HTMLPreElement | null;
   if (!runBtn || !outEl) return;
@@ -8229,10 +8432,16 @@ function setupHashGenSub(): void {
 }
 
 function setupEncodeSub(): void {
-  const modeEl = document.getElementById("enc-mode") as HTMLSelectElement | null;
+  const modeEl = document.getElementById(
+    "enc-mode",
+  ) as HTMLSelectElement | null;
   const runBtn = document.getElementById("enc-run") as HTMLButtonElement | null;
-  const inEl = document.getElementById("enc-input") as HTMLTextAreaElement | null;
-  const outEl = document.getElementById("enc-output") as HTMLTextAreaElement | null;
+  const inEl = document.getElementById(
+    "enc-input",
+  ) as HTMLTextAreaElement | null;
+  const outEl = document.getElementById(
+    "enc-output",
+  ) as HTMLTextAreaElement | null;
   if (!runBtn || !inEl || !outEl) return;
   runBtn.addEventListener("click", () => {
     const text = inEl.value;
@@ -8243,17 +8452,35 @@ function setupEncodeSub(): void {
       else if (mode === "b64d") r = decodeURIComponent(escape(atob(text)));
       else if (mode === "urle") r = encodeURIComponent(text);
       else if (mode === "urld") r = decodeURIComponent(text);
-      else if (mode === "htme") r = text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+      else if (mode === "htme")
+        r = text.replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c]!,
+        );
       else if (mode === "htmd")
-        r = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_m, e) =>
-          ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " })[e as string] || _m,
+        r = text.replace(
+          /&(amp|lt|gt|quot|#39|nbsp);/g,
+          (_m, e) =>
+            ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " })[
+              e as string
+            ] || _m,
         );
       else if (mode === "hexe")
-        r = [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        r = [...new TextEncoder().encode(text)]
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
       else if (mode === "hexd") {
         const cleaned = text.replace(/[^a-fA-F0-9]/g, "");
         const bytes = new Uint8Array(cleaned.length / 2);
-        for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(cleaned.substr(i * 2, 2), 16);
+        for (let i = 0; i < bytes.length; i++)
+          bytes[i] = parseInt(cleaned.substr(i * 2, 2), 16);
         r = new TextDecoder().decode(bytes);
       } else if (mode === "rot13")
         r = text.replace(/[a-zA-Z]/g, (c) => {
@@ -8270,7 +8497,9 @@ function setupEncodeSub(): void {
 function setupRevShellSub(): void {
   const hostEl = document.getElementById("rs-host") as HTMLInputElement | null;
   const portEl = document.getElementById("rs-port") as HTMLInputElement | null;
-  const shellEl = document.getElementById("rs-shell") as HTMLSelectElement | null;
+  const shellEl = document.getElementById(
+    "rs-shell",
+  ) as HTMLSelectElement | null;
   const outEl = document.getElementById("rs-out") as HTMLPreElement | null;
   if (!hostEl || !outEl) return;
   function gen(): void {
@@ -8341,7 +8570,9 @@ function setupRevShellSub(): void {
 }
 
 function setupJwtSub(): void {
-  const inEl = document.getElementById("jwt-input") as HTMLTextAreaElement | null;
+  const inEl = document.getElementById(
+    "jwt-input",
+  ) as HTMLTextAreaElement | null;
   const runBtn = document.getElementById("jwt-run") as HTMLButtonElement | null;
   const hEl = document.getElementById("jwt-header") as HTMLPreElement | null;
   const pEl = document.getElementById("jwt-payload") as HTMLPreElement | null;
@@ -8381,7 +8612,9 @@ function setupJwtSub(): void {
 
 function setupDnsSub(): void {
   const hostEl = document.getElementById("dns-host") as HTMLInputElement | null;
-  const typeEl = document.getElementById("dns-type") as HTMLSelectElement | null;
+  const typeEl = document.getElementById(
+    "dns-type",
+  ) as HTMLSelectElement | null;
   const runBtn = document.getElementById("dns-run") as HTMLButtonElement | null;
   const outEl = document.getElementById("dns-out") as HTMLPreElement | null;
   if (!runBtn || !outEl) return;
@@ -8425,7 +8658,21 @@ function setupDnsSub(): void {
     }
   });
   function typeName(n: number): string {
-    return ({ 1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV" } as Record<number, string>)[n] || String(n);
+    return (
+      (
+        {
+          1: "A",
+          2: "NS",
+          5: "CNAME",
+          6: "SOA",
+          12: "PTR",
+          15: "MX",
+          16: "TXT",
+          28: "AAAA",
+          33: "SRV",
+        } as Record<number, string>
+      )[n] || String(n)
+    );
   }
 }
 
@@ -8435,15 +8682,49 @@ function setupSensitiveFilesSub(): void {
   const outEl = document.getElementById("sf-out") as HTMLPreElement | null;
   if (!runBtn || !outEl) return;
   const PATHS = [
-    "robots.txt", "sitemap.xml", ".git/HEAD", ".git/config", ".gitignore",
-    ".env", ".env.local", ".env.production", ".htaccess", ".htpasswd",
-    ".svn/entries", ".DS_Store", "config.php", "config.php.bak", "wp-config.php",
-    "wp-config.php.bak", "phpinfo.php", "info.php", "test.php", "server-status",
-    "server-info", ".well-known/security.txt", "crossdomain.xml",
-    "backup.zip", "backup.tar.gz", "db.sql", "dump.sql", "id_rsa", "composer.json",
-    "package.json", "Gemfile", ".aws/credentials", ".npmrc", ".bash_history",
-    "console", "actuator", "actuator/health", "actuator/env", "swagger.json",
-    "swagger-ui.html", "api/swagger", "api-docs", "graphql",
+    "robots.txt",
+    "sitemap.xml",
+    ".git/HEAD",
+    ".git/config",
+    ".gitignore",
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".htaccess",
+    ".htpasswd",
+    ".svn/entries",
+    ".DS_Store",
+    "config.php",
+    "config.php.bak",
+    "wp-config.php",
+    "wp-config.php.bak",
+    "phpinfo.php",
+    "info.php",
+    "test.php",
+    "server-status",
+    "server-info",
+    ".well-known/security.txt",
+    "crossdomain.xml",
+    "backup.zip",
+    "backup.tar.gz",
+    "db.sql",
+    "dump.sql",
+    "id_rsa",
+    "composer.json",
+    "package.json",
+    "Gemfile",
+    ".aws/credentials",
+    ".npmrc",
+    ".bash_history",
+    "console",
+    "actuator",
+    "actuator/health",
+    "actuator/env",
+    "swagger.json",
+    "swagger-ui.html",
+    "api/swagger",
+    "api-docs",
+    "graphql",
   ];
   runBtn.addEventListener("click", async () => {
     const base = (baseEl?.value || "").trim().replace(/\/+$/, "");
@@ -8463,7 +8744,8 @@ function setupSensitiveFilesSub(): void {
           timeoutMs: 5000,
           followRedirects: false,
         });
-        const interesting = r.status === 200 || r.status === 401 || r.status === 403;
+        const interesting =
+          r.status === 200 || r.status === 401 || r.status === 403;
         const tag = interesting ? "⚠️" : "  ";
         outEl.textContent += `${tag} [${r.status}] ${url}  (${r.bytes}B)\n`;
         outEl.scrollTop = outEl.scrollHeight;
@@ -8576,4 +8858,417 @@ function setupPentestTool(): void {
   setupSensitiveFilesSub();
   const cheat = document.getElementById("thm-cheat");
   if (cheat) cheat.textContent = THM_CHEAT;
+}
+
+// ===== 📶 スピードテスト =====
+
+interface SpeedDownloadResultTS {
+  bytes: number;
+  time_ms: number;
+  mbps: number;
+  status: number;
+  final_url: string;
+}
+interface SpeedUploadResultTS {
+  bytes: number;
+  time_ms: number;
+  mbps: number;
+  status: number;
+}
+interface SpeedPingResultTS {
+  samples_ms: number[];
+  success: number;
+  failed: number;
+  avg_ms: number;
+  min_ms: number;
+  max_ms: number;
+  jitter_ms: number;
+}
+
+interface SpeedHistoryEntry {
+  ts: number;
+  dlMbps: number | null;
+  ulMbps: number | null;
+  pingMs: number | null;
+  jitterMs: number | null;
+  dlBytes: number | null;
+}
+
+const speedHistory: SpeedHistoryEntry[] = [];
+let speedAutoTimer: number | null = null;
+let speedRunning = false;
+
+function drawSpeedChart(): void {
+  const canvas = document.getElementById(
+    "st-chart",
+  ) as HTMLCanvasElement | null;
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 900;
+  const cssH = canvas.clientHeight || 240;
+  if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = cssW;
+  const H = cssH;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 44,
+    padR = 44,
+    padT = 10,
+    padB = 22;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const data = speedHistory;
+  if (data.length === 0) {
+    ctx.fillStyle = "#999";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("データなし — 「テスト実行」を押してください", W / 2, H / 2);
+    return;
+  }
+
+  const mbpsValues: number[] = [];
+  for (const e of data) {
+    if (e.dlMbps != null) mbpsValues.push(e.dlMbps);
+    if (e.ulMbps != null) mbpsValues.push(e.ulMbps);
+  }
+  const pingValues = data
+    .map((e) => e.pingMs)
+    .filter((v): v is number => v != null);
+  const maxMbps = Math.max(10, ...mbpsValues) * 1.1;
+  const maxPing = Math.max(50, ...pingValues) * 1.2;
+
+  // grid
+  ctx.strokeStyle = "#eee";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#666";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 5; i++) {
+    const y = padT + (plotH * i) / 5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    const mbps = maxMbps * (1 - i / 5);
+    ctx.fillStyle = "#1f883d";
+    ctx.fillText(mbps.toFixed(0), padL - 4, y + 3);
+    const ping = maxPing * (1 - i / 5);
+    ctx.fillStyle = "#cf222e";
+    ctx.textAlign = "left";
+    ctx.fillText(ping.toFixed(0), padL + plotW + 4, y + 3);
+    ctx.textAlign = "right";
+  }
+
+  // axis labels
+  ctx.fillStyle = "#1f883d";
+  ctx.textAlign = "left";
+  ctx.fillText("Mbps", padL - 30, padT - 2);
+  ctx.fillStyle = "#cf222e";
+  ctx.textAlign = "right";
+  ctx.fillText("ms", padL + plotW + 26, padT - 2);
+
+  const n = data.length;
+  function xAt(i: number): number {
+    if (n === 1) return padL + plotW / 2;
+    return padL + (plotW * i) / (n - 1);
+  }
+
+  function plotLine(
+    getter: (e: SpeedHistoryEntry) => number | null,
+    color: string,
+    max: number,
+  ): void {
+    const c = ctx!;
+    c.strokeStyle = color;
+    c.lineWidth = 2;
+    c.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      const v = getter(data[i]);
+      if (v == null) {
+        started = false;
+        continue;
+      }
+      const x = xAt(i);
+      const y = padT + plotH * (1 - v / max);
+      if (!started) {
+        c.moveTo(x, y);
+        started = true;
+      } else c.lineTo(x, y);
+    }
+    c.stroke();
+    c.fillStyle = color;
+    for (let i = 0; i < n; i++) {
+      const v = getter(data[i]);
+      if (v == null) continue;
+      const x = xAt(i);
+      const y = padT + plotH * (1 - v / max);
+      c.beginPath();
+      c.arc(x, y, 2.5, 0, Math.PI * 2);
+      c.fill();
+    }
+  }
+
+  plotLine((e) => e.dlMbps, "#1f883d", maxMbps);
+  plotLine((e) => e.ulMbps, "#0969da", maxMbps);
+  plotLine((e) => e.pingMs, "#cf222e", maxPing);
+
+  // x-axis time labels
+  ctx.fillStyle = "#666";
+  ctx.textAlign = "center";
+  const ticks = Math.min(n, 6);
+  for (let i = 0; i < ticks; i++) {
+    const idx = Math.round(((n - 1) * i) / (ticks - 1 || 1));
+    const e = data[idx];
+    const x = xAt(idx);
+    const d = new Date(e.ts);
+    const lbl = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+    ctx.fillText(lbl, x, H - 6);
+  }
+}
+
+function updateSpeedHistoryTable(): void {
+  const tbody = document.querySelector(
+    "#st-history tbody",
+  ) as HTMLTableSectionElement | null;
+  if (!tbody) return;
+  const rows: string[] = [];
+  for (let i = speedHistory.length - 1; i >= 0; i--) {
+    const e = speedHistory[i];
+    const t = new Date(e.ts).toLocaleTimeString();
+    rows.push(
+      `<tr><td style="padding:3px 4px">${t}</td>` +
+        `<td style="padding:3px 4px;text-align:right;color:#1f883d">${e.dlMbps?.toFixed(2) ?? "—"}</td>` +
+        `<td style="padding:3px 4px;text-align:right;color:#0969da">${e.ulMbps?.toFixed(2) ?? "—"}</td>` +
+        `<td style="padding:3px 4px;text-align:right;color:#cf222e">${e.pingMs?.toFixed(1) ?? "—"}</td>` +
+        `<td style="padding:3px 4px;text-align:right">${e.jitterMs?.toFixed(2) ?? "—"}</td>` +
+        `<td style="padding:3px 4px;text-align:right">${e.dlBytes?.toLocaleString() ?? "—"}</td></tr>`,
+    );
+  }
+  tbody.innerHTML = rows.join("");
+}
+
+async function runSpeedtestOnce(statusEl: HTMLElement | null): Promise<void> {
+  if (speedRunning) return;
+  speedRunning = true;
+  const presetEl = document.getElementById(
+    "st-dl-preset",
+  ) as HTMLSelectElement | null;
+  const dlUrlEl = document.getElementById(
+    "st-dl-url",
+  ) as HTMLInputElement | null;
+  const ulUrlEl = document.getElementById(
+    "st-ul-url",
+  ) as HTMLInputElement | null;
+  const pingHostEl = document.getElementById(
+    "st-ping-host",
+  ) as HTMLInputElement | null;
+  const pingPortEl = document.getElementById(
+    "st-ping-port",
+  ) as HTMLInputElement | null;
+  const pingCountEl = document.getElementById(
+    "st-ping-count",
+  ) as HTMLInputElement | null;
+  const capEl = document.getElementById("st-cap") as HTMLSelectElement | null;
+  const ulSizeEl = document.getElementById(
+    "st-ul-size",
+  ) as HTMLSelectElement | null;
+  const statDl = document.getElementById("st-stat-dl");
+  const statUl = document.getElementById("st-stat-ul");
+  const statPing = document.getElementById("st-stat-ping");
+  const statJitter = document.getElementById("st-stat-jitter");
+
+  const dlUrl =
+    presetEl?.value === "custom"
+      ? dlUrlEl?.value.trim() || ""
+      : presetEl?.value || "";
+  const ulUrl = ulUrlEl?.value.trim() || "";
+  const pingHost = pingHostEl?.value.trim() || "";
+  const pingPort = parseInt(pingPortEl?.value || "443");
+  const pingCount = parseInt(pingCountEl?.value || "5");
+  const capMb = parseInt(capEl?.value || "10");
+  const ulSizeMb = parseInt(ulSizeEl?.value || "2");
+
+  const entry: SpeedHistoryEntry = {
+    ts: Date.now(),
+    dlMbps: null,
+    ulMbps: null,
+    pingMs: null,
+    jitterMs: null,
+    dlBytes: null,
+  };
+
+  try {
+    if (pingHost) {
+      if (statusEl)
+        statusEl.textContent = `Ping ${pingHost}:${pingPort} ×${pingCount}…`;
+      try {
+        const p = await invoke<SpeedPingResultTS>("speedtest_ping", {
+          host: pingHost,
+          port: pingPort,
+          count: pingCount,
+        });
+        entry.pingMs = p.avg_ms;
+        entry.jitterMs = p.jitter_ms;
+        if (statPing) statPing.textContent = `${p.avg_ms.toFixed(1)} ms`;
+        if (statJitter) statJitter.textContent = `${p.jitter_ms.toFixed(2)} ms`;
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Ping エラー: ${e}`;
+      }
+    }
+
+    if (dlUrl) {
+      if (statusEl)
+        statusEl.textContent = `ダウンロードテスト中… (上限 ${capMb}MB)`;
+      try {
+        const d = await invoke<SpeedDownloadResultTS>("speedtest_download", {
+          url: dlUrl,
+          maxBytes: capMb * 1024 * 1024,
+          timeoutMs: 30000,
+        });
+        entry.dlMbps = d.mbps;
+        entry.dlBytes = d.bytes;
+        if (statDl) statDl.textContent = `${d.mbps.toFixed(2)} Mbps`;
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Download エラー: ${e}`;
+      }
+    }
+
+    if (ulUrl && ulSizeMb > 0) {
+      if (statusEl)
+        statusEl.textContent = `アップロードテスト中… (${ulSizeMb}MB)`;
+      try {
+        const u = await invoke<SpeedUploadResultTS>("speedtest_upload", {
+          url: ulUrl,
+          sizeBytes: ulSizeMb * 1024 * 1024,
+          timeoutMs: 30000,
+        });
+        entry.ulMbps = u.mbps;
+        if (statUl) statUl.textContent = `${u.mbps.toFixed(2)} Mbps`;
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Upload エラー: ${e}`;
+      }
+    }
+
+    speedHistory.push(entry);
+    if (speedHistory.length > 500) speedHistory.shift();
+    drawSpeedChart();
+    updateSpeedHistoryTable();
+    if (statusEl) {
+      const t = new Date(entry.ts).toLocaleTimeString();
+      statusEl.textContent = `完了 ${t} — ↓${entry.dlMbps?.toFixed(2) ?? "—"} ↑${entry.ulMbps?.toFixed(2) ?? "—"} Mbps / ping ${entry.pingMs?.toFixed(1) ?? "—"}ms`;
+    }
+  } finally {
+    speedRunning = false;
+  }
+}
+
+function setupSpeedtestTool(): void {
+  const presetEl = document.getElementById(
+    "st-dl-preset",
+  ) as HTMLSelectElement | null;
+  const dlUrlEl = document.getElementById(
+    "st-dl-url",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById("st-run") as HTMLButtonElement | null;
+  const autoBtn = document.getElementById(
+    "st-auto",
+  ) as HTMLButtonElement | null;
+  const stopBtn = document.getElementById(
+    "st-stop",
+  ) as HTMLButtonElement | null;
+  const clearBtn = document.getElementById(
+    "st-clear",
+  ) as HTMLButtonElement | null;
+  const exportBtn = document.getElementById(
+    "st-export",
+  ) as HTMLButtonElement | null;
+  const intervalEl = document.getElementById(
+    "st-interval",
+  ) as HTMLInputElement | null;
+  const statusEl = document.getElementById("st-status");
+  if (!runBtn) return;
+
+  presetEl?.addEventListener("change", () => {
+    if (!dlUrlEl) return;
+    if (presetEl.value === "custom") {
+      dlUrlEl.hidden = false;
+    } else {
+      dlUrlEl.hidden = true;
+    }
+  });
+
+  runBtn.addEventListener("click", () => {
+    runSpeedtestOnce(statusEl);
+  });
+
+  autoBtn?.addEventListener("click", () => {
+    if (speedAutoTimer != null) return;
+    const sec = Math.max(5, parseInt(intervalEl?.value || "0"));
+    if (!sec || sec < 5) {
+      if (statusEl) statusEl.textContent = "間隔は 5 秒以上を指定してください";
+      return;
+    }
+    if (statusEl) statusEl.textContent = `定期実行 開始 (${sec} 秒間隔)`;
+    runSpeedtestOnce(statusEl);
+    speedAutoTimer = window.setInterval(() => {
+      runSpeedtestOnce(statusEl);
+    }, sec * 1000);
+    autoBtn.textContent = "● 実行中";
+    autoBtn.style.background = "#cf222e";
+  });
+
+  stopBtn?.addEventListener("click", () => {
+    if (speedAutoTimer != null) {
+      window.clearInterval(speedAutoTimer);
+      speedAutoTimer = null;
+    }
+    if (autoBtn) {
+      autoBtn.textContent = "▶ 定期開始";
+      autoBtn.style.background = "#6f42c1";
+    }
+    if (statusEl) statusEl.textContent = "定期実行 停止";
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    speedHistory.length = 0;
+    drawSpeedChart();
+    updateSpeedHistoryTable();
+    if (statusEl) statusEl.textContent = "履歴クリア";
+  });
+
+  exportBtn?.addEventListener("click", () => {
+    const lines = ["timestamp,iso,dl_mbps,ul_mbps,ping_ms,jitter_ms,dl_bytes"];
+    for (const e of speedHistory) {
+      lines.push(
+        [
+          e.ts,
+          new Date(e.ts).toISOString(),
+          e.dlMbps?.toFixed(4) ?? "",
+          e.ulMbps?.toFixed(4) ?? "",
+          e.pingMs?.toFixed(3) ?? "",
+          e.jitterMs?.toFixed(3) ?? "",
+          e.dlBytes ?? "",
+        ].join(","),
+      );
+    }
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `speedtest-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  drawSpeedChart();
+  window.addEventListener("resize", () => drawSpeedChart());
 }

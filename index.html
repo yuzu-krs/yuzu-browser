@@ -229,6 +229,10 @@
             <span class="toolbox-nav-icon">🛡️</span>
             <span>ペネトレ ツール</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="speedtest">
+            <span class="toolbox-nav-icon">📶</span>
+            <span>スピードテスト</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
           <section class="toolbox-tool" data-tool="ytdlp">
@@ -2399,6 +2403,385 @@ document.title = '✨ ' + document.title;"
                     border-radius: 4px;
                   "
                 ></pre>
+              </div>
+            </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="speedtest" hidden>
+            <h3>📶 ネット スピードテスト</h3>
+            <p class="toolbox-note">
+              ダウンロード / アップロード速度と TCP ping
+              を計測。間隔を指定して定期実行し、グラフに履歴を描画します。
+            </p>
+
+            <div
+              class="toolbox-row"
+              style="gap: 6px; flex-wrap: wrap; align-items: flex-end"
+            >
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                ダウンロードURL
+                <select id="st-dl-preset" style="width: 22em">
+                  <option
+                    value="https://speed.cloudflare.com/__down?bytes=10000000"
+                  >
+                    Cloudflare 10MB
+                  </option>
+                  <option
+                    value="https://speed.cloudflare.com/__down?bytes=25000000"
+                  >
+                    Cloudflare 25MB
+                  </option>
+                  <option
+                    value="https://speed.cloudflare.com/__down?bytes=100000000"
+                  >
+                    Cloudflare 100MB
+                  </option>
+                  <option value="https://proof.ovh.net/files/10Mb.dat">
+                    OVH 10Mb
+                  </option>
+                  <option value="https://proof.ovh.net/files/100Mb.dat">
+                    OVH 100Mb
+                  </option>
+                  <option value="http://speedtest.tele2.net/10MB.zip">
+                    Tele2 10MB
+                  </option>
+                  <option value="custom">カスタム</option>
+                </select>
+              </label>
+              <input
+                id="st-dl-url"
+                type="text"
+                placeholder="カスタム URL"
+                style="flex: 1; min-width: 16em"
+                hidden
+              />
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                アップロードURL
+                <input
+                  id="st-ul-url"
+                  type="text"
+                  value="https://speed.cloudflare.com/__up"
+                  style="width: 22em"
+                />
+              </label>
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                Ping ホスト
+                <input
+                  id="st-ping-host"
+                  type="text"
+                  value="1.1.1.1"
+                  style="width: 12em"
+                />
+              </label>
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                Ping ポート
+                <input
+                  id="st-ping-port"
+                  type="number"
+                  value="443"
+                  style="width: 6em"
+                />
+              </label>
+            </div>
+
+            <div
+              class="toolbox-row"
+              style="
+                gap: 6px;
+                margin-top: 6px;
+                flex-wrap: wrap;
+                align-items: flex-end;
+              "
+            >
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                上限サイズ
+                <select id="st-cap">
+                  <option value="5">5 MB (高速)</option>
+                  <option value="10" selected>10 MB</option>
+                  <option value="25">25 MB</option>
+                  <option value="50">50 MB</option>
+                  <option value="100">100 MB</option>
+                </select>
+              </label>
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                Upload サイズ
+                <select id="st-ul-size">
+                  <option value="0">スキップ</option>
+                  <option value="1">1 MB</option>
+                  <option value="2" selected>2 MB</option>
+                  <option value="5">5 MB</option>
+                  <option value="10">10 MB</option>
+                </select>
+              </label>
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                Ping 回数
+                <input
+                  id="st-ping-count"
+                  type="number"
+                  value="5"
+                  min="1"
+                  max="50"
+                  style="width: 5em"
+                />
+              </label>
+              <label
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  font-size: 11px;
+                  color: #666;
+                "
+              >
+                定期実行間隔 (秒, 0=単発)
+                <input
+                  id="st-interval"
+                  type="number"
+                  value="0"
+                  min="0"
+                  max="3600"
+                  style="width: 6em"
+                />
+              </label>
+              <button type="button" id="st-run" class="toolbox-primary">
+                テスト実行
+              </button>
+              <button
+                type="button"
+                id="st-auto"
+                class="toolbox-primary"
+                style="background: #6f42c1"
+              >
+                ▶ 定期開始
+              </button>
+              <button type="button" id="st-stop">■ 停止</button>
+              <button type="button" id="st-clear">履歴クリア</button>
+              <button type="button" id="st-export">CSV エクスポート</button>
+            </div>
+
+            <div
+              id="st-status"
+              class="toolbox-status"
+              style="margin-top: 6px"
+            ></div>
+
+            <div
+              style="
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 8px;
+                margin-top: 8px;
+              "
+            >
+              <div
+                style="
+                  background: #f6f8fa;
+                  padding: 10px;
+                  border-radius: 6px;
+                  border: 1px solid #ddd;
+                  text-align: center;
+                "
+              >
+                <div style="font-size: 11px; color: #666">↓ ダウンロード</div>
+                <div
+                  id="st-stat-dl"
+                  style="font-size: 22px; font-weight: bold; color: #1f883d"
+                >
+                  — Mbps
+                </div>
+              </div>
+              <div
+                style="
+                  background: #f6f8fa;
+                  padding: 10px;
+                  border-radius: 6px;
+                  border: 1px solid #ddd;
+                  text-align: center;
+                "
+              >
+                <div style="font-size: 11px; color: #666">↑ アップロード</div>
+                <div
+                  id="st-stat-ul"
+                  style="font-size: 22px; font-weight: bold; color: #0969da"
+                >
+                  — Mbps
+                </div>
+              </div>
+              <div
+                style="
+                  background: #f6f8fa;
+                  padding: 10px;
+                  border-radius: 6px;
+                  border: 1px solid #ddd;
+                  text-align: center;
+                "
+              >
+                <div style="font-size: 11px; color: #666">⏱ Ping (avg)</div>
+                <div
+                  id="st-stat-ping"
+                  style="font-size: 22px; font-weight: bold; color: #cf222e"
+                >
+                  — ms
+                </div>
+              </div>
+              <div
+                style="
+                  background: #f6f8fa;
+                  padding: 10px;
+                  border-radius: 6px;
+                  border: 1px solid #ddd;
+                  text-align: center;
+                "
+              >
+                <div style="font-size: 11px; color: #666">📈 Jitter</div>
+                <div
+                  id="st-stat-jitter"
+                  style="font-size: 22px; font-weight: bold; color: #bf8700"
+                >
+                  — ms
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top: 10px">
+              <div style="font-size: 12px; color: #555; margin-bottom: 4px">
+                <span style="color: #1f883d">■</span> Download (Mbps) &nbsp;
+                <span style="color: #0969da">■</span> Upload (Mbps) &nbsp;
+                <span style="color: #cf222e">■</span> Ping (ms / 右軸)
+              </div>
+              <canvas
+                id="st-chart"
+                width="900"
+                height="240"
+                style="
+                  width: 100%;
+                  height: 240px;
+                  background: #fff;
+                  border: 1px solid #ddd;
+                  border-radius: 6px;
+                "
+              ></canvas>
+            </div>
+
+            <details style="margin-top: 8px">
+              <summary>📋 履歴テーブル</summary>
+              <div style="max-height: 240px; overflow: auto; margin-top: 6px">
+                <table
+                  id="st-history"
+                  style="
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 11px;
+                  "
+                >
+                  <thead style="position: sticky; top: 0; background: #f6f8fa">
+                    <tr>
+                      <th
+                        style="
+                          text-align: left;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        時刻
+                      </th>
+                      <th
+                        style="
+                          text-align: right;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        ↓ Mbps
+                      </th>
+                      <th
+                        style="
+                          text-align: right;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        ↑ Mbps
+                      </th>
+                      <th
+                        style="
+                          text-align: right;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        Ping ms
+                      </th>
+                      <th
+                        style="
+                          text-align: right;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        Jitter ms
+                      </th>
+                      <th
+                        style="
+                          text-align: right;
+                          padding: 4px;
+                          border-bottom: 1px solid #ddd;
+                        "
+                      >
+                        DL bytes
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
               </div>
             </details>
           </section>

@@ -4373,6 +4373,9 @@ pub fn run() {
             toolbox_save_generic_meta,
             pentest_port_scan,
             pentest_http_request,
+            speedtest_download,
+            speedtest_upload,
+            speedtest_ping,
         ])
         .setup(|app| {
             // ブックマークを app data dir からロード。
@@ -4700,5 +4703,189 @@ fn pentest_http_request(
         content_type,
         time_ms: elapsed,
         final_url,
+    })
+}
+
+#[derive(serde::Serialize)]
+struct SpeedDownloadResult {
+    bytes: u64,
+    time_ms: u64,
+    mbps: f64,
+    status: u16,
+    final_url: String,
+}
+
+#[tauri::command]
+fn speedtest_download(
+    url: String,
+    max_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+) -> Result<SpeedDownloadResult, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL を入力してください".to_string());
+    }
+    let parsed = url::Url::parse(&url).map_err(|e| format!("URL が不正です: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("http/https を指定してください".to_string());
+    }
+    let cap = max_bytes.unwrap_or(25 * 1024 * 1024).clamp(64 * 1024, 200 * 1024 * 1024);
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(5)
+        .build();
+    let req = agent
+        .get(&url)
+        .set("User-Agent", "Mozilla/5.0 (yuzu-browser speedtest)")
+        .set("Cache-Control", "no-cache")
+        .set("Pragma", "no-cache");
+    let start = std::time::Instant::now();
+    let resp = req.call().map_err(|e| format!("接続失敗: {}", e))?;
+    let status = resp.status();
+    let final_url = resp.get_url().to_string();
+    let mut reader = resp.into_reader();
+    let mut total: u64 = 0;
+    let mut buf = [0u8; 65536];
+    loop {
+        if start.elapsed() >= timeout {
+            break;
+        }
+        let n = match std::io::Read::read(&mut reader, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        total += n as u64;
+        if total >= cap {
+            break;
+        }
+    }
+    let elapsed = start.elapsed();
+    let elapsed_ms = elapsed.as_millis() as u64;
+    let secs = elapsed.as_secs_f64().max(0.000_001);
+    let mbps = (total as f64 * 8.0) / secs / 1_000_000.0;
+    Ok(SpeedDownloadResult {
+        bytes: total,
+        time_ms: elapsed_ms,
+        mbps,
+        status,
+        final_url,
+    })
+}
+
+#[derive(serde::Serialize)]
+struct SpeedUploadResult {
+    bytes: u64,
+    time_ms: u64,
+    mbps: f64,
+    status: u16,
+}
+
+#[tauri::command]
+fn speedtest_upload(
+    url: String,
+    size_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+) -> Result<SpeedUploadResult, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL を入力してください".to_string());
+    }
+    let parsed = url::Url::parse(&url).map_err(|e| format!("URL が不正です: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("http/https を指定してください".to_string());
+    }
+    let size = size_bytes.unwrap_or(2 * 1024 * 1024).clamp(16 * 1024, 50 * 1024 * 1024) as usize;
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(5)
+        .build();
+    let payload = vec![b'A'; size];
+    let start = std::time::Instant::now();
+    let resp = agent
+        .post(&url)
+        .set("User-Agent", "Mozilla/5.0 (yuzu-browser speedtest)")
+        .set("Content-Type", "application/octet-stream")
+        .send_bytes(&payload);
+    let resp = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format!("送信失敗: {}", e)),
+    };
+    let elapsed = start.elapsed();
+    let elapsed_ms = elapsed.as_millis() as u64;
+    let secs = elapsed.as_secs_f64().max(0.000_001);
+    let mbps = (size as f64 * 8.0) / secs / 1_000_000.0;
+    Ok(SpeedUploadResult {
+        bytes: size as u64,
+        time_ms: elapsed_ms,
+        mbps,
+        status: resp.status(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct SpeedPingResult {
+    samples_ms: Vec<f64>,
+    success: u32,
+    failed: u32,
+    avg_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+    jitter_ms: f64,
+}
+
+#[tauri::command]
+fn speedtest_ping(host: String, port: Option<u16>, count: Option<u32>) -> Result<SpeedPingResult, String> {
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err("ホストを入力してください".to_string());
+    }
+    let port = port.unwrap_or(443);
+    let count = count.unwrap_or(5).clamp(1, 50);
+    let addr = format!("{}:{}", host, port);
+    use std::net::ToSocketAddrs;
+    let socket_addr = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("名前解決失敗: {}", e))?
+        .next()
+        .ok_or_else(|| "アドレス取得失敗".to_string())?;
+    let mut samples: Vec<f64> = Vec::new();
+    let mut failed: u32 = 0;
+    for _ in 0..count {
+        let start = std::time::Instant::now();
+        match std::net::TcpStream::connect_timeout(
+            &socket_addr,
+            std::time::Duration::from_millis(2_000),
+        ) {
+            Ok(_) => {
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                samples.push(ms);
+            }
+            Err(_) => failed += 1,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let success = samples.len() as u32;
+    let (avg, min, max, jitter) = if samples.is_empty() {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        let sum: f64 = samples.iter().sum();
+        let avg = sum / samples.len() as f64;
+        let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let var: f64 = samples.iter().map(|x| (x - avg).powi(2)).sum::<f64>() / samples.len() as f64;
+        (avg, min, max, var.sqrt())
+    };
+    Ok(SpeedPingResult {
+        samples_ms: samples,
+        success,
+        failed,
+        avg_ms: avg,
+        min_ms: min,
+        max_ms: max,
+        jitter_ms: jitter,
     })
 }
