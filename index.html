@@ -16,6 +16,14 @@
       </button>
     </nav>
     <header class="toolbar">
+      <button
+        id="super-reload"
+        class="nav-btn super-reload-btn"
+        type="button"
+        title="スーパーリロード (Ctrl+Shift+R) キャッシュを無視して再取得"
+      >
+        ↻
+      </button>
       <form id="address-form" class="address-form">
         <input
           id="address"
@@ -52,53 +60,160 @@
         </select>
       </div>
     </header>
-    <nav id="bookmarks-bar" class="bookmarks-bar" aria-label="ブックマークバー">
-      <div id="bookmarks-bar-items" class="bookmarks-bar-items"></div>
-      <div id="bookmarks-bar-empty" class="bookmarks-bar-empty" hidden>
-        ☆ボタンでブックマークを追加できます
+    <div id="downloads-backdrop" class="downloads-backdrop" hidden></div>
+    <div id="downloads-panel" class="downloads-panel" hidden>
+      <div class="downloads-panel-header">
+        <strong>📥 ダウンロード</strong>
+        <span id="downloads-stat" class="downloads-stat"></span>
+        <span style="flex: 1"></span>
+        <button
+          type="button"
+          id="downloads-open-folder"
+          title="ダウンロードフォルダを開く"
+        >
+          📂
+        </button>
+        <button
+          type="button"
+          id="downloads-engineer-toggle"
+          title="エンジニアモード切替"
+        >
+          🛠
+        </button>
+        <button type="button" id="downloads-clear" title="完了履歴をクリア">
+          🧹
+        </button>
+        <button type="button" id="downloads-close" title="閉じる">✖</button>
       </div>
-      <button
-        id="bookmarks-bar-add"
-        class="bookmarks-bar-add"
-        type="button"
-        title="このページをブックマーク (Ctrl+D)"
-      >
-        ☆
-      </button>
-      <button
-        id="bookmarks-open"
-        class="bookmarks-bar-add bookmarks-open-btn"
-        type="button"
-        title="ブックマーク一覧 (Ctrl+B)"
-      >
-        ▤
-      </button>
+      <div id="downloads-engineer" class="downloads-engineer" hidden>
+        <div class="dl-eng-row">
+          <input
+            type="text"
+            id="dl-eng-url"
+            placeholder="URL (https://...)"
+            style="flex: 1"
+          />
+          <input
+            type="text"
+            id="dl-eng-name"
+            placeholder="ファイル名 (省略可)"
+            style="width: 160px"
+          />
+          <button type="button" id="dl-eng-go">⬇ 取得</button>
+        </div>
+        <div class="dl-eng-row" style="font-size: 11px">
+          <label style="display: flex; align-items: center; gap: 4px">
+            <input type="checkbox" id="dl-eng-parallel" checked />
+            🚀 並列(マルチコネクション)
+          </label>
+          <label style="display: flex; align-items: center; gap: 4px">
+            接続数:
+            <input
+              type="number"
+              id="dl-eng-connections"
+              min="2"
+              max="32"
+              value="8"
+              style="width: 50px"
+            />
+          </label>
+          <label
+            style="display: flex; align-items: center; gap: 4px"
+            title="保存ファイル名をランダムな英数字に置き換え (拡張子は維持)"
+          >
+            <input type="checkbox" id="dl-eng-randomize" />
+            🎲 名前ランダム化
+          </label>
+        </div>
+        <details>
+          <summary>カスタムヘッダ / UA / Referer</summary>
+          <div class="dl-eng-row">
+            <input
+              type="text"
+              id="dl-eng-ua"
+              placeholder="User-Agent (省略可)"
+              style="flex: 1"
+            />
+            <input
+              type="text"
+              id="dl-eng-ref"
+              placeholder="Referer (省略可)"
+              style="flex: 1"
+            />
+          </div>
+          <textarea
+            id="dl-eng-headers"
+            placeholder="追加ヘッダ (1行=Key: Value)"
+            rows="3"
+            style="width: 100%"
+          ></textarea>
+        </details>
+        <details>
+          <summary>📋 一括ダウンロード (URL を 1 行ずつ)</summary>
+          <textarea
+            id="dl-eng-bulk"
+            placeholder="https://example.com/a.zip&#10;https://example.com/b.zip"
+            rows="4"
+            style="width: 100%"
+          ></textarea>
+          <button type="button" id="dl-eng-bulk-go">
+            ▶ 一括ダウンロード開始
+          </button>
+        </details>
+        <details>
+          <summary>🔐 ハッシュ検証</summary>
+          <div class="dl-eng-row">
+            <select id="dl-eng-verify-target" style="flex: 1"></select>
+            <input
+              type="text"
+              id="dl-eng-verify-hash"
+              placeholder="期待する SHA-256 / MD5 (hex)"
+              style="flex: 2"
+            />
+            <button type="button" id="dl-eng-verify-go">✓ 検証</button>
+          </div>
+          <div
+            id="dl-eng-verify-result"
+            style="font-size: 12px; margin-top: 4px"
+          ></div>
+        </details>
+      </div>
+      <ul id="downloads-list" class="downloads-list"></ul>
+      <div id="downloads-empty" class="downloads-empty">
+        ダウンロード履歴はまだありません
+      </div>
+      <div id="downloads-hex-view" class="downloads-hex-view" hidden>
+        <div class="dl-hex-bar">
+          <button type="button" id="dl-hex-back">← 戻る</button>
+          <strong
+            id="dl-hex-title"
+            style="
+              flex: 1;
+              font-size: 12px;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            "
+            >HEX プレビュー</strong
+          >
+        </div>
+        <pre id="dl-hex-content" class="dl-hex-content"></pre>
+      </div>
+    </div>
+    <nav
+      id="chrome-actions-bar"
+      class="chrome-actions-bar"
+      aria-label="アクションバー"
+    >
       <button
         id="toolbox-open"
-        class="bookmarks-bar-add toolbox-open-btn"
+        class="chrome-actions-btn toolbox-open-btn"
         type="button"
         title="ツールボックス"
       >
         🧰
       </button>
     </nav>
-    <div id="bookmarks-panel" class="bookmarks-panel" hidden>
-      <div class="bookmarks-header">
-        <span>ブックマーク</span>
-        <button
-          id="bookmarks-close"
-          class="bookmarks-close"
-          type="button"
-          title="閉じる"
-        >
-          ×
-        </button>
-      </div>
-      <ul id="bookmarks-list" class="bookmarks-list"></ul>
-      <div id="bookmarks-empty" class="bookmarks-empty" hidden>
-        まだブックマークはありません。☆ボタンで追加できます。
-      </div>
-    </div>
     <div id="toolbox-panel" class="bookmarks-panel toolbox-panel" hidden>
       <div class="bookmarks-header">
         <span>🧰 ツールボックス</span>
@@ -116,8 +231,12 @@
           <button
             type="button"
             class="toolbox-nav-item active"
-            data-tool="ytdlp"
+            data-tool="downloader"
           >
+            <span class="toolbox-nav-icon">📥</span>
+            <span>ダウンロード</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="ytdlp">
             <span class="toolbox-nav-icon">⬇</span>
             <span>YouTube ダウンロード</span>
           </button>
@@ -229,6 +348,14 @@
             <span class="toolbox-nav-icon">🛡️</span>
             <span>ペネトレ ツール</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="imgstudio">
+            <span class="toolbox-nav-icon">🎨</span>
+            <span>画像スタジオ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="vidstudio">
+            <span class="toolbox-nav-icon">🎬</span>
+            <span>動画スタジオ</span>
+          </button>
           <button type="button" class="toolbox-nav-item" data-tool="speedtest">
             <span class="toolbox-nav-icon">📶</span>
             <span>スピードテスト</span>
@@ -249,9 +376,192 @@
             <span class="toolbox-nav-icon">💻</span>
             <span>ターミナル</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="ssh">
+            <span class="toolbox-nav-icon">🔐</span>
+            <span>SSH 接続</span>
+          </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
-          <section class="toolbox-tool" data-tool="ytdlp">
+          <section class="toolbox-tool" data-tool="downloader">
+            <h3>📥 ダウンロード</h3>
+            <p style="font-size: 12px; opacity: 0.8; margin: 4px 0 8px">
+              ブラウザのダウンロード履歴と手動 URL
+              ダウンロード、ハッシュ検証、HEX プレビュー、cURL 出力、並列
+              (マルチコネクション) 取得などのエンジニア向け機能。
+            </p>
+            <div class="toolbox-row">
+              <label for="tb-dl-url">URL</label>
+              <input
+                id="tb-dl-url"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://example.com/file.zip"
+                style="flex: 1"
+              />
+              <button
+                id="tb-dl-fill-current"
+                type="button"
+                title="現在のタブ URL を入れる"
+              >
+                現在のタブ
+              </button>
+            </div>
+            <div class="toolbox-row">
+              <label for="tb-dl-name">ファイル名</label>
+              <input
+                id="tb-dl-name"
+                type="text"
+                spellcheck="false"
+                placeholder="省略可"
+                style="flex: 1"
+              />
+              <label
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 4px;
+                  font-size: 12px;
+                "
+              >
+                <input type="checkbox" id="tb-dl-rand" />
+                🎲 ランダム化
+              </label>
+            </div>
+            <div class="toolbox-row">
+              <label
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 4px;
+                  font-size: 12px;
+                "
+              >
+                <input type="checkbox" id="tb-dl-parallel" checked />
+                🚀 並列取得
+              </label>
+              <label
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 4px;
+                  font-size: 12px;
+                "
+              >
+                接続数:
+                <input
+                  type="number"
+                  id="tb-dl-conn"
+                  min="2"
+                  max="32"
+                  value="8"
+                  style="width: 60px"
+                />
+              </label>
+            </div>
+            <div class="toolbox-row toolbox-actions">
+              <button id="tb-dl-go" class="toolbox-primary" type="button">
+                ⬇ ダウンロード開始
+              </button>
+              <button id="tb-dl-open-panel" type="button">
+                📂 履歴/詳細パネルを開く
+              </button>
+              <span id="tb-dl-status" class="toolbox-status"></span>
+            </div>
+            <details style="margin-top: 8px">
+              <summary>
+                🛠 エンジニア機能 (カスタムヘッダ / 一括 / ハッシュ検証)
+              </summary>
+              <div class="toolbox-row" style="margin-top: 6px">
+                <input
+                  type="text"
+                  id="tb-dl-ua"
+                  placeholder="User-Agent (省略可)"
+                  style="flex: 1"
+                />
+                <input
+                  type="text"
+                  id="tb-dl-ref"
+                  placeholder="Referer (省略可)"
+                  style="flex: 1"
+                />
+              </div>
+              <div class="toolbox-row">
+                <textarea
+                  id="tb-dl-headers"
+                  placeholder="追加ヘッダ (1行=Key: Value)"
+                  rows="3"
+                  style="width: 100%"
+                ></textarea>
+              </div>
+              <div class="toolbox-row">
+                <textarea
+                  id="tb-dl-bulk"
+                  placeholder="一括ダウンロード URL (1 行ずつ)"
+                  rows="3"
+                  style="width: 100%"
+                ></textarea>
+                <button type="button" id="tb-dl-bulk-go">▶ 一括</button>
+              </div>
+              <div class="toolbox-row">
+                <select id="tb-dl-verify-target" style="flex: 1"></select>
+                <input
+                  type="text"
+                  id="tb-dl-verify-hash"
+                  placeholder="期待する SHA-256 / MD5 (hex)"
+                  style="flex: 2"
+                />
+                <button type="button" id="tb-dl-verify-go">✓ 検証</button>
+              </div>
+              <div
+                id="tb-dl-verify-result"
+                style="font-size: 12px; margin-top: 4px"
+              ></div>
+            </details>
+            <div
+              class="toolbox-row"
+              style="justify-content: space-between; margin-top: 8px"
+            >
+              <strong style="font-size: 13px">📋 ダウンロード一覧</strong>
+              <span
+                id="tb-dl-stat"
+                style="font-size: 11px; opacity: 0.8"
+              ></span>
+            </div>
+            <ul
+              id="tb-dl-list"
+              class="downloads-list"
+              style="
+                max-height: 340px;
+                overflow: auto;
+                margin: 0;
+                padding: 0;
+                list-style: none;
+              "
+            ></ul>
+            <div id="tb-dl-empty" class="downloads-empty">
+              ダウンロード履歴はまだありません
+            </div>
+            <div id="tb-dl-hex-view" class="downloads-hex-view" hidden>
+              <div class="dl-hex-bar">
+                <button type="button" id="tb-dl-hex-back">← 戻る</button>
+                <strong
+                  id="tb-dl-hex-title"
+                  style="
+                    flex: 1;
+                    font-size: 12px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                  "
+                  >HEX プレビュー</strong
+                >
+              </div>
+              <pre id="tb-dl-hex-content" class="dl-hex-content"></pre>
+            </div>
+          </section>
+
+          <section class="toolbox-tool" data-tool="ytdlp" hidden>
             <h3>YouTube ダウンロード</h3>
             <div class="toolbox-row">
               <label for="ytdlp-url">URL</label>
@@ -451,16 +761,27 @@
           <section class="toolbox-tool" data-tool="screenshot" hidden>
             <h3>スクリーンショット</h3>
             <p class="toolbox-note">
-              現在のタブの表示領域を PNG として保存します。
+              現在のタブを PNG として撮影し、編集してから保存できます。
             </p>
             <div class="toolbox-row">
               <label for="screenshot-dir">保存先</label>
               <input id="screenshot-dir" type="text" spellcheck="false" />
               <button id="screenshot-pick-dir" type="button">参照…</button>
             </div>
+            <div class="toolbox-row">
+              <label for="screenshot-mode">範囲</label>
+              <select
+                id="screenshot-mode"
+                class="zoom-display"
+                style="padding: 0 4px"
+              >
+                <option value="full" selected>ページ全体</option>
+                <option value="viewport">表示領域のみ</option>
+              </select>
+            </div>
             <div class="toolbox-row toolbox-actions">
               <button id="screenshot-run" class="toolbox-primary" type="button">
-                撮影して保存
+                撮影して編集
               </button>
               <span id="screenshot-status" class="toolbox-status"></span>
             </div>
@@ -909,8 +1230,11 @@
           <section class="toolbox-tool" data-tool="unzip" hidden>
             <h3>アーカイブ解凍</h3>
             <p class="toolbox-note">
-              対応: zip / tar / tar.gz (tgz) / tar.bz2 (tbz2) / tar.xz (txz) /
-              tar.zst (tzst) / 7z / gz / bz2 / xz / zst (単体圧縮も含む)。
+              対応: zip
+              (jar/war/apk/ipa/xpi/whl/epub/cbz/docx/xlsx/pptx/odt/vsix/nupkg
+              等) / tar / tar.gz (tgz) / tar.bz2 (tbz2) / tar.xz (txz) / tar.zst
+              (tzst) / tar.lz4 (tlz4) / 7z / cab / ar / deb / gz / bz2 / xz /
+              lzma / zst / lz4 (単体圧縮も含む)。
             </p>
             <div class="toolbox-row">
               <label for="unzip-src">アーカイブ</label>
@@ -1634,33 +1958,6 @@
                 にそのままインポート可能。
               </p>
             </details>
-
-            <details class="toolbox-row">
-              <summary>🔖 ブックマーク AI 自動分類 / タグ付け</summary>
-              <p class="toolbox-note" style="margin-top: 6px">
-                既存ブックマークを 1 件ずつ AI で分類しタグを生成。結果は
-                Markdown 表で出力されます。
-              </p>
-              <div class="toolbox-row">
-                <label>最大件数</label>
-                <input
-                  id="ai-bm-limit"
-                  type="number"
-                  min="1"
-                  max="200"
-                  value="20"
-                  style="width: 5em"
-                />
-                <label
-                  ><input id="ai-bm-fetch" type="checkbox" /> 本文も取得
-                  (遅い)</label
-                >
-                <button type="button" id="ai-bm-go" class="toolbox-primary">
-                  🔖 分類実行
-                </button>
-                <span id="ai-bm-status" class="toolbox-status"></span>
-              </div>
-            </details>
           </section>
 
           <section class="toolbox-tool" data-tool="userscript" hidden>
@@ -1700,11 +1997,12 @@
               <div
                 style="
                   flex: 0 0 220px;
-                  border: 1px solid #ccc;
+                  border: 1px solid #333;
                   border-radius: 6px;
                   overflow-y: auto;
                   max-height: 460px;
-                  background: #fff;
+                  background: #1f1f1f;
+                  color: #ddd;
                 "
               >
                 <ul
@@ -2421,6 +2719,1234 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+
+            <details>
+              <summary>🧮 CIDR / サブネット計算機</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sn-input"
+                    type="text"
+                    placeholder="例: 10.10.10.0/24 または 192.168.1.5/27"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="sn-run" class="toolbox-primary">
+                    計算
+                  </button>
+                </div>
+                <pre
+                  id="sn-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🛡️ HTTP セキュリティヘッダ解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="shdr-url"
+                    type="text"
+                    placeholder="https://target.example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="shdr-run" class="toolbox-primary">
+                    解析
+                  </button>
+                </div>
+                <div
+                  id="shdr-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                🚦 HTTP メソッド スキャナ (OPTIONS / PUT / DELETE / TRACE)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hms-url"
+                    type="text"
+                    placeholder="http://target/path"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hms-run" class="toolbox-primary">
+                    スキャン
+                  </button>
+                </div>
+                <pre
+                  id="hms-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🌐 CORS ミスコンフィグ テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="cors-url"
+                    type="text"
+                    placeholder="https://api.target.com/endpoint"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="cors-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="cors-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>↪️ オープンリダイレクト テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="orr-url"
+                    type="text"
+                    placeholder="http://target/redirect?url=FUZZ ( FUZZ がペイロード位置 )"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="orr-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="orr-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📝 HTML フォーム抽出</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="fext-url"
+                    type="text"
+                    placeholder="https://target/login"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="fext-run" class="toolbox-primary">
+                    抽出
+                  </button>
+                </div>
+                <pre
+                  id="fext-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🍪 Cookie 解析 / フラグチェッカー</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="ckie-input"
+                  class="toolbox-textarea"
+                  rows="4"
+                  placeholder="Set-Cookie ヘッダまたは Cookie 文字列を貼り付け (複数行可)"
+                ></textarea>
+                <button
+                  type="button"
+                  id="ckie-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  解析
+                </button>
+                <div
+                  id="ckie-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔑 シークレット / API キー検出</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="secr-input"
+                  class="toolbox-textarea"
+                  rows="6"
+                  placeholder="ソースコードや JS ファイルなどを貼り付け"
+                ></textarea>
+                <button
+                  type="button"
+                  id="secr-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  スキャン
+                </button>
+                <pre
+                  id="secr-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🌳 サブドメイン列挙 (crt.sh)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="subd-domain"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="subd-run" class="toolbox-primary">
+                    検索
+                  </button>
+                  <span id="subd-status" class="toolbox-status"></span>
+                </div>
+                <pre
+                  id="subd-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 360px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📜 Wayback Machine URL 列挙</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="wb-domain"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    >上限<input
+                      id="wb-limit"
+                      type="number"
+                      value="500"
+                      min="10"
+                      max="5000"
+                      style="width: 6em"
+                  /></label>
+                  <button type="button" id="wb-run" class="toolbox-primary">
+                    取得
+                  </button>
+                  <span id="wb-status" class="toolbox-status"></span>
+                </div>
+                <pre
+                  id="wb-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 360px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🐛 CVE 検索 (NVD)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="cve-id"
+                    type="text"
+                    placeholder="CVE-2024-12345 or キーワード (例: apache log4j)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="cve-run" class="toolbox-primary">
+                    検索
+                  </button>
+                </div>
+                <div
+                  id="cve-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                💣 ペイロード ライブラリ (XSS / SQLi / LFI / SSRF / CMDi / SSTI
+                / CRLF)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="pay-cat">
+                    <option value="xss">XSS</option>
+                    <option value="sqli">SQL Injection</option>
+                    <option value="lfi">LFI / Path Traversal</option>
+                    <option value="ssrf">SSRF</option>
+                    <option value="cmdi">Command Injection</option>
+                    <option value="ssti">SSTI (Template Injection)</option>
+                    <option value="crlf">CRLF Injection</option>
+                    <option value="xxe">XXE</option>
+                    <option value="nosql">NoSQL Injection</option>
+                  </select>
+                  <input
+                    id="pay-filter"
+                    type="text"
+                    placeholder="フィルタ (キーワード)"
+                    style="flex: 1"
+                  />
+                </div>
+                <pre
+                  id="pay-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 200px;
+                    max-height: 420px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🐧 GTFOBins / 🪟 LOLBAS クイック検索</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gtfo-bin"
+                    type="text"
+                    placeholder="バイナリ名 (例: tar / find / certutil)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gtfo-run" class="toolbox-primary">
+                    開く
+                  </button>
+                </div>
+                <div
+                  id="gtfo-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>👤 ユーザー名 順列ジェネレータ</summary>
+              <div style="padding: 8px">
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 6px;
+                  "
+                >
+                  <input id="un-first" type="text" placeholder="名 (First)" />
+                  <input id="un-middle" type="text" placeholder="ミドル" />
+                  <input id="un-last" type="text" placeholder="姓 (Last)" />
+                </div>
+                <button
+                  type="button"
+                  id="un-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  生成
+                </button>
+                <pre
+                  id="un-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📖 ワードリスト変異 (年/記号/leet)</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="mut-input"
+                  class="toolbox-textarea"
+                  rows="3"
+                  placeholder="ベース語 (1 行 1 語)"
+                ></textarea>
+                <div
+                  class="toolbox-row"
+                  style="gap: 6px; margin-top: 4px; flex-wrap: wrap"
+                >
+                  <label
+                    ><input
+                      type="checkbox"
+                      id="mut-cap"
+                      checked
+                    />Capitalize</label
+                  >
+                  <label
+                    ><input type="checkbox" id="mut-leet" checked />Leet
+                    (a→@,e→3,...)</label
+                  >
+                  <label
+                    ><input type="checkbox" id="mut-year" checked />年を末尾追加
+                    (1990-2026)</label
+                  >
+                  <label
+                    ><input type="checkbox" id="mut-sym" checked />記号末尾 (! @
+                    # $ ?)</label
+                  >
+                  <button type="button" id="mut-run" class="toolbox-primary">
+                    生成
+                  </button>
+                </div>
+                <pre
+                  id="mut-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔓 JWT シークレット ブルートフォース (HS256)</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="jwtb-input"
+                  class="toolbox-textarea"
+                  rows="2"
+                  placeholder="HS256 JWT を貼り付け"
+                ></textarea>
+                <textarea
+                  id="jwtb-words"
+                  class="toolbox-textarea"
+                  rows="4"
+                  placeholder="ワードリスト (1 行 1 語)。空ならデフォルト辞書 (~200 語) を使用"
+                  style="margin-top: 4px"
+                ></textarea>
+                <button
+                  type="button"
+                  id="jwtb-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  ブルートフォース
+                </button>
+                <div
+                  id="jwtb-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔐 NTLM ハッシュ生成器</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="ntlm-input"
+                    type="text"
+                    placeholder="平文パスワード"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="ntlm-run" class="toolbox-primary">
+                    生成
+                  </button>
+                </div>
+                <pre
+                  id="ntlm-out"
+                  class="toolbox-textarea"
+                  style="min-height: 80px; font-size: 12px; margin-top: 6px"
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>💥 msfvenom テンプレート</summary>
+              <div style="padding: 8px">
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 6px;
+                  "
+                >
+                  <label
+                    >プラットフォーム<select id="msfv-plat">
+                      <option value="windows">Windows</option>
+                      <option value="linux">Linux</option>
+                      <option value="osx">macOS</option>
+                      <option value="android">Android</option>
+                      <option value="php">PHP</option>
+                      <option value="python">Python</option>
+                      <option value="java">Java/JSP</option>
+                      <option value="cmd">Cmd</option>
+                    </select></label
+                  >
+                  <label
+                    >フォーマット<select id="msfv-fmt">
+                      <option value="exe">exe</option>
+                      <option value="elf">elf</option>
+                      <option value="raw">raw</option>
+                      <option value="psh">psh (PowerShell)</option>
+                      <option value="war">war</option>
+                      <option value="apk">apk</option>
+                      <option value="aspx">aspx</option>
+                      <option value="hta-psh">hta-psh</option>
+                    </select></label
+                  >
+                  <label
+                    >LHOST<input id="msfv-host" type="text" value="10.10.14.1"
+                  /></label>
+                  <label
+                    >LPORT<input id="msfv-port" type="number" value="4444"
+                  /></label>
+                </div>
+                <button
+                  type="button"
+                  id="msfv-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  生成
+                </button>
+                <pre
+                  id="msfv-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 240px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🪜 特権昇格 チェックリスト (Linux / Windows)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="pec-os">
+                    <option value="linux">Linux</option>
+                    <option value="windows">Windows</option>
+                  </select>
+                </div>
+                <pre
+                  id="pec-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    max-height: 420px;
+                    overflow: auto;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🧬 UUID / GUID 解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="uuid-input"
+                    type="text"
+                    placeholder="例: 550e8400-e29b-41d4-a716-446655440000"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="uuid-run" class="toolbox-primary">
+                    解析
+                  </button>
+                  <button type="button" id="uuid-gen" class="toolbox-secondary">
+                    v4 生成
+                  </button>
+                </div>
+                <pre
+                  id="uuid-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🔢 IP 難読化 / バリエーション生成</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="ipo-input"
+                    type="text"
+                    placeholder="例: 127.0.0.1"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="ipo-run" class="toolbox-primary">
+                    変換
+                  </button>
+                </div>
+                <pre
+                  id="ipo-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🐚 Web シェル スニペット</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="ws-lang">
+                    <option value="php">PHP</option>
+                    <option value="aspx">ASP.NET (.aspx)</option>
+                    <option value="asp">Classic ASP</option>
+                    <option value="jsp">Java (JSP)</option>
+                    <option value="py">Python (CGI)</option>
+                    <option value="pl">Perl (CGI)</option>
+                    <option value="war">Java WAR (cmd.jsp)</option>
+                  </select>
+                  <input
+                    id="ws-param"
+                    type="text"
+                    placeholder="パラメータ名 (default: cmd)"
+                    value="cmd"
+                  />
+                </div>
+                <pre
+                  id="ws-out"
+                  style="
+                    white-space: pre;
+                    overflow: auto;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 320px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                🧨 Cyclic パターン (msf-pattern_create / offset)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="cyc-len"
+                    type="number"
+                    value="200"
+                    min="1"
+                    max="20280"
+                    style="width: 100px"
+                  />
+                  <button type="button" id="cyc-gen" class="toolbox-primary">
+                    パターン生成
+                  </button>
+                  <input
+                    id="cyc-find"
+                    type="text"
+                    placeholder="EIP の値 (例: 0x37654136 / Aa6Ae)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="cyc-off" class="toolbox-secondary">
+                    オフセット検索
+                  </button>
+                </div>
+                <pre
+                  id="cyc-out"
+                  style="
+                    white-space: pre-wrap;
+                    word-break: break-all;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 240px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🤖 robots.txt / sitemap.xml / .well-known 取得</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="rob-url"
+                    type="text"
+                    placeholder="https://example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="rob-run" class="toolbox-primary">
+                    取得
+                  </button>
+                </div>
+                <pre
+                  id="rob-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🧪 HIBP 漏洩パスワード チェック (k-anonymity)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hibp-pw"
+                    type="password"
+                    placeholder="チェックするパスワード"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hibp-run" class="toolbox-primary">
+                    チェック
+                  </button>
+                </div>
+                <p class="toolbox-note" style="margin: 6px 0">
+                  SHA-1 の先頭 5 文字のみ送信 (k-anonymity)。haveibeenpwned API
+                  利用。
+                </p>
+                <pre
+                  id="hibp-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📡 GraphQL イントロスペクション</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gql-url"
+                    type="text"
+                    placeholder="https://example.com/graphql"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="gql-auth"
+                    type="text"
+                    placeholder="Authorization (任意)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gql-run" class="toolbox-primary">
+                    取得
+                  </button>
+                </div>
+                <pre
+                  id="gql-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🧮 Shannon エントロピー / 文字列統計</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="ent-input"
+                  class="toolbox-textarea"
+                  rows="5"
+                  placeholder="エントロピーを測りたい文字列 (鍵候補・ランダムキー・トークン等)"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+                  <button type="button" id="ent-run" class="toolbox-primary">
+                    計算
+                  </button>
+                </div>
+                <pre
+                  id="ent-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🚪 デフォルト認証情報 データベース</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="dc-filter"
+                    type="text"
+                    placeholder="製品名でフィルタ (例: tomcat, router, jenkins)"
+                    style="flex: 1"
+                  />
+                </div>
+                <pre
+                  id="dc-out"
+                  style="
+                    white-space: pre;
+                    overflow: auto;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                🌀 OSINT クイック検索 (Shodan / Censys / FOFA / VT 等)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="osi-q"
+                    type="text"
+                    placeholder="ドメイン / IP / ハッシュ / メール"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="osi-run" class="toolbox-primary">
+                    リンク生成
+                  </button>
+                </div>
+                <div id="osi-out" style="margin-top: 8px"></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>🧰 hashcat / john コマンドビルダー</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hc-hash"
+                    type="text"
+                    placeholder="ハッシュ (1 行)"
+                    style="flex: 1"
+                  />
+                  <select id="hc-mode">
+                    <option value="auto">自動判定</option>
+                    <option value="0">MD5 (0)</option>
+                    <option value="100">SHA1 (100)</option>
+                    <option value="1400">SHA256 (1400)</option>
+                    <option value="1700">SHA512 (1700)</option>
+                    <option value="1000">NTLM (1000)</option>
+                    <option value="3000">LM (3000)</option>
+                    <option value="500">md5crypt $1$ (500)</option>
+                    <option value="1800">sha512crypt $6$ (1800)</option>
+                    <option value="7400">sha256crypt $5$ (7400)</option>
+                    <option value="3200">bcrypt $2*$ (3200)</option>
+                    <option value="22000">
+                      WPA-PBKDF2-PMKID+EAPOL (22000)
+                    </option>
+                    <option value="16500">JWT (HS256) (16500)</option>
+                    <option value="13100">Kerberos 5 TGS-REP (13100)</option>
+                    <option value="18200">Kerberos 5 AS-REP (18200)</option>
+                    <option value="5500">NetNTLMv1 (5500)</option>
+                    <option value="5600">NetNTLMv2 (5600)</option>
+                  </select>
+                </div>
+                <pre
+                  id="hc-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🪞 Host Header インジェクション テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hh-url"
+                    type="text"
+                    placeholder="https://victim.example/"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="hh-attacker"
+                    type="text"
+                    placeholder="攻撃者ホスト (例: evil.com)"
+                    value="evil.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hh-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="hh-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🧭 .git / .svn / .DS_Store 露出チェック</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gex-url"
+                    type="text"
+                    placeholder="https://example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gex-run" class="toolbox-primary">
+                    スキャン
+                  </button>
+                </div>
+                <pre
+                  id="gex-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📦 JS SourceMap 検出 / 解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sm-url"
+                    type="text"
+                    placeholder="https://example.com/app.js"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="sm-run" class="toolbox-primary">
+                    解析
+                  </button>
+                </div>
+                <pre
+                  id="sm-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🦴 Magic Bytes / ファイル種別判定</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px; align-items: center">
+                  <input type="file" id="mb-file" />
+                  <span style="color: #888; font-size: 11px"
+                    >または hex を貼り付け ↓</span
+                  >
+                </div>
+                <textarea
+                  id="mb-hex"
+                  class="toolbox-textarea"
+                  rows="2"
+                  placeholder="89 50 4E 47 0D 0A 1A 0A ..."
+                  style="margin-top: 6px"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+                  <button type="button" id="mb-run" class="toolbox-primary">
+                    判定
+                  </button>
+                </div>
+                <pre
+                  id="mb-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🚩 フラグ / トークン抽出 (CTF)</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="fl-input"
+                  class="toolbox-textarea"
+                  rows="6"
+                  placeholder="ログ・HTML・コードを貼り付け"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+                  <input
+                    id="fl-prefix"
+                    type="text"
+                    placeholder="プレフィクス (例: flag, THM, HTB)"
+                    value="flag,THM,HTB,picoCTF,CTF"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="fl-run" class="toolbox-primary">
+                    抽出
+                  </button>
+                </div>
+                <pre
+                  id="fl-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 280px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>🌀 レスポンス Diff (Blind 系判定用)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="diff-a"
+                    type="text"
+                    placeholder="URL A (正常)"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="diff-b"
+                    type="text"
+                    placeholder="URL B (payload入り)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="diff-run" class="toolbox-primary">
+                    比較
+                  </button>
+                </div>
+                <pre
+                  id="diff-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>📑 .htaccess / web.config / nginx スニペット</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="cfg-type">
+                    <option value="ht-upload">
+                      .htaccess: アップロード経由 PHP 実行
+                    </option>
+                    <option value="ht-deny">.htaccess: アクセス拒否</option>
+                    <option value="ht-rewrite">.htaccess: URL リライト</option>
+                    <option value="wc-handler">
+                      web.config: ASPX ハンドラ追加
+                    </option>
+                    <option value="wc-deny">web.config: 拡張子拒否</option>
+                    <option value="ng-proxy">nginx: SSRF 検証 location</option>
+                    <option value="ng-alias">
+                      nginx: alias traversal pitfall
+                    </option>
+                  </select>
+                </div>
+                <pre
+                  id="cfg-out"
+                  style="
+                    white-space: pre;
+                    overflow: auto;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #f6f8fa;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                  "
+                ></pre>
+              </div>
+            </details>
           </section>
 
           <section class="toolbox-tool" data-tool="speedtest" hidden>
@@ -2639,68 +4165,72 @@ document.title = '✨ ' + document.title;"
             >
               <div
                 style="
-                  background: #f6f8fa;
+                  background: #2a2f38;
                   padding: 10px;
                   border-radius: 6px;
-                  border: 1px solid #ddd;
+                  border: 1px solid #3a4150;
                   text-align: center;
                 "
               >
-                <div style="font-size: 11px; color: #666">↓ ダウンロード</div>
+                <div style="font-size: 11px; color: #a0a8b4">
+                  ↓ ダウンロード
+                </div>
                 <div
                   id="st-stat-dl"
-                  style="font-size: 22px; font-weight: bold; color: #1f883d"
+                  style="font-size: 22px; font-weight: bold; color: #4ade80"
                 >
                   — Mbps
                 </div>
               </div>
               <div
                 style="
-                  background: #f6f8fa;
+                  background: #2a2f38;
                   padding: 10px;
                   border-radius: 6px;
-                  border: 1px solid #ddd;
+                  border: 1px solid #3a4150;
                   text-align: center;
                 "
               >
-                <div style="font-size: 11px; color: #666">↑ アップロード</div>
+                <div style="font-size: 11px; color: #a0a8b4">
+                  ↑ アップロード
+                </div>
                 <div
                   id="st-stat-ul"
-                  style="font-size: 22px; font-weight: bold; color: #0969da"
+                  style="font-size: 22px; font-weight: bold; color: #60a5fa"
                 >
                   — Mbps
                 </div>
               </div>
               <div
                 style="
-                  background: #f6f8fa;
+                  background: #2a2f38;
                   padding: 10px;
                   border-radius: 6px;
-                  border: 1px solid #ddd;
+                  border: 1px solid #3a4150;
                   text-align: center;
                 "
               >
-                <div style="font-size: 11px; color: #666">⏱ Ping (avg)</div>
+                <div style="font-size: 11px; color: #a0a8b4">⏱ Ping (avg)</div>
                 <div
                   id="st-stat-ping"
-                  style="font-size: 22px; font-weight: bold; color: #cf222e"
+                  style="font-size: 22px; font-weight: bold; color: #f87171"
                 >
                   — ms
                 </div>
               </div>
               <div
                 style="
-                  background: #f6f8fa;
+                  background: #2a2f38;
                   padding: 10px;
                   border-radius: 6px;
-                  border: 1px solid #ddd;
+                  border: 1px solid #3a4150;
                   text-align: center;
                 "
               >
-                <div style="font-size: 11px; color: #666">📈 Jitter</div>
+                <div style="font-size: 11px; color: #a0a8b4">📈 Jitter</div>
                 <div
                   id="st-stat-jitter"
-                  style="font-size: 22px; font-weight: bold; color: #bf8700"
+                  style="font-size: 22px; font-weight: bold; color: #fbbf24"
                 >
                   — ms
                 </div>
@@ -2720,8 +4250,8 @@ document.title = '✨ ' + document.title;"
                 style="
                   width: 100%;
                   height: 240px;
-                  background: #fff;
-                  border: 1px solid #ddd;
+                  background: #1f2329;
+                  border: 1px solid #3a4150;
                   border-radius: 6px;
                 "
               ></canvas>
@@ -2798,6 +4328,1020 @@ document.title = '✨ ' + document.title;"
                   </thead>
                   <tbody></tbody>
                 </table>
+              </div>
+            </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="imgstudio" hidden>
+            <h3>🎨 画像スタジオ</h3>
+            <p class="toolbox-note">
+              画像のリサイズ・クロップ・回転・反転・フィルタ・透かし追加・形式変換
+              (PNG/JPEG/WebP) をブラウザ内で完結。EXIF
+              は出力時に自動削除されます。
+            </p>
+
+            <details open>
+              <summary>
+                ① 画像エディタ (リサイズ / フィルタ / 透かし / 形式変換)
+              </summary>
+              <div style="padding: 8px">
+                <input type="file" id="imgstd-file" accept="image/*" />
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >幅
+                    <input
+                      type="number"
+                      id="imgstd-w"
+                      min="1"
+                      max="8000"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >高さ
+                    <input
+                      type="number"
+                      id="imgstd-h"
+                      min="1"
+                      max="8000"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <label style="font-size: 12px">
+                    <input type="checkbox" id="imgstd-keep" checked />
+                    縦横比保持
+                  </label>
+                  <label style="font-size: 12px"
+                    >回転
+                    <select id="imgstd-rot">
+                      <option value="0">0°</option>
+                      <option value="90">90°</option>
+                      <option value="180">180°</option>
+                      <option value="270">270°</option>
+                    </select>
+                  </label>
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="imgstd-flipH" /> 左右反転</label
+                  >
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="imgstd-flipV" /> 上下反転</label
+                  >
+                </div>
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 10px"
+                >
+                  <label style="font-size: 12px"
+                    >明るさ
+                    <input
+                      type="range"
+                      id="imgstd-bright"
+                      min="0"
+                      max="200"
+                      value="100"
+                      style="width: 90px"
+                    />
+                    <span id="imgstd-bright-v">100</span>%
+                  </label>
+                  <label style="font-size: 12px"
+                    >コントラスト
+                    <input
+                      type="range"
+                      id="imgstd-contrast"
+                      min="0"
+                      max="200"
+                      value="100"
+                      style="width: 90px"
+                    />
+                    <span id="imgstd-contrast-v">100</span>%
+                  </label>
+                  <label style="font-size: 12px"
+                    >彩度
+                    <input
+                      type="range"
+                      id="imgstd-sat"
+                      min="0"
+                      max="200"
+                      value="100"
+                      style="width: 90px"
+                    />
+                    <span id="imgstd-sat-v">100</span>%
+                  </label>
+                  <label style="font-size: 12px"
+                    >色相
+                    <input
+                      type="range"
+                      id="imgstd-hue"
+                      min="0"
+                      max="360"
+                      value="0"
+                      style="width: 90px"
+                    />
+                    <span id="imgstd-hue-v">0</span>°
+                  </label>
+                  <label style="font-size: 12px"
+                    >ぼかし
+                    <input
+                      type="range"
+                      id="imgstd-blur"
+                      min="0"
+                      max="20"
+                      value="0"
+                      style="width: 70px"
+                    />
+                    <span id="imgstd-blur-v">0</span>px
+                  </label>
+                  <label style="font-size: 12px">
+                    <select id="imgstd-fx">
+                      <option value="none">フィルタなし</option>
+                      <option value="grayscale">グレースケール</option>
+                      <option value="sepia">セピア</option>
+                      <option value="invert">色反転</option>
+                    </select>
+                  </label>
+                </div>
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >透かしテキスト
+                    <input
+                      type="text"
+                      id="imgstd-wm"
+                      placeholder="© Your Name"
+                      style="width: 160px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >位置
+                    <select id="imgstd-wm-pos">
+                      <option value="br">右下</option>
+                      <option value="bl">左下</option>
+                      <option value="tr">右上</option>
+                      <option value="tl">左上</option>
+                      <option value="center">中央</option>
+                    </select>
+                  </label>
+                  <label style="font-size: 12px"
+                    >サイズ
+                    <input
+                      type="number"
+                      id="imgstd-wm-size"
+                      value="24"
+                      min="6"
+                      max="200"
+                      style="width: 60px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >色
+                    <input type="color" id="imgstd-wm-color" value="#ffffff" />
+                  </label>
+                  <label style="font-size: 12px"
+                    >不透明度
+                    <input
+                      type="range"
+                      id="imgstd-wm-op"
+                      min="0"
+                      max="100"
+                      value="80"
+                      style="width: 80px"
+                    />
+                  </label>
+                </div>
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >出力形式
+                    <select id="imgstd-fmt">
+                      <option value="image/png">PNG</option>
+                      <option value="image/jpeg">JPEG</option>
+                      <option value="image/webp" selected>WebP</option>
+                    </select>
+                  </label>
+                  <label style="font-size: 12px"
+                    >品質
+                    <input
+                      type="range"
+                      id="imgstd-q"
+                      min="1"
+                      max="100"
+                      value="92"
+                      style="width: 100px"
+                    />
+                    <span id="imgstd-q-v">92</span>
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-apply"
+                  >
+                    プレビュー更新
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-download"
+                  >
+                    ダウンロード
+                  </button>
+                </div>
+                <div
+                  id="imgstd-status"
+                  class="toolbox-status"
+                  style="margin-top: 6px"
+                ></div>
+                <canvas
+                  id="imgstd-canvas"
+                  style="
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    background: #1f1f1f;
+                  "
+                ></canvas>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                ② アスペクト比クロップ (1:1 / 4:5 / 9:16 / 16:9 など)
+              </summary>
+              <div style="padding: 8px">
+                <input type="file" id="imgstd-crop-file" accept="image/*" />
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >プリセット
+                    <select id="imgstd-crop-ratio">
+                      <option value="1:1">1:1 (正方形)</option>
+                      <option value="4:5">4:5 (Instagram 縦)</option>
+                      <option value="9:16">
+                        9:16 (Reels / Shorts / Stories)
+                      </option>
+                      <option value="16:9">16:9 (YouTube / 横)</option>
+                      <option value="4:3">4:3</option>
+                      <option value="3:2">3:2</option>
+                      <option value="2:3">2:3</option>
+                    </select>
+                  </label>
+                  <label style="font-size: 12px"
+                    >フィット
+                    <select id="imgstd-crop-fit">
+                      <option value="cover">カバー (はみ出し切り抜き)</option>
+                      <option value="contain">コンテイン (黒帯)</option>
+                    </select>
+                  </label>
+                  <label style="font-size: 12px"
+                    >背景色
+                    <input type="color" id="imgstd-crop-bg" value="#000000" />
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-crop-run"
+                  >
+                    変換
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-crop-dl"
+                    disabled
+                  >
+                    ダウンロード
+                  </button>
+                </div>
+                <canvas
+                  id="imgstd-crop-canvas"
+                  style="
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    background: #1f1f1f;
+                  "
+                ></canvas>
+              </div>
+            </details>
+
+            <details>
+              <summary>③ ファビコン一括生成 (16/32/48/64/128/256)</summary>
+              <div style="padding: 8px">
+                <input type="file" id="imgstd-fav-file" accept="image/*" />
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="imgstd-fav-run"
+                  style="margin-left: 8px"
+                >
+                  生成
+                </button>
+                <div
+                  id="imgstd-fav-out"
+                  style="
+                    margin-top: 8px;
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 8px;
+                  "
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>④ カラーパレット抽出 (代表色 N 個)</summary>
+              <div style="padding: 8px">
+                <input type="file" id="imgstd-pal-file" accept="image/*" />
+                <label style="font-size: 12px; margin-left: 8px"
+                  >色数
+                  <input
+                    type="number"
+                    id="imgstd-pal-n"
+                    min="2"
+                    max="16"
+                    value="6"
+                    style="width: 60px"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="imgstd-pal-run"
+                  style="margin-left: 8px"
+                >
+                  抽出
+                </button>
+                <div id="imgstd-pal-out" style="margin-top: 8px"></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>⑤ ダミー画像 / プレースホルダ生成</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    >幅
+                    <input
+                      type="number"
+                      id="imgstd-ph-w"
+                      value="1280"
+                      min="1"
+                      max="8000"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >高さ
+                    <input
+                      type="number"
+                      id="imgstd-ph-h"
+                      value="720"
+                      min="1"
+                      max="8000"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >背景色
+                    <input type="color" id="imgstd-ph-bg" value="#1e293b" />
+                  </label>
+                  <label style="font-size: 12px"
+                    >文字色
+                    <input type="color" id="imgstd-ph-fg" value="#ffffff" />
+                  </label>
+                  <label style="font-size: 12px"
+                    >テキスト
+                    <input
+                      type="text"
+                      id="imgstd-ph-text"
+                      value="1280×720"
+                      style="width: 140px"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-ph-run"
+                  >
+                    生成
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-ph-dl"
+                  >
+                    ダウンロード
+                  </button>
+                </div>
+                <canvas
+                  id="imgstd-ph-canvas"
+                  style="
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                  "
+                ></canvas>
+              </div>
+            </details>
+
+            <details>
+              <summary>⑥ SVG → PNG 変換</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="imgstd-svg-in"
+                  class="toolbox-textarea"
+                  rows="6"
+                  placeholder='<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">...</svg>'
+                ></textarea>
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >スケール
+                    <input
+                      type="number"
+                      id="imgstd-svg-scale"
+                      value="1"
+                      step="0.5"
+                      min="0.1"
+                      max="10"
+                      style="width: 70px"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-svg-run"
+                  >
+                    PNG 生成
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="imgstd-svg-dl"
+                    disabled
+                  >
+                    ダウンロード
+                  </button>
+                </div>
+                <canvas
+                  id="imgstd-svg-canvas"
+                  style="
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    background: #fff;
+                  "
+                ></canvas>
+              </div>
+            </details>
+
+            <details>
+              <summary>⑦ ピクセル化 / モザイク</summary>
+              <div style="padding: 8px">
+                <input type="file" id="imgstd-mos-file" accept="image/*" />
+                <label style="font-size: 12px; margin-left: 8px"
+                  >ブロックサイズ
+                  <input
+                    type="number"
+                    id="imgstd-mos-size"
+                    value="12"
+                    min="2"
+                    max="200"
+                    style="width: 70px"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="imgstd-mos-run"
+                  style="margin-left: 8px"
+                >
+                  適用
+                </button>
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="imgstd-mos-dl"
+                  disabled
+                  style="margin-left: 4px"
+                >
+                  ダウンロード
+                </button>
+                <canvas
+                  id="imgstd-mos-canvas"
+                  style="
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                  "
+                ></canvas>
+              </div>
+            </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="vidstudio" hidden>
+            <h3>🎬 動画スタジオ</h3>
+            <p class="toolbox-note">
+              動画のメタ表示・フレーム抽出・サムネイルマトリックス・A/B
+              ループ・再生速度・縦横比ガイド・MediaRecorder
+              再録画によるトリム・音声抽出・ffmpeg コマンドビルダー。
+            </p>
+
+            <details open>
+              <summary>
+                ① プレイヤー (A/B ループ・速度・フレームステップ)
+              </summary>
+              <div style="padding: 8px">
+                <input type="file" id="vidstd-file" accept="video/*" />
+                <video
+                  id="vidstd-video"
+                  controls
+                  style="
+                    display: block;
+                    margin-top: 8px;
+                    max-width: 100%;
+                    background: #000;
+                    border-radius: 4px;
+                  "
+                ></video>
+                <div
+                  id="vidstd-meta"
+                  class="toolbox-status"
+                  style="margin-top: 6px"
+                ></div>
+                <div
+                  class="toolbox-row"
+                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
+                >
+                  <label style="font-size: 12px"
+                    >速度
+                    <select id="vidstd-rate">
+                      <option value="0.25">0.25x</option>
+                      <option value="0.5">0.5x</option>
+                      <option value="1" selected>1x</option>
+                      <option value="1.25">1.25x</option>
+                      <option value="1.5">1.5x</option>
+                      <option value="2">2x</option>
+                      <option value="4">4x</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-secondary"
+                    id="vidstd-step-back"
+                  >
+                    ⏪ -1f
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-secondary"
+                    id="vidstd-step-fwd"
+                  >
+                    +1f ⏩
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-secondary"
+                    id="vidstd-set-a"
+                  >
+                    A 点 = 現在
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-secondary"
+                    id="vidstd-set-b"
+                  >
+                    B 点 = 現在
+                  </button>
+                  <span id="vidstd-ab" style="font-size: 12px; opacity: 0.8"
+                    >A:- B:-</span
+                  >
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="vidstd-loop" /> A-B
+                    ループ</label
+                  >
+                  <label style="font-size: 12px"
+                    >想定 FPS
+                    <input
+                      type="number"
+                      id="vidstd-fps"
+                      value="30"
+                      min="1"
+                      max="240"
+                      style="width: 60px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >ガイド
+                    <select id="vidstd-guide">
+                      <option value="">なし</option>
+                      <option value="1:1">1:1</option>
+                      <option value="4:5">4:5</option>
+                      <option value="9:16">9:16</option>
+                      <option value="16:9">16:9</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-snap"
+                  >
+                    現在フレームを保存 (PNG)
+                  </button>
+                </div>
+                <canvas
+                  id="vidstd-overlay"
+                  style="
+                    display: none;
+                    margin-top: 8px;
+                    max-width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                  "
+                ></canvas>
+              </div>
+            </details>
+
+            <details>
+              <summary>② サムネイル / 連続フレーム抽出</summary>
+              <div style="padding: 8px">
+                <p class="toolbox-note">
+                  「①」で読み込んだ動画から、指定枚数を等間隔抽出します。
+                </p>
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    >枚数
+                    <input
+                      type="number"
+                      id="vidstd-thumb-n"
+                      value="9"
+                      min="1"
+                      max="64"
+                      style="width: 60px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >サムネ幅
+                    <input
+                      type="number"
+                      id="vidstd-thumb-w"
+                      value="320"
+                      min="32"
+                      max="1920"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-thumb-run"
+                  >
+                    抽出
+                  </button>
+                </div>
+                <div
+                  id="vidstd-thumb-out"
+                  style="
+                    margin-top: 8px;
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 6px;
+                  "
+                ></div>
+              </div>
+            </details>
+
+            <details>
+              <summary>③ トリム (MediaRecorder で再エンコード → WebM)</summary>
+              <div style="padding: 8px">
+                <p class="toolbox-note">
+                  ①で設定した A/B 区間を、MediaRecorder
+                  でリアルタイム録画して新しい WebM
+                  ファイルとして保存します。映像/音声の質はブラウザに依存し、長い動画ほど時間がかかります。
+                </p>
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="vidstd-trim-mute" />
+                    音声を含めない</label
+                  >
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-trim-run"
+                  >
+                    トリム実行
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-trim-dl"
+                    disabled
+                  >
+                    ダウンロード
+                  </button>
+                  <span
+                    id="vidstd-trim-status"
+                    style="font-size: 12px; opacity: 0.8"
+                  ></span>
+                </div>
+              </div>
+            </details>
+
+            <details>
+              <summary>④ 音声抽出 (WebM Audio)</summary>
+              <div style="padding: 8px">
+                <p class="toolbox-note">
+                  動画の音声トラックを MediaRecorder で録音し、WebM/Opus
+                  として書き出します。MP3 が必要な場合は ffmpeg
+                  ビルダーをご利用ください。
+                </p>
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="vidstd-aud-run"
+                >
+                  音声抽出
+                </button>
+                <button
+                  type="button"
+                  class="toolbox-primary"
+                  id="vidstd-aud-dl"
+                  disabled
+                  style="margin-left: 4px"
+                >
+                  ダウンロード
+                </button>
+                <span
+                  id="vidstd-aud-status"
+                  style="font-size: 12px; margin-left: 8px"
+                ></span>
+              </div>
+            </details>
+
+            <details>
+              <summary>⑤ ボイスレコーダー (マイク → WebM)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-rec-start"
+                  >
+                    ● 録音開始
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-rec-stop"
+                    disabled
+                  >
+                    ■ 停止
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-rec-dl"
+                    disabled
+                  >
+                    ダウンロード
+                  </button>
+                  <span
+                    id="vidstd-rec-time"
+                    style="font-size: 12px; opacity: 0.8"
+                    >00:00</span
+                  >
+                </div>
+                <audio
+                  id="vidstd-rec-audio"
+                  controls
+                  style="margin-top: 8px; display: none; width: 100%"
+                ></audio>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                ⑥ ffmpeg コマンドビルダー (trim / scale / crop / fps / mute /
+                gif / audio)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    >入力
+                    <input
+                      type="text"
+                      id="ffb-in"
+                      value="input.mp4"
+                      style="width: 140px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >出力
+                    <input
+                      type="text"
+                      id="ffb-out"
+                      value="output.mp4"
+                      style="width: 140px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >開始 (秒/HH:MM:SS)
+                    <input
+                      type="text"
+                      id="ffb-ss"
+                      placeholder="00:00:05"
+                      style="width: 90px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >尺
+                    <input
+                      type="text"
+                      id="ffb-t"
+                      placeholder="10"
+                      style="width: 70px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >解像度
+                    <input
+                      type="text"
+                      id="ffb-scale"
+                      placeholder="1280:-2"
+                      style="width: 100px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >クロップ (w:h:x:y)
+                    <input
+                      type="text"
+                      id="ffb-crop"
+                      placeholder="1080:1080:420:0"
+                      style="width: 140px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >FPS
+                    <input
+                      type="text"
+                      id="ffb-fps"
+                      placeholder="30"
+                      style="width: 60px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="ffb-mute" /> 音声を消す
+                    (-an)</label
+                  >
+                  <label style="font-size: 12px"
+                    ><input type="checkbox" id="ffb-copy" /> 再エンコードしない
+                    (-c copy)</label
+                  >
+                  <label style="font-size: 12px"
+                    >プリセット
+                    <select id="ffb-preset">
+                      <option value="custom">カスタム</option>
+                      <option value="gif">GIF 化 (.gif)</option>
+                      <option value="audio">音声抽出 (.mp3)</option>
+                      <option value="reels">縦動画 9:16 (1080x1920)</option>
+                      <option value="square">1:1 (1080x1080)</option>
+                      <option value="yt1080">YouTube 1080p</option>
+                    </select>
+                  </label>
+                  <button type="button" class="toolbox-primary" id="ffb-build">
+                    コマンド生成
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="ffb-copybtn"
+                  >
+                    コピー
+                  </button>
+                </div>
+                <pre
+                  id="ffb-out-cmd"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 12px;
+                    background: #1f1f1f;
+                    color: #e0e0e0;
+                    padding: 8px;
+                    border: 1px solid #2c2c2c;
+                    border-radius: 4px;
+                    margin-top: 8px;
+                    min-height: 40px;
+                  "
+                ></pre>
+              </div>
+            </details>
+
+            <details>
+              <summary>
+                ⑦ タイムコード変換 (秒 ⇔ HH:MM:SS.ms ⇔ フレーム)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    >秒
+                    <input
+                      type="number"
+                      id="vidstd-tc-sec"
+                      step="0.001"
+                      style="width: 110px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >HH:MM:SS.ms
+                    <input
+                      type="text"
+                      id="vidstd-tc-hms"
+                      style="width: 130px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >フレーム
+                    <input
+                      type="number"
+                      id="vidstd-tc-frame"
+                      style="width: 100px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >FPS
+                    <input
+                      type="number"
+                      id="vidstd-tc-fps"
+                      value="30"
+                      min="1"
+                      max="240"
+                      style="width: 60px"
+                    />
+                  </label>
+                </div>
+              </div>
+            </details>
+
+            <details>
+              <summary>⑧ アスペクト比 / 解像度 計算機</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
+                  <label style="font-size: 12px"
+                    >幅
+                    <input
+                      type="number"
+                      id="vidstd-ar-w"
+                      value="1920"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <label style="font-size: 12px"
+                    >高さ
+                    <input
+                      type="number"
+                      id="vidstd-ar-h"
+                      value="1080"
+                      style="width: 80px"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbox-primary"
+                    id="vidstd-ar-run"
+                  >
+                    計算
+                  </button>
+                </div>
+                <pre
+                  id="vidstd-ar-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 12px;
+                    background: #1f1f1f;
+                    color: #e0e0e0;
+                    padding: 8px;
+                    border: 1px solid #2c2c2c;
+                    border-radius: 4px;
+                    margin-top: 8px;
+                  "
+                ></pre>
               </div>
             </details>
           </section>
@@ -2886,8 +5430,8 @@ document.title = '✨ ' + document.title;"
                   justify-content: space-between;
                 "
               >
-                <span>Twitter / X (280 文字)</span>
-                <span id="cc-twitter-text">0 / 280</span>
+                <span style="color: #aaa">Twitter / X (280 文字)</span>
+                <span id="cc-twitter-text" style="color: #ddd">0 / 280</span>
               </div>
               <div class="cc-bar">
                 <div
@@ -2906,8 +5450,8 @@ document.title = '✨ ' + document.title;"
                   justify-content: space-between;
                 "
               >
-                <span>SMS (160 文字 / GSM-7)</span>
-                <span id="cc-sms-text">0 / 160</span>
+                <span style="color: #aaa">SMS (160 文字 / GSM-7)</span>
+                <span id="cc-sms-text" style="color: #ddd">0 / 160</span>
               </div>
               <div class="cc-bar">
                 <div
@@ -2926,8 +5470,8 @@ document.title = '✨ ' + document.title;"
                   justify-content: space-between;
                 "
               >
-                <span>原稿用紙 (400 字)</span>
-                <span id="cc-genko-text">0 枚</span>
+                <span style="color: #aaa">原稿用紙 (400 字)</span>
+                <span id="cc-genko-text" style="color: #ddd">0 枚</span>
               </div>
               <div class="cc-bar">
                 <div
@@ -3126,7 +5670,7 @@ document.title = '✨ ' + document.title;"
                   border-collapse: collapse;
                 "
               >
-                <thead style="background: #f6f8fa">
+                <thead style="background: #2a2f38; color: #e6e6e6">
                   <tr>
                     <th style="padding: 4px; text-align: left">#</th>
                     <th style="padding: 4px; text-align: right">ラップ</th>
@@ -3408,6 +5952,364 @@ document.title = '✨ ' + document.title;"
               style="display: block; margin-top: 4px"
             ></span>
           </section>
+
+          <section class="toolbox-tool" data-tool="ssh" hidden>
+            <h3>🔐 SSH 接続</h3>
+            <p class="toolbox-note">
+              SSH 鍵を作成 /
+              インポートし、登録した接続先にワンクリックでログインできます。
+              鍵は <code>~/.ssh/</code>、接続先は
+              <code>~/.ssh/config</code> に保存されます。 実行には OpenSSH
+              クライアント (<code>ssh</code> / <code>ssh-keygen</code>)
+              が必要です。
+            </p>
+
+            <details open style="margin-top: 8px">
+              <summary><strong>⚡ クイック接続</strong></summary>
+              <div
+                class="toolbox-row"
+                style="gap: 6px; flex-wrap: wrap; margin-top: 6px"
+              >
+                <input
+                  id="ssh-q-target"
+                  type="text"
+                  placeholder="user@host (例: ubuntu@example.com) または 登録済みエイリアス"
+                  style="flex: 2; min-width: 18em"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <input
+                  id="ssh-q-port"
+                  type="number"
+                  placeholder="Port (空=22)"
+                  min="1"
+                  max="65535"
+                  style="width: 8em"
+                />
+                <select id="ssh-q-key" style="min-width: 12em"></select>
+                <button
+                  type="button"
+                  id="ssh-q-connect"
+                  class="toolbox-primary"
+                >
+                  🚀 接続
+                </button>
+              </div>
+              <div
+                class="toolbox-row"
+                style="gap: 6px; margin-top: 6px; flex-wrap: wrap"
+              >
+                <label class="toolbox-inline-check">
+                  <input id="ssh-q-strict" type="checkbox" />
+                  StrictHostKeyChecking=no (初回接続を自動承認)
+                </label>
+                <label class="toolbox-inline-check">
+                  <input id="ssh-q-verbose" type="checkbox" /> -v (詳細ログ)
+                </label>
+              </div>
+            </details>
+
+            <details open style="margin-top: 8px">
+              <summary><strong>📒 登録済みホスト</strong></summary>
+              <div
+                id="ssh-host-list"
+                style="
+                  margin-top: 6px;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 6px;
+                "
+              ></div>
+              <div
+                class="toolbox-row"
+                style="
+                  gap: 6px;
+                  flex-wrap: wrap;
+                  margin-top: 8px;
+                  align-items: flex-end;
+                "
+              >
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e"
+                    >エイリアス</label
+                  >
+                  <input
+                    id="ssh-h-alias"
+                    type="text"
+                    placeholder="myserver"
+                    style="width: 10em"
+                  />
+                </div>
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e"
+                    >HostName</label
+                  >
+                  <input
+                    id="ssh-h-host"
+                    type="text"
+                    placeholder="example.com"
+                    style="width: 14em"
+                  />
+                </div>
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e">User</label>
+                  <input
+                    id="ssh-h-user"
+                    type="text"
+                    placeholder="ubuntu"
+                    style="width: 8em"
+                  />
+                </div>
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e">Port</label>
+                  <input
+                    id="ssh-h-port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    placeholder="22"
+                    style="width: 6em"
+                  />
+                </div>
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e"
+                    >IdentityFile</label
+                  >
+                  <select id="ssh-h-key" style="min-width: 10em"></select>
+                </div>
+                <button type="button" id="ssh-h-save" class="toolbox-primary">
+                  💾 保存 / 更新
+                </button>
+                <button type="button" id="ssh-h-clear">クリア</button>
+              </div>
+            </details>
+
+            <details style="margin-top: 8px">
+              <summary><strong>🗝 SSH 鍵管理</strong></summary>
+              <div
+                id="ssh-key-list"
+                style="
+                  margin-top: 6px;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 6px;
+                "
+              ></div>
+              <div
+                class="toolbox-row"
+                style="
+                  gap: 6px;
+                  margin-top: 8px;
+                  flex-wrap: wrap;
+                  align-items: flex-end;
+                "
+              >
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e">鍵名</label>
+                  <input
+                    id="ssh-k-name"
+                    type="text"
+                    placeholder="id_yuzu"
+                    style="width: 10em"
+                  />
+                </div>
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e">種別</label>
+                  <select id="ssh-k-type">
+                    <option value="ed25519">ed25519 (推奨)</option>
+                    <option value="rsa">rsa-4096</option>
+                    <option value="ecdsa">ecdsa</option>
+                  </select>
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    flex-direction: column;
+                    flex: 1;
+                    min-width: 14em;
+                  "
+                >
+                  <label style="font-size: 11px; color: #9e9e9e"
+                    >コメント</label
+                  >
+                  <input
+                    id="ssh-k-comment"
+                    type="text"
+                    placeholder="me@laptop"
+                  />
+                </div>
+                <button type="button" id="ssh-k-gen" class="toolbox-primary">
+                  🆕 鍵生成
+                </button>
+              </div>
+              <div
+                class="toolbox-row"
+                style="
+                  gap: 6px;
+                  margin-top: 8px;
+                  flex-wrap: wrap;
+                  align-items: flex-end;
+                "
+              >
+                <div style="display: flex; flex-direction: column">
+                  <label style="font-size: 11px; color: #9e9e9e"
+                    >インポート名</label
+                  >
+                  <input
+                    id="ssh-imp-name"
+                    type="text"
+                    placeholder="my_key"
+                    style="width: 10em"
+                  />
+                </div>
+                <button type="button" id="ssh-imp-save">
+                  📥 秘密鍵を貼り付けて保存
+                </button>
+              </div>
+              <textarea
+                id="ssh-imp-priv"
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
+                rows="4"
+                style="
+                  width: 100%;
+                  margin-top: 4px;
+                  font-family: ui-monospace, Consolas, monospace;
+                  font-size: 11px;
+                "
+              ></textarea>
+              <textarea
+                id="ssh-imp-pub"
+                placeholder="(任意) 公開鍵 ssh-ed25519 AAAA... コメント。空欄なら ssh-keygen -y で再生成。"
+                rows="2"
+                style="
+                  width: 100%;
+                  margin-top: 4px;
+                  font-family: ui-monospace, Consolas, monospace;
+                  font-size: 11px;
+                "
+              ></textarea>
+            </details>
+
+            <details open style="margin-top: 8px">
+              <summary><strong>🖥 セッション</strong></summary>
+              <div
+                class="toolbox-row"
+                style="
+                  gap: 4px;
+                  margin-top: 6px;
+                  flex-wrap: wrap;
+                  align-items: center;
+                "
+                id="ssh-tabs"
+              ></div>
+              <pre
+                id="ssh-output"
+                tabindex="0"
+                style="
+                  margin-top: 6px;
+                  background: #0a0a0a;
+                  color: #d4d4d4;
+                  padding: 10px;
+                  min-height: 240px;
+                  max-height: 420px;
+                  overflow: auto;
+                  font-family:
+                    ui-monospace, &quot;Cascadia Code&quot;, Consolas, monospace;
+                  font-size: 12px;
+                  white-space: pre-wrap;
+                  word-break: break-all;
+                  border-radius: 6px;
+                  outline: none;
+                "
+              ></pre>
+              <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+                <span
+                  style="
+                    color: #1f883d;
+                    font-family: monospace;
+                    font-weight: bold;
+                  "
+                  >$</span
+                >
+                <input
+                  id="ssh-input"
+                  type="text"
+                  placeholder="コマンドを入力 (Enter で送信)"
+                  style="
+                    flex: 1;
+                    font-family: ui-monospace, Consolas, monospace;
+                    font-size: 12px;
+                  "
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button type="button" id="ssh-send">送信</button>
+                <button
+                  type="button"
+                  id="ssh-sigint"
+                  title="Ctrl+C 相当 (\\x03 を送信)"
+                >
+                  Ctrl+C
+                </button>
+                <button type="button" id="ssh-disconnect">切断</button>
+              </div>
+            </details>
+
+            <span
+              id="ssh-status"
+              class="toolbox-status"
+              style="display: block; margin-top: 6px"
+            ></span>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="screenshot-editor" class="ss-editor" hidden>
+      <div class="ss-editor-dialog">
+        <header class="ss-editor-head">
+          <h3>スクリーンショット編集</h3>
+          <button
+            id="ss-close"
+            class="ss-editor-close"
+            type="button"
+            aria-label="閉じる"
+          >
+            ✕
+          </button>
+        </header>
+        <div class="ss-editor-toolbar">
+          <label
+            >ツール
+            <select id="ss-tool">
+              <option value="pen" selected>ペン</option>
+              <option value="rect">四角</option>
+              <option value="line">直線</option>
+              <option value="arrow">矢印</option>
+              <option value="text">テキスト</option>
+              <option value="eraser">消しゴム</option>
+            </select>
+          </label>
+          <label
+            >色
+            <input id="ss-color" type="color" value="#ff3b30" />
+          </label>
+          <label
+            >太さ
+            <input id="ss-size" type="range" min="1" max="40" value="4" />
+            <span id="ss-size-val">4</span>
+          </label>
+          <button id="ss-undo" type="button">元に戻す</button>
+          <button id="ss-redo" type="button">やり直し</button>
+          <button id="ss-clear" type="button">注釈クリア</button>
+          <button id="ss-copy" type="button">クリップボードへコピー</button>
+          <button id="ss-save" class="toolbox-primary" type="button">
+            保存
+          </button>
+          <span id="ss-status" class="toolbox-status"></span>
+        </div>
+        <div class="ss-editor-canvas-wrap">
+          <canvas id="ss-canvas"></canvas>
         </div>
       </div>
     </div>

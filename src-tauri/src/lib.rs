@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
-use tauri::webview::WebviewBuilder;
+use tauri::webview::{DownloadEvent, WebviewBuilder};
 use tauri::window::WindowBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window,
@@ -18,11 +18,14 @@ use url::Url;
 
 const TOOLBAR_HEIGHT: f64 = 50.0;
 const TABBAR_HEIGHT: f64 = 36.0;
-const BOOKMARKS_BAR_HEIGHT: f64 = 30.0;
-const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + TABBAR_HEIGHT + BOOKMARKS_BAR_HEIGHT;
+const ACTIONS_BAR_HEIGHT: f64 = 30.0;
+const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + TABBAR_HEIGHT + ACTIONS_BAR_HEIGHT;
 const HOME_URL: &str = "https://duckduckgo.com/";
 const OFFSCREEN_X: f64 = -20000.0;
 
+// 広告ブロック機能はユーザー要望により無効化したため adblock.js は注入しない。
+// adblock.js ファイル自体は将来的な再有効化のために残してある。
+#[allow(dead_code)]
 const ADBLOCK_SCRIPT: &str = include_str!("../adblock.js");
 
 const URL_WATCH_SCRIPT: &str = r#"
@@ -61,6 +64,11 @@ const URL_WATCH_SCRIPT: &str = r#"
 
 const TITLE_WATCH_SCRIPT: &str = r#"
 (function () {
+  // サブフレーム (iframe) は独自の document.title を持ち、それだけでタブ名を上書き
+  // されるとトップページのタイトルとずれる (例: YouTube の "Error 403" を表示する
+  // 補助 iframe がタブ名を上書きしてしまう)。トップフレーム (メインドキュメント) だけ
+  // を対象にする。
+  try { if (window.top !== window) return; } catch (_) { return; }
   if (window.__yuzuTitleWatchInstalled) return;
   window.__yuzuTitleWatchInstalled = true;
   let lastTitle = '';
@@ -101,8 +109,10 @@ const TITLE_WATCH_SCRIPT: &str = r#"
 "#;
 
 /// 各 <audio>/<video> のミュート状態を `window.__yuzuMuted` で制御。
-/// `el.volume` を上書きすると動画プレイヤーの音量スライダー操作が無視されてしまうため、
-/// ここでは `el.muted` のみを操作する（音量はサイト側に任せる）。
+/// 主たるミュートは Rust 側の WebView2 ネイティブ SetIsMuted で行うため、
+/// ここでは表示用の最低限の同期 (volume_boost のゲイン制御) だけを保持し、
+/// HTMLMediaElement.muted/volume の setter フックや WebAudio connect の差し替えは
+/// 行わない。これらは YouTube などの音量スライダー UI を破壊するため。
 const VOLUME_SCRIPT: &str = r#"
 (function () {
   if (window.__yuzuVolInstalled) return;
@@ -110,18 +120,21 @@ const VOLUME_SCRIPT: &str = r#"
   if (typeof window.__yuzuMuted !== 'boolean') window.__yuzuMuted = false;
   function apply() {
     var m = !!window.__yuzuMuted;
-    document.querySelectorAll('audio,video').forEach(function (el) {
-      try { if (el.muted !== m) el.muted = m; } catch (_) {}
-    });
+    // 音量ブーストで WebAudio の MediaElementSource → GainNode → destination という
+    // 経路を作っているとき、それを GainNode.gain = 0 にしてサイレント化、
+    // 解除時は元の gain を復帰させる。
+    try {
+      var gains = window.__yuzuGainNodes;
+      if (gains && typeof window.__yuzuCurrentGain === 'number') {
+        var media = document.querySelectorAll('audio,video');
+        for (var i = 0; i < media.length; i++) {
+          var n = gains.get(media[i]);
+          if (n) n.gain.value = m ? 0 : window.__yuzuCurrentGain;
+        }
+      }
+    } catch (_) {}
   }
   window.__yuzuApplyVolume = apply;
-  setInterval(apply, 800);
-  function start() {
-    if (!document.body) { setTimeout(start, 50); return; }
-    new MutationObserver(apply).observe(document.body, { subtree: true, childList: true });
-    apply();
-  }
-  start();
   try {
     if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
       window.__TAURI_INTERNALS__.invoke('tab_get_volume').then(function (v) {
@@ -271,7 +284,7 @@ const LINK_INTERCEPT_SCRIPT: &str = r#"
   function openBg(href) {
     try {
       if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-        window.__TAURI_INTERNALS__.invoke('tab_new', { url: href, background: true });
+        window.__TAURI_INTERNALS__.invoke('tab_new', { url: href, background: true, lazy: true });
       }
     } catch (_) {}
   }
@@ -333,7 +346,7 @@ const FULLSCREEN_WATCH_SCRIPT: &str = r#"
 
 #[derive(Default)]
 struct TabState {
-    /// 表示順を保持する。
+    /// 表示順を保持する（全ウィンドウ通しの順序。各 id はちょうど 1 ウィンドウに属する）。
     order: Vec<u64>,
     /// 各タブの最新 URL。
     urls: HashMap<u64, String>,
@@ -347,26 +360,74 @@ struct TabState {
     audibles: HashMap<u64, bool>,
     /// 各タブの favicon URL。
     favicons: HashMap<u64, String>,
-    active: Option<u64>,
+    /// 各タブが属するウィンドウラベル（例: "main", "main-2"）。
+    window_of: HashMap<u64, String>,
+    /// 「Ctrl/中クリック」等で背景に開いたタブのうち、まだ実際に navigate していない URL。
+    /// アクティブ化されたタイミングで初めて navigate する（遅延ロード）。
+    pending_urls: HashMap<u64, String>,
+    /// ウィンドウごとの active タブ。
+    active: HashMap<String, Option<u64>>,
     next_id: u64,
-    /// 閉じたタブの URL スタック（最新16件）。価として Ctrl+Shift+T で復元する。
-    closed: Vec<String>,
+    /// ウィンドウごとに、閉じたタブの URL スタック（最新16件）。Ctrl+Shift+T で復元する。
+    closed: HashMap<String, Vec<String>>,
+    /// 切り離しウィンドウの連番（"main-2", "main-3", ...）。
+    next_window_seq: u64,
 }
 
 impl TabState {
-    fn summary(&self) -> Vec<TabInfo> {
+    /// 既知のウィンドウラベル一覧。active マップのキーから取り出す。
+    fn windows(&self) -> Vec<String> {
+        self.active.keys().cloned().collect()
+    }
+    fn active_in(&self, win: &str) -> Option<u64> {
+        self.active.get(win).copied().flatten()
+    }
+    fn set_active_in(&mut self, win: &str, id: Option<u64>) {
+        self.active.insert(win.to_string(), id);
+    }
+    fn order_in(&self, win: &str) -> Vec<u64> {
         self.order
+            .iter()
+            .filter(|id| self.window_of.get(id).map(|w| w == win).unwrap_or(false))
+            .copied()
+            .collect()
+    }
+    fn push_closed(&mut self, win: &str, url: String) {
+        let v = self.closed.entry(win.to_string()).or_default();
+        v.push(url);
+        if v.len() > 16 {
+            v.remove(0);
+        }
+    }
+    fn pop_closed(&mut self, win: &str) -> Option<String> {
+        self.closed.get_mut(win).and_then(|v| v.pop())
+    }
+    fn summary_for(&self, win: &str) -> Vec<TabInfo> {
+        let active = self.active_in(win);
+        self.order_in(win)
             .iter()
             .map(|id| TabInfo {
                 id: *id,
                 url: self.urls.get(id).cloned().unwrap_or_default(),
                 title: self.titles.get(id).cloned().unwrap_or_default(),
-                active: self.active == Some(*id),
+                active: active == Some(*id),
                 muted: self.volumes.get(id).copied().unwrap_or(1.0) <= 0.0001,
                 audible: self.audibles.get(id).copied().unwrap_or(false),
                 favicon: self.favicons.get(id).cloned().unwrap_or_default(),
             })
             .collect()
+    }
+}
+
+/// ウィンドウラベルからクローム webview のラベルを得る。
+/// 既存の "main" は "ui" を使い、切り離しウィンドウ "main-N" は "ui-N" を使う。
+fn chrome_label_for(window_label: &str) -> String {
+    if window_label == "main" {
+        "ui".to_string()
+    } else if let Some(rest) = window_label.strip_prefix("main-") {
+        format!("ui-{rest}")
+    } else {
+        format!("ui-{window_label}")
     }
 }
 
@@ -392,8 +453,205 @@ fn parse_view_id(label: &str) -> Option<u64> {
     label.strip_prefix("view-").and_then(|s| s.parse().ok())
 }
 
-/// 全 webview をウィンドウサイズに合わせて再配置する。
+/// WebView2 のネイティブ `IsMuted` プロパティでタブ全体を OS レベルで消音する。
+/// JS フック (HTMLMediaElement / WebAudio) は YouTube などの一部実装で抜けるため、
+/// このネイティブミュートを最終手段として併用する。
+#[cfg(windows)]
+fn set_view_native_muted(view: &tauri::webview::Webview, muted: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+    use windows::core::Interface;
+    let label = view.label().to_string();
+    let r = view.with_webview(move |pwv| unsafe {
+        let controller = pwv.controller();
+        match controller.CoreWebView2() {
+            Ok(core) => match core.cast::<ICoreWebView2_8>() {
+                Ok(c8) => match c8.SetIsMuted(muted) {
+                    Ok(()) => {
+                        eprintln!("[mute] {label} SetIsMuted({muted}) ok");
+                    }
+                    Err(e) => eprintln!("[mute] {label} SetIsMuted err: {e:?}"),
+                },
+                Err(e) => eprintln!("[mute] {label} cast ICoreWebView2_8 err: {e:?}"),
+            },
+            Err(e) => eprintln!("[mute] {label} CoreWebView2 err: {e:?}"),
+        }
+    });
+    if let Err(e) = r {
+        eprintln!("[mute] with_webview err: {e:?}");
+    }
+}
+
+#[cfg(not(windows))]
+fn set_view_native_muted(_view: &tauri::webview::Webview, _muted: bool) {}
+
+// ===== ウィンドウ間タブ転送 (TCP ループバック IPC) =====
+//
+// 各 yuzu-browser インスタンスが 127.0.0.1 のランダムポートで listen し、
+// `%TEMP%/yuzu-browser/instances/<pid>.json` にポート番号を書き込む。
+// タブをドラッグして他の yuzu ウィンドウへドロップしたとき、フロント側は
+// `tab_drop_target_pid` でカーソル下のウィンドウの PID を取り、
+// `tab_attach` でそのインスタンスへ URL を送って新規タブとして開かせる。
+//
+// プロトコル: 1 行 1 リクエストの JSON。改行で完結。
+//   {"cmd":"open_tab","url":"https://..."}
+
+fn ipc_dir() -> PathBuf {
+    std::env::temp_dir().join("yuzu-browser").join("instances")
+}
+
+fn ipc_registry_path(pid: u32) -> PathBuf {
+    ipc_dir().join(format!("{pid}.json"))
+}
+
+fn ipc_write_self_port(port: u16) -> std::io::Result<()> {
+    let dir = ipc_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = ipc_registry_path(std::process::id());
+    std::fs::write(path, format!("{{\"port\":{port}}}"))
+}
+
+fn ipc_remove_self_port() {
+    let _ = std::fs::remove_file(ipc_registry_path(std::process::id()));
+}
+
+fn ipc_read_port_for_pid(pid: u32) -> Option<u16> {
+    let txt = std::fs::read_to_string(ipc_registry_path(pid)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    v.get("port").and_then(|p| p.as_u64()).map(|p| p as u16)
+}
+
+/// 指定インスタンスへ「新規タブを開く」コマンドを送信。失敗したらレジストリから削除。
+fn ipc_send_open_tab(pid: u32, url: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let port = ipc_read_port_for_pid(pid).ok_or_else(|| format!("no port for pid {pid}"))?;
+    let addr = format!("127.0.0.1:{port}");
+    match TcpStream::connect_timeout(
+        &addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?,
+        Duration::from_millis(500),
+    ) {
+        Ok(mut s) => {
+            let _ = s.set_write_timeout(Some(Duration::from_millis(500)));
+            let payload = serde_json::json!({ "cmd": "open_tab", "url": url }).to_string();
+            s.write_all(payload.as_bytes())
+                .and_then(|_| s.write_all(b"\n"))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Err(e) => {
+            // 連絡できないインスタンスのレジストリは消しておく。
+            let _ = std::fs::remove_file(ipc_registry_path(pid));
+            Err(format!("connect failed: {e}"))
+        }
+    }
+}
+
+/// TCP listener を起動して、受信した open_tab を UI に転送する。
+fn ipc_spawn_listener(app: AppHandle) -> std::io::Result<u16> {
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    return;
+                };
+                let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
+                if cmd == "open_tab" {
+                    if let Some(url) = v.get("url").and_then(|u| u.as_str()) {
+                        // ウィンドウを前面化してから UI 側に新規タブ要求を投げる。
+                        if let Some(win) = app.get_window("main") {
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                        let _ = app.emit_to(
+                            "ui",
+                            "external-open-tab",
+                            serde_json::json!({ "url": url }),
+                        );
+                    }
+                }
+            });
+        }
+    });
+    Ok(port)
+}
+
+/// Win32 の WindowFromPoint でカーソル下のトップウィンドウの PID を取得する。
+/// 自プロセスの場合と yuzu-browser 以外の場合は `None` を返す。
+#[cfg(windows)]
+fn ipc_pid_under_cursor() -> Option<u32> {
+    #[repr(C)]
+    struct POINT {
+        x: i32,
+        y: i32,
+    }
+    type HWND = *mut std::ffi::c_void;
+    extern "system" {
+        fn GetCursorPos(p: *mut POINT) -> i32;
+        fn WindowFromPoint(p: POINT) -> HWND;
+        fn GetAncestor(hwnd: HWND, ga: u32) -> HWND;
+        fn GetWindowThreadProcessId(hwnd: HWND, lpdw: *mut u32) -> u32;
+    }
+    const GA_ROOT: u32 = 2;
+    unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 {
+            return None;
+        }
+        let hwnd = WindowFromPoint(pt);
+        if hwnd.is_null() {
+            return None;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let target = if root.is_null() { hwnd } else { root };
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(target, &mut pid);
+        if pid == 0 || pid == std::process::id() {
+            return None;
+        }
+        // レジストリにこの PID が居るときだけ yuzu-browser とみなす。
+        if ipc_read_port_for_pid(pid).is_some() {
+            Some(pid)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn ipc_pid_under_cursor() -> Option<u32> {
+    None
+}
+
+/// ドロップ先ウィンドウの PID を返す（同 yuzu-browser 別インスタンスのときのみ）。
+#[tauri::command]
+fn tab_drop_target_pid() -> Option<u32> {
+    ipc_pid_under_cursor()
+}
+
+/// 指定 PID のインスタンスへ URL を送って新しいタブを開かせる。
+#[tauri::command]
+fn tab_attach(pid: u32, url: String) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("url is empty".to_string());
+    }
+    ipc_send_open_tab(pid, &url)
+}
+
+/// 全 webview をウィンドウサイズに合わせて再配置する（指定ウィンドウ分のみ）。
 fn relayout(window: &Window, state: &TabState) {
+    let win_label = window.label().to_string();
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = match window.inner_size() {
         Ok(s) => s,
@@ -403,40 +661,52 @@ fn relayout(window: &Window, state: &TabState) {
     let w = logical.width.max(1.0);
     let h = logical.height.max(1.0);
 
-    if let Some(ui) = window.get_webview("ui") {
+    let chrome = chrome_label_for(&win_label);
+    let has_chrome = window.get_webview(&chrome).is_some();
+    if let Some(ui) = window.get_webview(&chrome) {
         let _ = ui.set_position(LogicalPosition::new(0.0, 0.0));
         let _ = ui.set_size(LogicalSize::new(w, CHROME_HEIGHT));
     }
 
-    let view_h = (h - CHROME_HEIGHT).max(1.0);
+    let chrome_h = if has_chrome { CHROME_HEIGHT } else { 0.0 };
+    let view_h = (h - chrome_h).max(1.0);
+    let active = state.active_in(&win_label);
+    let order = state.order_in(&win_label);
 
-    // 白チラつき防止: まず active を表示エリアを覆うサイズにリサイズし、
-    // その後で非 active をオフスクリーンへ退避させる。
-    if let Some(active_id) = state.active {
+    // 黒チラつき防止: 非 active も同じサイズにしておく。サイズ 1x1 のまま放置すると
+    // タブ切替の瞬間に full-size へのリサイズ＆再レイアウトが走り、ページが
+    // 描画し直されるまで黒い枠が見えてしまう。位置だけオフスクリーンへ退避し、
+    // サイズはずっと表示エリアと同じに保つことで、切替時は座標移動だけで済み
+    // 黒画面が挟まらない。
+    if let Some(active_id) = active {
         if let Some(view) = window.get_webview(&view_label(active_id)) {
             let _ = view.set_size(LogicalSize::new(w, view_h));
-            let _ = view.set_position(LogicalPosition::new(0.0, CHROME_HEIGHT));
+            let _ = view.set_position(LogicalPosition::new(0.0, chrome_h));
         }
     }
-    for id in &state.order {
-        if Some(*id) == state.active {
+    for id in &order {
+        if Some(*id) == active {
             continue;
         }
         if let Some(view) = window.get_webview(&view_label(*id)) {
-            // 画面外へ退避（破棄せず保持）。
-            let _ = view.set_position(LogicalPosition::new(OFFSCREEN_X, 0.0));
-            let _ = view.set_size(LogicalSize::new(1.0, 1.0));
+            // 画面外へ退避するが、サイズは表示エリアと同じに揃える。
+            let _ = view.set_size(LogicalSize::new(w, view_h));
+            let _ = view.set_position(LogicalPosition::new(OFFSCREEN_X, chrome_h));
         }
     }
 }
 
+/// 全ウィンドウへ tabs-updated を配信する。
 fn emit_tabs(app: &AppHandle, state: &TabState) {
-    let _ = app.emit_to("ui", "tabs-updated", state.summary());
+    for win in state.windows() {
+        let _ = app.emit_to(chrome_label_for(&win), "tabs-updated", state.summary_for(&win));
+    }
 }
 
 /// active タブのタイトルをウィンドウタイトルに反映。
 fn apply_active_title(window: &Window, state: &TabState) {
-    let title = match state.active {
+    let win_label = window.label().to_string();
+    let title = match state.active_in(&win_label) {
         Some(id) => state
             .titles
             .get(&id)
@@ -459,10 +729,18 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
     let parsed: Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
     let label = view_label(id);
     let app_for_nav = app.clone();
+    let app_for_dl = app.clone();
     window
         .add_child(
             WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-                .initialization_script(ADBLOCK_SCRIPT)
+                // Windows WebView2 の middle-click autoscroll を無効化。
+                // 有効だと UI WebView 上で中クリックしたときにメインスレッドの
+                // メッセージループがマウスキャプチャに取られ、Tauri の
+                // run_on_main_thread が走らずアプリ全体がフリーズする。
+                // wry のデフォルト引数 (msWebOOUI 等の disable) も維持する必要がある。
+                .additional_browser_args(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
+                )
                 .initialization_script(URL_WATCH_SCRIPT)
                 .initialization_script(TITLE_WATCH_SCRIPT)
                 .initialization_script(VOLUME_SCRIPT)
@@ -472,12 +750,27 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
                 .initialization_script(LINK_INTERCEPT_SCRIPT)
                 .initialization_script(FULLSCREEN_WATCH_SCRIPT)
                 .on_navigation(move |u| {
+                    let url_s = u.to_string();
+                    // 注意: ここで AppState を blocking lock してはいけない。
+                    // on_navigation は GUI スレッドで呼ばれるため、worker スレッド
+                    // 側が AppState を保持したまま set_size 等で GUI スレッドを
+                    // 待つと相互ロックでアプリ全体がフリーズする。try_lock で
+                    // 取得できないときは諦めて、JS 側 browser_url_changed の
+                    // 同期に任せる。
+                    if let Some(app_state) = app_for_nav.try_state::<AppState>() {
+                        if let Ok(mut s) = app_state.0.try_lock() {
+                            s.urls.insert(id, url_s.clone());
+                        }
+                    }
                     let _ = app_for_nav.emit_to(
                         "ui",
                         "view-navigated",
-                        serde_json::json!({ "id": id, "url": u.to_string() }),
+                        serde_json::json!({ "id": id, "url": url_s }),
                     );
                     true
+                })
+                .on_download(move |_webview, event| {
+                    handle_download_event(&app_for_dl, id, event)
                 }),
             LogicalPosition::new(OFFSCREEN_X, 0.0),
             LogicalSize::new(1.0, 1.0),
@@ -516,33 +809,44 @@ async fn tab_new(
     state: State<'_, AppState>,
     url: Option<String>,
     background: Option<bool>,
+    lazy: Option<bool>,
 ) -> Result<u64, String> {
     let target = url.unwrap_or_else(|| HOME_URL.to_string());
     let bg = background.unwrap_or(false);
+    // 「遅延ロード」モード: フォアグラウンドに切り替わるまでページを読み込まない。
+    // background=true のときだけ意味があるのでフォアグラウンド時は無視。
+    let lazy_load = bg && lazy.unwrap_or(false);
+    let win_label = window.label().to_string();
     // 1) ID だけ確保してロックを即座に解放
     let id = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.next_id += 1;
         s.next_id
     };
-    // 2) ロック外 + main スレッドで webview 作成
-    create_view_on_main(&app, &window, id, &target)?;
+    // 2) ロック外 + main スレッドで webview 作成。lazy のときは about:blank で生やす。
+    let initial_url = if lazy_load { "about:blank".to_string() } else { target.clone() };
+    create_view_on_main(&app, &window, id, &initial_url)?;
     // 3) 改めてロックして状態反映 → relayout → emit
-    let snapshot = {
+    {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.order.push(id);
-        s.urls.insert(id, target);
+        s.window_of.insert(id, win_label.clone());
+        s.urls.insert(id, target.clone());
+        if lazy_load {
+            // タイトル欄に URL を出しておくのでタブ名も埋まる。
+            s.titles.insert(id, target.clone());
+            s.pending_urls.insert(id, target);
+        }
         if !bg {
-            s.active = Some(id);
-        } else if s.active.is_none() {
+            s.set_active_in(&win_label, Some(id));
+        } else if s.active_in(&win_label).is_none() {
             // active が無いときは結局 active にしないと真っ黒なので。
-            s.active = Some(id);
+            s.set_active_in(&win_label, Some(id));
         }
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(id)
 }
 
@@ -556,47 +860,106 @@ async fn tab_detach(
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<(), String> {
-    let url = {
-        let s = state.0.lock().map_err(|e| e.to_string())?;
-        s.urls.get(&id).cloned().unwrap_or_default()
+    use std::sync::mpsc;
+    let old_win_label = window.label().to_string();
+    // 検証: そのタブが本当にこのウィンドウに属するか。最後の 1 枚は切り離さない。
+    let new_label = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        let owner = s.window_of.get(&id).cloned().unwrap_or_default();
+        if owner != old_win_label {
+            return Err("tab not in this window".into());
+        }
+        if s.order_in(&old_win_label).len() <= 1 && old_win_label == "main" {
+            return Err("cannot detach last tab of main window".into());
+        }
+        s.next_window_seq += 1;
+        format!("main-{}", s.next_window_seq)
     };
-    if url.is_empty() {
-        return Err("tab url not found".to_string());
-    }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // 子プロセス用に別の WebView2 ユーザーデータフォルダを用意する。
-    // 同じフォルダを複数プロセスで共有するとロック競合でフリーズするため必須。
-    let child_udf = {
-        let base = std::env::temp_dir().join("yuzu-browser-detached");
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        base.join(unique)
-    };
-    let _ = std::fs::create_dir_all(&child_udf);
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.env("YUZU_INITIAL_URL", &url)
-        .env("WEBVIEW2_USER_DATA_FOLDER", &child_udf)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // Windows: 子プロセスを別プロセスグループにして親の Ctrl+C などの影響を受けないようにする。
-    // ※ DETACHED_PROCESS を付けると WebView2 の初期化に失敗してウィンドウが真っ黒になるため、
-    //    付けない (GUI アプリは元々コンソールを持たないので CREATE_NEW_PROCESS_GROUP だけで十分)。
-    #[cfg(windows)]
+
+    // メインスレッドで新ウィンドウを生成し、既存 webview を reparent する。
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let app_clone = app.clone();
+    let new_label_clone = new_label.clone();
+    let old_win_label_clone = old_win_label.clone();
+    let view_lbl = view_label(id);
+    app.run_on_main_thread(move || {
+        let res = (|| -> Result<(), String> {
+            let old_window = app_clone
+                .get_window(&old_win_label_clone)
+                .ok_or_else(|| "old window gone".to_string())?;
+            let scale = old_window.scale_factor().unwrap_or(1.0);
+            let osize = old_window
+                .inner_size()
+                .map_err(|e| e.to_string())?
+                .to_logical::<f64>(scale);
+            let new_window = WindowBuilder::new(&app_clone, &new_label_clone)
+                .title("yuzu-browser")
+                .inner_size(osize.width.max(400.0), osize.height.max(300.0))
+                .background_color(tauri::window::Color(26, 26, 26, 255))
+                .resizable(true)
+                .build()
+                .map_err(|e| e.to_string())?;
+            // 新ウィンドウにもクローム (UI) を作る。ラベルは "ui-N"。
+            let chrome_label = chrome_label_for(&new_label_clone);
+            new_window
+                .add_child(
+                    WebviewBuilder::new(&chrome_label, WebviewUrl::default())
+                        .additional_browser_args(
+                            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
+                        )
+                        .disable_drag_drop_handler()
+                        .transparent(true),
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(osize.width.max(400.0), CHROME_HEIGHT),
+                )
+                .map_err(|e| e.to_string())?;
+            let view = old_window
+                .get_webview(&view_lbl)
+                .ok_or_else(|| "view not found".to_string())?;
+            view.reparent(&new_window).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        let _ = tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())??;
+
+    // 状態を更新。
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.window_of.insert(id, new_label.clone());
+        s.set_active_in(&new_label, Some(id));
+        // 旧ウィンドウの active を別のタブへ。
+        let next = s.order_in(&old_win_label).last().copied();
+        s.set_active_in(&old_win_label, next);
     }
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn detached window: {e}"))?;
-    tab_close(window, app, state, id).await
+
+    // 新ウィンドウのリサイズ追従とレイアウト。
+    if let Some(new_window) = app.get_window(&new_label) {
+        let win_clone = new_window.clone();
+        let app_for_resize = app.clone();
+        new_window.on_window_event(move |event| {
+            if let WindowEvent::Resized(_) = event {
+                let s_state: State<'_, AppState> = app_for_resize.state();
+                let guard = s_state.0.lock();
+                if let Ok(s) = guard {
+                    relayout(&win_clone, &s);
+                }
+            }
+        });
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&new_window, &s);
+        apply_active_title(&new_window, &s);
+    }
+
+    // 旧ウィンドウも再レイアウト。
+    {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+        emit_tabs(&app, &s);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -606,25 +969,30 @@ async fn tab_close(
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<(), String> {
+    let win_label = window.label().to_string();
     // 1) ロック内で状態を更新（webview close は別途）
     let close_window = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        // 閉じるタブの所属ウィンドウを使う（他のウィンドウのタブを閉じることもある）。
+            let owner = s.window_of.get(&id).cloned().unwrap_or_else(|| win_label.clone());
         // 閉じるタブの URL をスタックに保存（復元用）。
         if let Some(u) = s.urls.get(&id).cloned() {
             if !u.is_empty() && u != HOME_URL {
-                s.closed.push(u);
-                if s.closed.len() > 16 {
-                    s.closed.remove(0);
-                }
+                s.push_closed(&owner, u);
             }
         }
         s.order.retain(|x| *x != id);
         s.urls.remove(&id);
         s.titles.remove(&id);
-        if s.active == Some(id) {
-            s.active = s.order.last().copied();
+        s.window_of.remove(&id);
+        s.pending_urls.remove(&id);
+        if s.active_in(&owner) == Some(id) {
+            let next = s.order_in(&owner).last().copied();
+            s.set_active_in(&owner, next);
         }
-        s.order.is_empty()
+        // そのウィンドウのタブがゼロになったらウィンドウも閉じる（ただしメインは閉じない）。
+        let empty = s.order_in(&owner).is_empty();
+        empty && owner != "main"
     };
     // 2) ロック外で webview close
     if let Some(view) = window.get_webview(&view_label(id)) {
@@ -636,28 +1004,40 @@ async fn tab_close(
         return Ok(());
     }
     // 4) relayout + emit
-    let snapshot = {
+    {
         let s = state.0.lock().map_err(|e| e.to_string())?;
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(())
 }
 
 #[tauri::command]
-fn tab_switch(
+async fn tab_switch(
     window: Window,
     app: AppHandle,
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<(), String> {
-    let mut s = state.0.lock().map_err(|e| e.to_string())?;
-    if !s.order.contains(&id) {
-        return Err(format!("unknown tab id: {id}"));
+    let win_label = window.label().to_string();
+    // 遅延ロード対象なら初回アクティブ化のタイミングで navigate する。
+    let pending = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        if !s.order.contains(&id) {
+            return Err(format!("unknown tab id: {id}"));
+        }
+        s.set_active_in(&win_label, Some(id));
+        s.pending_urls.remove(&id)
+    };
+    if let Some(url) = pending {
+        if let Some(view) = window.get_webview(&view_label(id)) {
+            if let Ok(parsed) = Url::parse(&url) {
+                let _ = view.navigate(parsed);
+            }
+        }
     }
-    s.active = Some(id);
+    let s = state.0.lock().map_err(|e| e.to_string())?;
     relayout(&window, &s);
     apply_active_title(&window, &s);
     emit_tabs(&app, &s);
@@ -665,9 +1045,9 @@ fn tab_switch(
 }
 
 #[tauri::command]
-fn tab_list(state: State<'_, AppState>) -> Result<Vec<TabInfo>, String> {
+fn tab_list(window: Window, state: State<'_, AppState>) -> Result<Vec<TabInfo>, String> {
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(s.summary())
+    Ok(s.summary_for(&window.label()))
 }
 
 /// 指定タブを複製（同じ URL で新規タブを開く）。
@@ -688,18 +1068,19 @@ async fn tab_duplicate(
         s.next_id
     };
     create_view_on_main(&app, &window, new_id, &url)?;
-    let snapshot = {
+    {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        let win_label = window.label().to_string();
         // 元タブの直後に挿入
         let pos = s.order.iter().position(|x| *x == id).map(|p| p + 1).unwrap_or(s.order.len());
         s.order.insert(pos, new_id);
+        s.window_of.insert(new_id, win_label.clone());
         s.urls.insert(new_id, url);
-        s.active = Some(new_id);
+        s.set_active_in(&win_label, Some(new_id));
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(new_id)
 }
 
@@ -710,9 +1091,10 @@ async fn tab_reopen(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<u64>, String> {
+    let win_label = window.label().to_string();
     let url = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
-        s.closed.pop()
+        s.pop_closed(&win_label)
     };
     let url = match url {
         Some(u) => u,
@@ -724,20 +1106,20 @@ async fn tab_reopen(
         s.next_id
     };
     create_view_on_main(&app, &window, id, &url)?;
-    let snapshot = {
+    {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
         s.order.push(id);
+        s.window_of.insert(id, win_label.clone());
         s.urls.insert(id, url);
-        s.active = Some(id);
+        s.set_active_in(&win_label, Some(id));
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(Some(id))
 }
 
-/// 指定タブ以外を全て閉じる。
+/// 指定タブ以外を全て閉じる（同一ウィンドウ内のみ）。
 #[tauri::command]
 async fn tab_close_others(
     window: Window,
@@ -745,35 +1127,36 @@ async fn tab_close_others(
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<(), String> {
+    let win_label = window.label().to_string();
     let to_close: Vec<u64> = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        s.order.iter().copied().filter(|x| *x != id).collect()
+        s.order_in(&win_label).into_iter().filter(|x| *x != id).collect()
     };
     for cid in to_close {
         {
             let mut s = state.0.lock().map_err(|e| e.to_string())?;
             if let Some(u) = s.urls.get(&cid).cloned() {
                 if !u.is_empty() && u != HOME_URL {
-                    s.closed.push(u);
-                    if s.closed.len() > 16 { s.closed.remove(0); }
+                    s.push_closed(&win_label, u);
                 }
             }
             s.order.retain(|x| *x != cid);
             s.urls.remove(&cid);
             s.titles.remove(&cid);
+            s.window_of.remove(&cid);
+            s.pending_urls.remove(&cid);
         }
         if let Some(view) = window.get_webview(&view_label(cid)) {
             let _ = view.close();
         }
     }
-    let snapshot = {
+    {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
-        s.active = Some(id);
+        s.set_active_in(&win_label, Some(id));
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(())
 }
 
@@ -785,10 +1168,12 @@ async fn tab_close_right(
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<(), String> {
+    let win_label = window.label().to_string();
     let to_close: Vec<u64> = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        match s.order.iter().position(|x| *x == id) {
-            Some(pos) => s.order[pos + 1..].to_vec(),
+        let order = s.order_in(&win_label);
+        match order.iter().position(|x| *x == id) {
+            Some(pos) => order[pos + 1..].to_vec(),
             None => Vec::new(),
         }
     };
@@ -797,47 +1182,74 @@ async fn tab_close_right(
             let mut s = state.0.lock().map_err(|e| e.to_string())?;
             if let Some(u) = s.urls.get(&cid).cloned() {
                 if !u.is_empty() && u != HOME_URL {
-                    s.closed.push(u);
-                    if s.closed.len() > 16 { s.closed.remove(0); }
+                    s.push_closed(&win_label, u);
                 }
             }
             s.order.retain(|x| *x != cid);
             s.urls.remove(&cid);
             s.titles.remove(&cid);
-            if s.active == Some(cid) {
-                s.active = Some(id);
+            s.window_of.remove(&cid);
+            s.pending_urls.remove(&cid);
+            if s.active_in(&win_label) == Some(cid) {
+                s.set_active_in(&win_label, Some(id));
             }
         }
         if let Some(view) = window.get_webview(&view_label(cid)) {
             let _ = view.close();
         }
     }
-    let snapshot = {
+    {
         let s = state.0.lock().map_err(|e| e.to_string())?;
         relayout(&window, &s);
         apply_active_title(&window, &s);
-        s.summary()
-    };
-    let _ = app.emit_to("ui", "tabs-updated", snapshot);
+        emit_tabs(&app, &s);
+    }
     Ok(())
 }
 
 /// タブを並び替える（id を to_index の位置へ移動）。
 #[tauri::command]
 fn tab_reorder(
+    window: Window,
     app: AppHandle,
     state: State<'_, AppState>,
     id: u64,
     to_index: usize,
 ) -> Result<(), String> {
+    let win_label = window.label().to_string();
     let mut s = state.0.lock().map_err(|e| e.to_string())?;
-    let from = match s.order.iter().position(|x| *x == id) {
+    // 同じウィンドウ内での並び替えだけを許可。
+    if s.window_of.get(&id).map(|w| w.as_str()) != Some(win_label.as_str()) {
+        return Err(format!("tab id {id} not in this window"));
+    }
+    let order_in = s.order_in(&win_label);
+    let local_from = match order_in.iter().position(|x| *x == id) {
         Some(p) => p,
         None => return Err(format!("unknown tab id: {id}")),
     };
-    let removed = s.order.remove(from);
-    let dst = to_index.min(s.order.len());
-    s.order.insert(dst, removed);
+    let local_to = to_index.min(order_in.len().saturating_sub(1));
+    if local_from == local_to {
+        return Ok(());
+    }
+    // グローバル order 上での実位置を反映させる。
+    // 計算: local_to 番目の要素の手前に id を挿し込む。
+    s.order.retain(|x| *x != id);
+    let target_global = if local_to >= order_in.len() - 1 {
+        // 末尾へ: 同ウィンドウの最後の要素の次
+        let last_id = order_in.iter().rev().find(|i| **i != id).copied();
+        match last_id {
+            Some(li) => s.order.iter().position(|x| *x == li).map(|p| p + 1).unwrap_or(s.order.len()),
+            None => s.order.len(),
+        }
+    } else {
+        // local_to 番目のタブ id のグローバル位置の手前
+        let after = order_in.iter().filter(|i| **i != id).nth(local_to).copied();
+        match after {
+            Some(a) => s.order.iter().position(|x| *x == a).unwrap_or(s.order.len()),
+            None => s.order.len(),
+        }
+    };
+    s.order.insert(target_global, id);
     emit_tabs(&app, &s);
     Ok(())
 }
@@ -850,7 +1262,7 @@ fn browser_navigate(
     url: String,
 ) -> Result<(), String> {
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+    let id = s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?;
     let view = window
         .get_webview(&view_label(id))
         .ok_or_else(|| "active view not found".to_string())?;
@@ -866,7 +1278,7 @@ fn browser_history(
     action: String,
 ) -> Result<(), String> {
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+    let id = s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?;
     let view = window
         .get_webview(&view_label(id))
         .ok_or_else(|| "active view not found".to_string())?;
@@ -874,6 +1286,11 @@ fn browser_history(
         "back" => "history.back()",
         "forward" => "history.forward()",
         "reload" => "location.reload()",
+        // Chromium ベースの WebView2 では `location.reload(true)` (deprecated forceReload)
+        // がキャッシュをバイパスして再取得する。可能ならキャッシュも消しておく。
+        "hard_reload" => {
+            "(async()=>{try{if('caches' in self){const ks=await caches.keys();await Promise.all(ks.map(k=>caches.delete(k)));}}catch(e){}try{location.reload(true);}catch(e){location.reload();}})()"
+        }
         other => return Err(format!("unknown action: {other}")),
     };
     view.eval(script).map_err(|e| e.to_string())?;
@@ -908,8 +1325,9 @@ fn browser_url_changed(
         s.favicons.remove(&id);
         emit_tabs(&app, &s);
     }
+    let win_label = webview.window().label().to_string();
     app.emit_to(
-        "ui",
+        chrome_label_for(&win_label),
         "view-navigated",
         serde_json::json!({ "id": id, "url": url }),
     )
@@ -929,7 +1347,8 @@ fn browser_title_changed(
     let id = parse_view_id(&label).ok_or_else(|| format!("not a view label: {label}"))?;
     let mut s = state.0.lock().map_err(|e| e.to_string())?;
     s.titles.insert(id, title);
-    if s.active == Some(id) {
+    let win_label = window.label().to_string();
+    if s.active_in(&win_label) == Some(id) {
         apply_active_title(&window, &s);
     }
     emit_tabs(&app, &s);
@@ -981,9 +1400,12 @@ fn browser_favicon_changed(
 #[tauri::command]
 fn tab_get_volume(webview: Webview, state: State<'_, AppState>) -> Result<f64, String> {
     let label = webview.label().to_string();
-    // UI からは active タブを対象に、view からは自身の id を対象にする。
+    // UI からは同ウィンドウの active タブを対象に、view からは自身の id を対象にする。
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    let id = parse_view_id(&label).or(s.active).ok_or_else(|| "no tab".to_string())?;
+    let win_label = webview.window().label().to_string();
+    let id = parse_view_id(&label)
+        .or_else(|| s.active_in(&win_label))
+        .ok_or_else(|| "no tab".to_string())?;
     Ok(s.volumes.get(&id).copied().unwrap_or(1.0))
 }
 
@@ -1006,9 +1428,11 @@ fn tab_set_volume(
             "window.__yuzuMuted={};window.__yuzuApplyVolume&&window.__yuzuApplyVolume();",
             if muted { "true" } else { "false" }
         ));
+        // ネイティブ WebView2 ミュートも併用（YouTube の WebAudio 経路を確実に止める）
+        set_view_native_muted(&view, muted);
     }
     let _ = app.emit_to(
-        "ui",
+        chrome_label_for(&window.label()),
         "tab-volume-changed",
         serde_json::json!({ "id": id, "volume": v }),
     );
@@ -1035,7 +1459,10 @@ fn apply_zoom_to(window: &Window, id: u64, zoom: f64) {
 fn tab_get_zoom(webview: Webview, state: State<'_, AppState>) -> Result<f64, String> {
     let label = webview.label().to_string();
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    let id = parse_view_id(&label).or(s.active).ok_or_else(|| "no tab".to_string())?;
+    let win_label = webview.window().label().to_string();
+    let id = parse_view_id(&label)
+        .or_else(|| s.active_in(&win_label))
+        .ok_or_else(|| "no tab".to_string())?;
     Ok(s.zooms.get(&id).copied().unwrap_or(1.0))
 }
 
@@ -1059,7 +1486,7 @@ fn browser_zoom_delta(
     };
     apply_zoom_to(&window, id, new_zoom);
     let _ = app.emit_to(
-        "ui",
+        chrome_label_for(&window.label()),
         "tab-zoom-changed",
         serde_json::json!({ "id": id, "zoom": new_zoom }),
     );
@@ -1083,7 +1510,7 @@ fn browser_zoom_set(
     }
     apply_zoom_to(&window, id, z);
     let _ = app.emit_to(
-        "ui",
+        chrome_label_for(&window.label()),
         "tab-zoom-changed",
         serde_json::json!({ "id": id, "zoom": z }),
     );
@@ -1098,9 +1525,10 @@ fn active_tab_zoom_delta(
     state: State<'_, AppState>,
     delta: f64,
 ) -> Result<(), String> {
+    let win_label = window.label().to_string();
     let id_and_new = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
-        let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+        let id = s.active_in(&win_label).ok_or_else(|| "no active tab".to_string())?;
         let cur = s.zooms.get(&id).copied().unwrap_or(1.0);
         let z = ((cur + delta) * 100.0).round() / 100.0;
         let z = z.clamp(0.25, 5.0);
@@ -1109,7 +1537,7 @@ fn active_tab_zoom_delta(
     };
     apply_zoom_to(&window, id_and_new.0, id_and_new.1);
     let _ = app.emit_to(
-        "ui",
+        chrome_label_for(&window.label()),
         "tab-zoom-changed",
         serde_json::json!({ "id": id_and_new.0, "zoom": id_and_new.1 }),
     );
@@ -1124,15 +1552,16 @@ fn active_tab_zoom_set(
     zoom: f64,
 ) -> Result<(), String> {
     let z = zoom.clamp(0.25, 5.0);
+    let win_label = window.label().to_string();
     let id = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
-        let id = s.active.ok_or_else(|| "no active tab".to_string())?;
+        let id = s.active_in(&win_label).ok_or_else(|| "no active tab".to_string())?;
         s.zooms.insert(id, z);
         id
     };
     apply_zoom_to(&window, id, z);
     let _ = app.emit_to(
-        "ui",
+        chrome_label_for(&window.label()),
         "tab-zoom-changed",
         serde_json::json!({ "id": id, "zoom": z }),
     );
@@ -1150,8 +1579,10 @@ fn show_tab_context_menu(
 ) -> Result<(), String> {
     let (has_others, has_right) = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        let len = s.order.len();
-        let pos = s.order.iter().position(|&x| x == id);
+        let win_label = window.label().to_string();
+        let order = s.order_in(&win_label);
+        let len = order.len();
+        let pos = order.iter().position(|&x| x == id);
         let has_right = pos.map(|p| p + 1 < len).unwrap_or(false);
         (len > 1, has_right)
     };
@@ -1180,147 +1611,61 @@ fn show_tab_context_menu(
     Ok(())
 }
 
-// ===== ブックマーク =====
-//
-// プライバシーを重視するため履歴は永続化しないが、ブックマークだけはユーザーが
-// 明示的に保存したものなので JSON ファイルに永続化する。
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct Bookmark {
-    id: u64,
-    url: String,
-    title: String,
-    favicon: String,
+/// アクティブページの見た目をキャプチャして base64 PNG で返す。
+#[derive(serde::Serialize)]
+struct CaptureResult {
+    data_url: String,
+    title_bar_height: f64,
+    logical_width: f64,
+    logical_height: f64,
 }
+#[tauri::command]
+fn capture_active_page(
+    window: Window,
+) -> Result<CaptureResult, String> {
+    use base64::Engine;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let outer = window.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let inner = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let title_bar_height = (outer.height - inner.height).max(0.0);
 
-#[derive(Default)]
-struct BookmarkStore {
-    next_id: u64,
-    items: Vec<Bookmark>,
-    path: Option<PathBuf>,
-}
-
-impl BookmarkStore {
-    fn load(path: PathBuf) -> Self {
-        let mut store = BookmarkStore { next_id: 0, items: Vec::new(), path: Some(path.clone()) };
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(items) = serde_json::from_str::<Vec<Bookmark>>(&text) {
-                store.next_id = items.iter().map(|b| b.id).max().unwrap_or(0);
-                store.items = items;
-            }
-        }
-        store
+    // xcap でウィンドウを特定: 自プロセスの PID と一致し、最大の窓を選ぶ。
+    let my_pid = std::process::id();
+    let xcap_wins = xcap::Window::all().map_err(|e| e.to_string())?;
+    let mut candidates: Vec<xcap::Window> = xcap_wins
+        .into_iter()
+        .filter(|w| w.process_id() == my_pid && !w.is_minimized())
+        .collect();
+    // 面積が最大のものを採用（メインウィンドウ）
+    candidates.sort_by_key(|w| -((w.width() as i64) * (w.height() as i64)));
+    let xcap_win = candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("xcap window not found for pid={}", my_pid))?;
+    let img = xcap_win.capture_image().map_err(|e| e.to_string())?;
+    let logical_width = img.width() as f64 / scale;
+    let logical_height = img.height() as f64 / scale;
+    // PNG エンコード
+    let mut png_bytes: Vec<u8> = Vec::new();
+    {
+        use image::codecs::png::PngEncoder;
+        use image::ImageEncoder;
+        PngEncoder::new(&mut png_bytes)
+            .write_image(
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                image::ColorType::Rgba8.into(),
+            )
+            .map_err(|e| e.to_string())?;
     }
-
-    fn save(&self) -> Result<(), String> {
-        let path = match &self.path {
-            Some(p) => p.clone(),
-            None => return Ok(()),
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let json = serde_json::to_string_pretty(&self.items).map_err(|e| e.to_string())?;
-        std::fs::write(&path, json).map_err(|e| e.to_string())
-    }
-}
-
-#[derive(Default)]
-struct BookmarksState(Mutex<BookmarkStore>);
-
-#[tauri::command]
-fn bookmark_list(state: State<'_, BookmarksState>) -> Result<Vec<Bookmark>, String> {
-    let s = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(s.items.clone())
-}
-
-#[tauri::command]
-fn bookmark_add(
-    app: AppHandle,
-    state: State<'_, BookmarksState>,
-    tab_state: State<'_, AppState>,
-    url: Option<String>,
-    title: Option<String>,
-    favicon: Option<String>,
-) -> Result<Bookmark, String> {
-    // 引数が無ければ active タブの情報を使う。
-    let (resolved_url, resolved_title, resolved_favicon) = {
-        let ts = tab_state.0.lock().map_err(|e| e.to_string())?;
-        let active = ts.active;
-        let u = url.or_else(|| active.and_then(|id| ts.urls.get(&id).cloned())).unwrap_or_default();
-        let t = title.or_else(|| active.and_then(|id| ts.titles.get(&id).cloned())).unwrap_or_default();
-        let f = favicon.or_else(|| active.and_then(|id| ts.favicons.get(&id).cloned())).unwrap_or_default();
-        (u, t, f)
-    };
-    if resolved_url.is_empty() {
-        return Err("URL is empty".to_string());
-    }
-    let mut s = state.0.lock().map_err(|e| e.to_string())?;
-    // 既に同じ URL が登録済みなら何もしない。
-    if let Some(existing) = s.items.iter().find(|b| b.url == resolved_url).cloned() {
-        return Ok(existing);
-    }
-    s.next_id += 1;
-    let bm = Bookmark {
-        id: s.next_id,
-        url: resolved_url,
-        title: resolved_title,
-        favicon: resolved_favicon,
-    };
-    s.items.push(bm.clone());
-    s.save()?;
-    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
-    Ok(bm)
-}
-
-#[tauri::command]
-fn bookmark_remove(
-    app: AppHandle,
-    state: State<'_, BookmarksState>,
-    id: u64,
-) -> Result<(), String> {
-    let mut s = state.0.lock().map_err(|e| e.to_string())?;
-    s.items.retain(|b| b.id != id);
-    s.save()?;
-    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
-    Ok(())
-}
-
-#[tauri::command]
-fn bookmark_reorder(
-    app: AppHandle,
-    state: State<'_, BookmarksState>,
-    id: u64,
-    to_index: usize,
-) -> Result<(), String> {
-    let mut s = state.0.lock().map_err(|e| e.to_string())?;
-    let from = match s.items.iter().position(|b| b.id == id) {
-        Some(i) => i,
-        None => return Ok(()),
-    };
-    let item = s.items.remove(from);
-    let dest = to_index.min(s.items.len());
-    s.items.insert(dest, item);
-    s.save()?;
-    let _ = app.emit_to("ui", "bookmarks-updated", s.items.clone());
-    Ok(())
-}
-
-/// active タブが既にブックマークされているかを返す。
-#[tauri::command]
-fn bookmark_is_current(
-    state: State<'_, BookmarksState>,
-    tab_state: State<'_, AppState>,
-) -> Result<bool, String> {
-    let url = {
-        let ts = tab_state.0.lock().map_err(|e| e.to_string())?;
-        match ts.active.and_then(|id| ts.urls.get(&id).cloned()) {
-            Some(u) => u,
-            None => return Ok(false),
-        }
-    };
-    let s = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(s.items.iter().any(|b| b.url == url))
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok(CaptureResult {
+        data_url: format!("data:image/png;base64,{}", b64),
+        title_bar_height,
+        logical_width,
+        logical_height,
+    })
 }
 
 /// UI webview をウィンドウ全面に広げる/通常サイズに戻す。
@@ -1335,13 +1680,15 @@ fn ui_set_expanded(
     let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
     let w = size.width.max(1.0);
     let h = size.height.max(1.0);
+    let win_label = window.label().to_string();
+    let chrome = chrome_label_for(&win_label);
     if expanded {
-        if let Some(ui) = window.get_webview("ui") {
+        if let Some(ui) = window.get_webview(&chrome) {
             let _ = ui.set_size(LogicalSize::new(w, h));
         }
         // active view も画面外に退避（クリックを UI 側だけで受け取る）。
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        if let Some(active_id) = s.active {
+        if let Some(active_id) = s.active_in(&win_label) {
             if let Some(view) = window.get_webview(&view_label(active_id)) {
                 let _ = view.set_position(LogicalPosition::new(OFFSCREEN_X, 0.0));
                 let _ = view.set_size(LogicalSize::new(1.0, 1.0));
@@ -1350,6 +1697,28 @@ fn ui_set_expanded(
     } else {
         let s = state.0.lock().map_err(|e| e.to_string())?;
         relayout(&window, &s);
+    }
+    Ok(())
+}
+
+/// ダウンロード等のオーバーレイ表示中に、UI webview を上部帯の高さまで広げる。
+/// active view はその下へ押し下げ、オーバーレイ領域と重ならないようにする。
+#[tauri::command]
+fn ui_set_popup_region(
+    window: Window,
+    _state: State<'_, AppState>,
+    _width: f64,
+    _height: f64,
+) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let win_w = win_size.width.max(1.0);
+    let win_h = win_size.height.max(1.0);
+    // UIを全画面に展開するが、ページ WebView は動かさない。
+    // UI WebView は transparent:true なので、クローム・パネル以外は透明になりページが透ける。
+    if let Some(ui) = window.get_webview(&chrome_label_for(&window.label())) {
+        let _ = ui.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = ui.set_size(LogicalSize::new(win_w, win_h));
     }
     Ok(())
 }
@@ -1366,7 +1735,8 @@ fn view_set_fullscreen(
     // 呼び出し元 view が active タブの場合だけ動かす（バックグラウンドタブからの誤動作防止）。
     let label = webview.label().to_string();
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    let active = match s.active {
+    let win_label = window.label().to_string();
+    let active = match s.active_in(&win_label) {
         Some(id) => id,
         None => return Ok(()),
     };
@@ -1380,7 +1750,7 @@ fn view_set_fullscreen(
         let size = window.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
         let w = size.width.max(1.0);
         let h = size.height.max(1.0);
-        if let Some(ui) = window.get_webview("ui") {
+        if let Some(ui) = window.get_webview(&chrome_label_for(&win_label)) {
             let _ = ui.set_position(LogicalPosition::new(OFFSCREEN_X, 0.0));
             let _ = ui.set_size(LogicalSize::new(1.0, 1.0));
         }
@@ -1406,7 +1776,7 @@ fn view_set_volume_boost(
 ) -> Result<(), String> {
     let id = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        s.active.ok_or_else(|| "no active tab".to_string())?
+        s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?
     };
     let view = window
         .get_webview(&view_label(id))
@@ -1417,6 +1787,14 @@ fn view_set_volume_boost(
     } else {
         1.0
     };
+    // gain が事実上 0 ならネイティブ WebView2 ミュートで完全消音、
+    // それ以外はネイティブミュートを解除（タブ側の muted=true がない限り）。
+    {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        let tab_muted = s.volumes.get(&id).copied().unwrap_or(1.0) <= 0.0001;
+        let want_muted = g <= 0.0001 || tab_muted;
+        set_view_native_muted(&view, want_muted);
+    }
     let script = format!(
         r#"(function() {{
   try {{
@@ -1443,7 +1821,7 @@ fn view_set_volume_boost(
           window.__yuzuGainNodes.set(el, gainNode);
         }} catch (e) {{ return; }}
       }}
-      node.gain.value = GAIN;
+      node.gain.value = window.__yuzuMuted ? 0 : GAIN;
     }}
     var media = document.querySelectorAll('video, audio');
     for (var i = 0; i < media.length; i++) attach(media[i]);
@@ -2316,20 +2694,36 @@ fn sanitize_filename(name: &str) -> String {
 const READER_ON_JS: &str = r#"(function(){
   try {
     if (window.__yuzuReaderActive) return;
+    function isVisible(el){
+      if (!el || !el.getBoundingClientRect) return false;
+      var s = window.getComputedStyle(el);
+      if (!s) return true;
+      if (s.display === 'none' || s.visibility === 'hidden') return false;
+      return true;
+    }
+    function textLen(el){ return ((el.innerText || el.textContent || '').replace(/\s+/g,' ').trim()).length; }
     function score(el){
-      var ps = el.getElementsByTagName('p');
-      var len = 0;
-      for (var i=0;i<ps.length;i++) len += (ps[i].innerText||'').length;
-      return len;
+      if (!isVisible(el)) return 0;
+      var ps = el.querySelectorAll('p,li,blockquote,pre');
+      var pLen = 0;
+      for (var i=0;i<ps.length;i++) pLen += textLen(ps[i]);
+      var total = textLen(el);
+      var links = el.querySelectorAll('a');
+      var linkLen = 0;
+      for (var i=0;i<links.length;i++) linkLen += textLen(links[i]);
+      var linkDensity = total > 0 ? (linkLen / total) : 1;
+      // テキストの密度を考慮（リンクだらけのナビは除外）
+      var base = pLen * 1.2 + total * 0.3;
+      return base * (1 - Math.min(linkDensity, 0.95));
     }
     var candidates = [];
-    var tags = ['article','main','[role=\"main\"]','#main','#content','.content','.post','.entry'];
+    var tags = ['article','main','[role=\"main\"]','#main','#content','#primary','.content','.post','.entry','.article','.story'];
     for (var t=0;t<tags.length;t++){
       var nodes = document.querySelectorAll(tags[t]);
       for (var i=0;i<nodes.length;i++) candidates.push(nodes[i]);
     }
     if (candidates.length===0) {
-      var all = document.body.querySelectorAll('div,section');
+      var all = document.body ? document.body.querySelectorAll('div,section') : [];
       for (var i=0;i<all.length;i++) candidates.push(all[i]);
     }
     var best=null, bestScore=0;
@@ -2337,12 +2731,7 @@ const READER_ON_JS: &str = r#"(function(){
       var s = score(candidates[i]);
       if (s>bestScore){ bestScore=s; best=candidates[i]; }
     }
-    if (!best || bestScore < 200) best = document.body;
     var title = (document.querySelector('h1') && document.querySelector('h1').innerText) || document.title || '';
-    var content = best.cloneNode(true);
-    // スクリプト/スタイル/ナビ/サイドバー/フッタ/iframeを除去
-    var rm = content.querySelectorAll('script,style,nav,aside,header,footer,iframe,noscript,form,button,input,svg');
-    for (var i=0;i<rm.length;i++) rm[i].remove();
     var overlay = document.createElement('div');
     overlay.id = '__yuzu-reader-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:#1a1814;color:#e8e3d8;overflow:auto;padding:48px 24px;font-family:Georgia,\"Hiragino Mincho ProN\",\"Yu Mincho\",serif;font-size:18px;line-height:1.85;';
@@ -2352,15 +2741,49 @@ const READER_ON_JS: &str = r#"(function(){
     h.textContent = title;
     h.style.cssText = 'font-size:28px;line-height:1.3;margin:0 0 24px 0;color:#fff;border-bottom:1px solid #3a352c;padding-bottom:12px;';
     inner.appendChild(h);
-    var article = document.createElement('article');
-    article.appendChild(content);
-    var imgs = article.querySelectorAll('img');
-    for (var i=0;i<imgs.length;i++){ imgs[i].style.maxWidth='100%'; imgs[i].style.height='auto'; }
-    var links = article.querySelectorAll('a');
-    for (var i=0;i<links.length;i++){ links[i].style.color='#7eb6ff'; }
-    inner.appendChild(article);
+
+    var MIN_SCORE = 150;
+    if (!best || bestScore < MIN_SCORE) {
+      // 抽出に失敗した場合はメッセージのみ表示（真っ黒な空ページを避ける）
+      var msg = document.createElement('div');
+      msg.style.cssText = 'background:#2a261f;border:1px solid #3a352c;border-radius:8px;padding:20px;color:#d4cdb8;';
+      var p1 = document.createElement('p');
+      p1.style.cssText = 'margin:0 0 8px 0;font-weight:bold;color:#ffd27a;';
+      p1.textContent = 'このページからは本文を抽出できませんでした。';
+      var p2 = document.createElement('p');
+      p2.style.cssText = 'margin:0;font-size:15px;line-height:1.7;color:#bdb6a3;';
+      p2.textContent = '記事ページなど、長い文章のあるページで「現在のタブに適用」を再度お試しください。「解除」ボタンで元の表示に戻せます。';
+      msg.appendChild(p1);
+      msg.appendChild(p2);
+      inner.appendChild(msg);
+    } else {
+      var content = best.cloneNode(true);
+      // 不要な要素を除去（h1-h6 や figure/img など読み物に必要な要素は残す）
+      var rm = content.querySelectorAll('script,style,nav,aside,iframe,noscript,form,button,input,select,textarea,svg,canvas,video,audio,object,embed');
+      for (var i=0;i<rm.length;i++) rm[i].remove();
+      // ページ最上部の重複タイトル h1 を除去
+      var dupH1 = content.querySelector('h1');
+      if (dupH1 && dupH1.innerText && title && dupH1.innerText.trim() === title.trim()) {
+        dupH1.remove();
+      }
+      var article = document.createElement('article');
+      article.appendChild(content);
+      var imgs = article.querySelectorAll('img');
+      for (var i=0;i<imgs.length;i++){ imgs[i].style.maxWidth='100%'; imgs[i].style.height='auto'; imgs[i].removeAttribute('width'); imgs[i].removeAttribute('height'); }
+      var links = article.querySelectorAll('a');
+      for (var i=0;i<links.length;i++){ links[i].style.color='#7eb6ff'; }
+      // 抽出後のテキストが極端に少ない場合もメッセージに置換
+      if (textLen(article) < 80) {
+        article.innerHTML = '';
+        var msg = document.createElement('p');
+        msg.style.cssText = 'color:#bdb6a3;';
+        msg.textContent = '本文を十分に抽出できませんでした。';
+        article.appendChild(msg);
+      }
+      inner.appendChild(article);
+    }
     overlay.appendChild(inner);
-    document.documentElement.appendChild(overlay);
+    (document.body || document.documentElement).appendChild(overlay);
     document.documentElement.style.overflow = 'hidden';
     window.__yuzuReaderActive = true;
   } catch (e) { console.error('reader failed:', e); }
@@ -2383,7 +2806,7 @@ fn view_set_reader_mode(
 ) -> Result<(), String> {
     let id = {
         let s = state.0.lock().map_err(|e| e.to_string())?;
-        s.active.ok_or_else(|| "no active tab".to_string())?
+        s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?
     };
     let view = window
         .get_webview(&view_label(id))
@@ -2395,31 +2818,78 @@ fn view_set_reader_mode(
 
 // ===== スクリーンショット =====
 
-#[tauri::command]
-fn toolbox_screenshot(
-    window: Window,
-    state: State<'_, AppState>,
-    dir: String,
-) -> Result<String, String> {
-    let dir = dir.trim().to_string();
-    if dir.is_empty() {
-        return Err("保存先が未設定です".to_string());
-    }
-    let id = {
-        let s = state.0.lock().map_err(|e| e.to_string())?;
-        s.active.ok_or_else(|| "no active tab".to_string())?
-    };
-    let view = window
-        .get_webview(&view_label(id))
-        .ok_or_else(|| "active view not found".to_string())?;
+#[derive(Default)]
+struct ScreenshotState(Mutex<Option<PageMetrics>>);
 
+#[derive(Clone, Copy, Debug)]
+struct PageMetrics {
+    scroll_height: f64,
+    inner_height: f64,
+}
+
+/// ページ webview から呼ばれる：撮影前にページ寸法を報告する。
+#[tauri::command]
+fn report_page_metrics(
+    state: State<'_, ScreenshotState>,
+    scroll_height: f64,
+    inner_height: f64,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    *s = Some(PageMetrics {
+        scroll_height,
+        inner_height,
+    });
+    Ok(())
+}
+
+/// 指定座標を含むモニタを返す。`Monitor::from_point` が失敗した場合は
+/// 全モニタを列挙して矩形に含むもの・なければ最も近いものへフォールバックする。
+fn find_monitor_at(x: i32, y: i32) -> Result<xcap::Monitor, String> {
+    if let Ok(m) = xcap::Monitor::from_point(x, y) {
+        return Ok(m);
+    }
+    let monitors =
+        xcap::Monitor::all().map_err(|e| format!("モニタ列挙失敗: {}", e))?;
+    if monitors.is_empty() {
+        return Err("利用可能なモニタが見つかりません".to_string());
+    }
+    for m in &monitors {
+        let mx = m.x();
+        let my = m.y();
+        let mw = m.width() as i32;
+        let mh = m.height() as i32;
+        if x >= mx && x < mx + mw && y >= my && y < my + mh {
+            return Ok(m.clone());
+        }
+    }
+    let mut best = monitors[0].clone();
+    let mut best_d: i64 = i64::MAX;
+    for m in &monitors {
+        let cx = m.x() + (m.width() as i32) / 2;
+        let cy = m.y() + (m.height() as i32) / 2;
+        let dx = (cx - x) as i64;
+        let dy = (cy - y) as i64;
+        let d = dx * dx + dy * dy;
+        if d < best_d {
+            best_d = d;
+            best = m.clone();
+        }
+    }
+    Ok(best)
+}
+
+/// アクティブ view の表示領域を画面からキャプチャする。
+fn capture_view_viewport(
+    window: &Window,
+    view: &Webview,
+) -> Result<image::RgbaImage, String> {
     let inner_pos = window.inner_position().map_err(|e| e.to_string())?;
     let view_pos = view.position().map_err(|e| e.to_string())?;
     let view_size = view.size().map_err(|e| e.to_string())?;
     let abs_x = inner_pos.x + view_pos.x;
     let abs_y = inner_pos.y + view_pos.y;
 
-    let monitor = xcap::Monitor::from_point(abs_x, abs_y)
+    let monitor = find_monitor_at(abs_x, abs_y)
         .map_err(|e| format!("モニタ取得失敗: {}", e))?;
     let mx = monitor.x();
     let my = monitor.y();
@@ -2435,9 +2905,171 @@ fn toolbox_screenshot(
     let max_h = mh.saturating_sub(local_y);
     let crop_w = view_size.width.min(max_w).max(1);
     let crop_h = view_size.height.min(max_h).max(1);
-    let cropped =
-        image::imageops::crop_imm(&img, local_x, local_y, crop_w, crop_h).to_image();
+    Ok(image::imageops::crop_imm(&img, local_x, local_y, crop_w, crop_h).to_image())
+}
 
+fn rgba_to_png_data_url(img: &image::RgbaImage) -> Result<String, String> {
+    use base64::Engine;
+    use image::ImageEncoder;
+    let mut buf: Vec<u8> = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut buf);
+    encoder
+        .write_image(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("PNG エンコード失敗: {}", e))?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&buf)
+    ))
+}
+
+/// 表示領域のみキャプチャして PNG data URL を返す。
+#[tauri::command]
+fn toolbox_screenshot(
+    window: Window,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let id = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?
+    };
+    let view = window
+        .get_webview(&view_label(id))
+        .ok_or_else(|| "active view not found".to_string())?;
+    let img = capture_view_viewport(&window, &view)?;
+    rgba_to_png_data_url(&img)
+}
+
+/// ページ全体をスクロールしながらキャプチャして連結した PNG data URL を返す。
+#[tauri::command]
+async fn toolbox_screenshot_full_page(
+    window: Window,
+    state: State<'_, AppState>,
+    screenshot_state: State<'_, ScreenshotState>,
+) -> Result<String, String> {
+    let id = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.active_in(&window.label()).ok_or_else(|| "no active tab".to_string())?
+    };
+    let view = window
+        .get_webview(&view_label(id))
+        .ok_or_else(|| "active view not found".to_string())?;
+
+    // 古い指標をクリア
+    {
+        let mut s = screenshot_state
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?;
+        *s = None;
+    }
+
+    // 元のスクロール位置を保存し、ページ寸法を invoke で報告させる
+    let metrics_script = r#"
+    (function () {
+      try {
+        window.__yuzuOldScrollX = window.scrollX;
+        window.__yuzuOldScrollY = window.scrollY;
+        window.__yuzuOldScrollBehavior = document.documentElement.style.scrollBehavior || '';
+        document.documentElement.style.scrollBehavior = 'auto';
+        var d = document.documentElement;
+        var b = document.body;
+        var h = Math.max(
+          d.scrollHeight, d.offsetHeight, d.clientHeight,
+          b ? b.scrollHeight : 0, b ? b.offsetHeight : 0
+        );
+        if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+          window.__TAURI_INTERNALS__.invoke('report_page_metrics', {
+            scrollHeight: h,
+            innerHeight: window.innerHeight
+          });
+        }
+      } catch (_) {}
+    })();
+    "#;
+    view.eval(metrics_script).map_err(|e| e.to_string())?;
+
+    // ポーリングして寸法を受け取る
+    let mut metrics: Option<PageMetrics> = None;
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        if let Ok(s) = screenshot_state.0.lock() {
+            if let Some(m) = *s {
+                metrics = Some(m);
+                break;
+            }
+        }
+    }
+    let metrics =
+        metrics.ok_or_else(|| "ページ情報の取得に失敗しました".to_string())?;
+
+    let view_size = view.size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let viewport_h_logical = metrics.inner_height.max(1.0);
+    // 安全のため大きすぎるページは制限（最大 30000px logical）
+    let total_h_logical = metrics.scroll_height.min(30000.0).max(viewport_h_logical);
+    let total_h_px = ((total_h_logical * scale) as u32).max(1);
+    let total_w_px = view_size.width.max(1);
+
+    let mut stitched = image::RgbaImage::new(total_w_px, total_h_px);
+
+    let mut y_logical = 0.0_f64;
+    let mut iter = 0;
+    while y_logical < total_h_logical && iter < 200 {
+        let script = format!(
+            "window.scrollTo({{left:0,top:{},behavior:'auto'}});",
+            y_logical
+        );
+        view.eval(&script).map_err(|e| e.to_string())?;
+        // レイアウト・再描画を待つ
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+
+        let tile = capture_view_viewport(&window, &view)?;
+        let dest_y_px = (y_logical * scale) as i64;
+        image::imageops::replace(&mut stitched, &tile, 0, dest_y_px);
+
+        y_logical += viewport_h_logical;
+        iter += 1;
+    }
+
+    // スクロール位置と scroll-behavior を復元
+    let restore = r#"
+    (function () {
+      try {
+        window.scrollTo({
+          left: window.__yuzuOldScrollX || 0,
+          top: window.__yuzuOldScrollY || 0,
+          behavior: 'auto'
+        });
+        document.documentElement.style.scrollBehavior =
+          window.__yuzuOldScrollBehavior || '';
+      } catch (_) {}
+    })();
+    "#;
+    let _ = view.eval(restore);
+
+    rgba_to_png_data_url(&stitched)
+}
+
+/// 編集後の PNG (data URL) を保存先ディレクトリに書き出す。
+#[tauri::command]
+fn toolbox_save_data_url(dir: String, data_url: String) -> Result<String, String> {
+    use base64::Engine;
+    let dir = dir.trim().to_string();
+    if dir.is_empty() {
+        return Err("保存先が未設定です".to_string());
+    }
+    let prefix = "data:image/png;base64,";
+    let b64 = data_url
+        .strip_prefix(prefix)
+        .ok_or_else(|| "data URL 形式が不正です".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("base64 デコード失敗: {}", e))?;
     let dir_path = std::path::PathBuf::from(&dir);
     std::fs::create_dir_all(&dir_path)
         .map_err(|e| format!("保存先フォルダ作成失敗: {}", e))?;
@@ -2446,9 +3078,7 @@ fn toolbox_screenshot(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let path = dir_path.join(format!("screenshot_{}.png", ts));
-    cropped
-        .save(&path)
-        .map_err(|e| format!("保存失敗: {}", e))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("保存失敗: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -2533,11 +3163,15 @@ enum ArchiveFormat {
     TarBz2,
     TarXz,
     TarZst,
+    TarLz4,
     SevenZ,
     Gz,
     Bz2,
     Xz,
     Zst,
+    Lz4,
+    Cab,
+    Ar,
     Unknown,
 }
 
@@ -2555,9 +3189,33 @@ fn detect_format(path: &std::path::Path) -> ArchiveFormat {
         ArchiveFormat::TarXz
     } else if n.ends_with(".tar.zst") || n.ends_with(".tar.zstd") || n.ends_with(".tzst") {
         ArchiveFormat::TarZst
+    } else if n.ends_with(".tar.lz4") || n.ends_with(".tlz4") {
+        ArchiveFormat::TarLz4
     } else if n.ends_with(".tar") {
         ArchiveFormat::Tar
-    } else if n.ends_with(".zip") {
+    } else if n.ends_with(".zip")
+        // zip 互換コンテナ
+        || n.ends_with(".jar")
+        || n.ends_with(".war")
+        || n.ends_with(".ear")
+        || n.ends_with(".apk")
+        || n.ends_with(".aab")
+        || n.ends_with(".ipa")
+        || n.ends_with(".xpi")
+        || n.ends_with(".crx")
+        || n.ends_with(".whl")
+        || n.ends_with(".epub")
+        || n.ends_with(".cbz")
+        || n.ends_with(".odt")
+        || n.ends_with(".ods")
+        || n.ends_with(".odp")
+        || n.ends_with(".odg")
+        || n.ends_with(".docx")
+        || n.ends_with(".xlsx")
+        || n.ends_with(".pptx")
+        || n.ends_with(".vsix")
+        || n.ends_with(".nupkg")
+    {
         ArchiveFormat::Zip
     } else if n.ends_with(".7z") {
         ArchiveFormat::SevenZ
@@ -2569,6 +3227,12 @@ fn detect_format(path: &std::path::Path) -> ArchiveFormat {
         ArchiveFormat::Xz
     } else if n.ends_with(".zst") || n.ends_with(".zstd") {
         ArchiveFormat::Zst
+    } else if n.ends_with(".lz4") {
+        ArchiveFormat::Lz4
+    } else if n.ends_with(".cab") {
+        ArchiveFormat::Cab
+    } else if n.ends_with(".ar") || n.ends_with(".deb") || n.ends_with(".a") {
+        ArchiveFormat::Ar
     } else {
         ArchiveFormat::Unknown
     }
@@ -2673,18 +3337,18 @@ fn extract_single(
         .map(|n| {
             let lower = n.to_ascii_lowercase();
             for ext in [
-                ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.zstd",
+                ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.zstd", ".tar.lz4",
             ] {
                 if lower.ends_with(ext) {
                     return n[..n.len() - ext.len()].to_string() + ".tar";
                 }
             }
-            for ext in [".tgz", ".tbz2", ".tbz", ".txz", ".tzst"] {
+            for ext in [".tgz", ".tbz2", ".tbz", ".txz", ".tzst", ".tlz4"] {
                 if lower.ends_with(ext) {
                     return n[..n.len() - ext.len()].to_string() + ".tar";
                 }
             }
-            for ext in [".gz", ".bz2", ".xz", ".lzma", ".zst", ".zstd"] {
+            for ext in [".gz", ".bz2", ".xz", ".lzma", ".zst", ".zstd", ".lz4"] {
                 if lower.ends_with(ext) {
                     return n[..n.len() - ext.len()].to_string();
                 }
@@ -2719,9 +3383,73 @@ fn extract_single(
                 .map_err(|e| format!("zstd: {}", e))?;
             std::io::copy(&mut r, &mut out).map_err(|e| format!("zstd: {}", e))?
         }
+        ArchiveFormat::Lz4 => {
+            let mut r = lz4_flex::frame::FrameDecoder::new(buffered_file(src)?);
+            std::io::copy(&mut r, &mut out).map_err(|e| format!("lz4: {}", e))?
+        }
         _ => return Err("単体形式ではありません".to_string()),
     };
     Ok((1, n, outpath))
+}
+
+fn extract_cab(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u64), String> {
+    let f = std::fs::File::open(src).map_err(|e| format!("読込失敗: {}", e))?;
+    let mut cab = cab::Cabinet::new(f).map_err(|e| format!("cab: {}", e))?;
+    // 先にファイル名一覧を収集 (借用を避けるため)
+    let names: Vec<String> = cab
+        .folder_entries()
+        .flat_map(|fo| fo.file_entries().map(|fi| fi.name().to_string()))
+        .collect();
+    let mut count = 0usize;
+    let mut total = 0u64;
+    for name in names {
+        // パストラバーサル対策: バックスラッシュを '/' に正規化し相対化
+        let rel = name.replace('\\', "/");
+        let rel_path = std::path::PathBuf::from(&rel);
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue;
+        }
+        let outpath = dest.join(&rel_path);
+        if let Some(p) = outpath.parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("dir: {}", e))?;
+        }
+        let mut reader = cab.read_file(&name).map_err(|e| format!("cab read: {}", e))?;
+        let mut out = std::fs::File::create(&outpath)
+            .map_err(|e| format!("create {}: {}", outpath.display(), e))?;
+        let n = std::io::copy(&mut reader, &mut out).map_err(|e| format!("copy: {}", e))?;
+        total += n;
+        count += 1;
+    }
+    Ok((count, total))
+}
+
+fn extract_ar(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u64), String> {
+    let f = std::fs::File::open(src).map_err(|e| format!("読込失敗: {}", e))?;
+    let mut archive = ar::Archive::new(std::io::BufReader::new(f));
+    let mut count = 0usize;
+    let mut total = 0u64;
+    while let Some(entry) = archive.next_entry() {
+        let mut entry = entry.map_err(|e| format!("ar entry: {}", e))?;
+        let name = String::from_utf8_lossy(entry.header().identifier()).to_string();
+        // パストラバーサル対策
+        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
+            continue;
+        }
+        let outpath = dest.join(&name);
+        if let Some(p) = outpath.parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("dir: {}", e))?;
+        }
+        let mut out = std::fs::File::create(&outpath)
+            .map_err(|e| format!("create {}: {}", outpath.display(), e))?;
+        let n = std::io::copy(&mut entry, &mut out).map_err(|e| format!("copy: {}", e))?;
+        total += n;
+        count += 1;
+    }
+    Ok((count, total))
 }
 
 fn count_dir(p: &std::path::Path) -> (usize, u64) {
@@ -2789,6 +3517,11 @@ fn toolbox_extract_archive(
             let (c, b) = extract_tar_reader(r, &dest)?;
             (c, b, "tar.zst")
         }
+        ArchiveFormat::TarLz4 => {
+            let r = lz4_flex::frame::FrameDecoder::new(buffered_file(&src)?);
+            let (c, b) = extract_tar_reader(r, &dest)?;
+            (c, b, "tar.lz4")
+        }
         ArchiveFormat::SevenZ => {
             let before = count_dir(&dest);
             sevenz_rust::decompress_file(&src, &dest)
@@ -2800,20 +3533,28 @@ fn toolbox_extract_archive(
                 "7z",
             )
         }
-        ArchiveFormat::Gz | ArchiveFormat::Bz2 | ArchiveFormat::Xz | ArchiveFormat::Zst => {
+        ArchiveFormat::Cab => {
+            let (c, b) = extract_cab(&src, &dest)?;
+            (c, b, "cab")
+        }
+        ArchiveFormat::Ar => {
+            let (c, b) = extract_ar(&src, &dest)?;
+            (c, b, "ar")
+        }
+        ArchiveFormat::Gz | ArchiveFormat::Bz2 | ArchiveFormat::Xz | ArchiveFormat::Zst | ArchiveFormat::Lz4 => {
             let (c, b, _p) = extract_single(&src, &dest, fmt)?;
             let label = match fmt {
                 ArchiveFormat::Gz => "gz",
                 ArchiveFormat::Bz2 => "bz2",
                 ArchiveFormat::Xz => "xz",
-                _ => "zst",
+                ArchiveFormat::Zst => "zst",
+                _ => "lz4",
             };
             (c, b, label)
         }
         ArchiveFormat::Unknown => {
             return Err(
-                "対応していない拡張子です (zip/tar/tar.gz/tar.bz2/tar.xz/tar.zst/7z/gz/bz2/xz/zst)"
-                    .to_string(),
+                "対応していない拡張子です".to_string(),
             )
         }
     };
@@ -2832,8 +3573,11 @@ async fn toolbox_pick_archive(initial: Option<String>) -> Result<Option<String>,
         .add_filter(
             "アーカイブ",
             &[
-                "zip", "tar", "tgz", "tbz", "tbz2", "txz", "tzst", "7z", "gz", "bz2", "xz",
-                "lzma", "zst", "zstd",
+                "zip", "jar", "war", "ear", "apk", "aab", "ipa", "xpi", "crx", "whl", "epub",
+                "cbz", "odt", "ods", "odp", "odg", "docx", "xlsx", "pptx", "vsix", "nupkg",
+                "tar", "tgz", "tbz", "tbz2", "txz", "tzst", "tlz4", "7z",
+                "gz", "bz2", "xz", "lzma", "zst", "zstd", "lz4",
+                "cab", "ar", "deb",
             ],
         )
         .add_filter("すべて", &["*"]);
@@ -4309,9 +5053,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
-        .manage(BookmarksState::default())
         .manage(ToolboxState::default())
         .manage(TerminalState::default())
+        .manage(DownloadState::default())
+        .manage(ScreenshotState::default())
         .invoke_handler(tauri::generate_handler![
             tab_new,
             tab_close,
@@ -4323,6 +5068,8 @@ pub fn run() {
             tab_close_right,
             tab_reorder,
             tab_detach,
+            tab_drop_target_pid,
+            tab_attach,
             show_tab_context_menu,
             browser_navigate,
             browser_history,
@@ -4338,12 +5085,9 @@ pub fn run() {
             active_tab_zoom_delta,
             active_tab_zoom_set,
             tab_eval_script,
-            bookmark_list,
-            bookmark_add,
-            bookmark_remove,
-            bookmark_reorder,
-            bookmark_is_current,
+            capture_active_page,
             ui_set_expanded,
+            ui_set_popup_region,
             view_set_fullscreen,
             view_set_volume_boost,
             toolbox_settings_get,
@@ -4359,6 +5103,9 @@ pub fn run() {
             toolbox_save_page_html,
             view_set_reader_mode,
             toolbox_screenshot,
+            toolbox_screenshot_full_page,
+            toolbox_save_data_url,
+            report_page_metrics,
             toolbox_scrape_fetch,
             toolbox_extract_archive,
             toolbox_pick_archive,
@@ -4381,16 +5128,37 @@ pub fn run() {
             terminal_write,
             terminal_kill,
             terminal_list,
+            terminal_spawn_command,
+            ssh_list_keys,
+            ssh_read_pubkey,
+            ssh_generate_key,
+            ssh_import_key,
+            ssh_delete_key,
+            ssh_list_hosts,
+            ssh_save_host,
+            ssh_delete_host,
+            ssh_open_dir,
+            downloads_list,
+            downloads_clear,
+            downloads_remove,
+            downloads_open_file,
+            downloads_show_in_folder,
+            downloads_open_folder,
+            downloads_compute_hash,
+            downloads_save_url,
+            downloads_curl_for,
+            downloads_hex_preview,
+            downloads_verify_hash,
         ])
         .setup(|app| {
-            // ブックマークを app data dir からロード。
-            if let Ok(dir) = app.path().app_data_dir() {
-                let path = dir.join("bookmarks.json");
-                let store = BookmarkStore::load(path);
-                let state: State<'_, BookmarksState> = app.state();
-                if let Ok(mut s) = state.0.lock() {
-                    *s = store;
-                };
+            // ウィンドウ間タブ転送用の TCP IPC を起動する。
+            match ipc_spawn_listener(app.handle().clone()) {
+                Ok(port) => {
+                    if let Err(e) = ipc_write_self_port(port) {
+                        eprintln!("ipc registry write failed: {e}");
+                    }
+                }
+                Err(e) => eprintln!("ipc listener bind failed: {e}"),
             }
             // ツールボックス設定をロード。
             if let Ok(dir) = app.path().app_data_dir() {
@@ -4405,6 +5173,15 @@ pub fn run() {
                 if let Ok(mut s) = state.0.lock() {
                     s.settings = settings;
                     s.path = Some(path);
+                };
+            }
+            // ダウンロード履歴をロード。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let path = dir.join("downloads.json");
+                let store = DownloadStateInner::load(path);
+                let state: State<'_, DownloadState> = app.state();
+                if let Ok(mut s) = state.0.lock() {
+                    *s = store;
                 };
             }
 
@@ -4425,7 +5202,11 @@ pub fn run() {
             // HTML5 の dragover/drop イベントを JS 側に届くようにする (タブバーへの URL ドロップ用)。
             window.add_child(
                 WebviewBuilder::new("ui", WebviewUrl::default())
-                    .disable_drag_drop_handler(),
+                    .additional_browser_args(
+                        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
+                    )
+                    .disable_drag_drop_handler()
+                    .transparent(true),
                 LogicalPosition::new(0.0, 0.0),
                 LogicalSize::new(initial_w, CHROME_HEIGHT),
             )?;
@@ -4445,7 +5226,8 @@ pub fn run() {
                 create_view(&window, &app_handle, id, &initial_url).expect("create initial view");
                 s.order.push(id);
                 s.urls.insert(id, initial_url);
-                s.active = Some(id);
+                s.window_of.insert(id, "main".to_string());
+                s.set_active_in("main", Some(id));
                 relayout(&window, &s);
             }
             // 子プロセスに引き継がれないように消す。
@@ -4483,8 +5265,13 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                ipc_remove_self_port();
+            }
+        });
 }
 
 // ===== ペネトレーションテスト ツール =====
@@ -5107,4 +5894,1496 @@ fn terminal_list(state: State<'_, TerminalState>) -> Result<Vec<u64>, String> {
     let mut ids: Vec<u64> = map.keys().copied().collect();
     ids.sort();
     Ok(ids)
+}
+
+// ===== 任意コマンドを TerminalSession として起動 =====
+// SSH ツールなど、ターミナル機構を使って任意プロセスを子として動かしたい場合に使う。
+#[tauri::command]
+fn terminal_spawn_command(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<u64, String> {
+    let prog = program.trim();
+    if prog.is_empty() {
+        return Err("program が空です".to_string());
+    }
+    let mut cmd = Command::new(prog);
+    cmd.args(&args);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    if let Some(dir) = cwd.as_ref() {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            cmd.current_dir(trimmed);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("プロセス起動失敗 ({}): {}", prog, e))?;
+    let id = TERMINAL_NEXT_ID.fetch_add(1, Ordering::SeqCst);
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_h = app.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = [0u8; 4096];
+            use std::io::Read;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = app_h.emit(
+                            "terminal-output",
+                            TerminalChunk {
+                                session_id: id,
+                                stream: "stdout".into(),
+                                data: s,
+                            },
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let app_h = app.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut buf = [0u8; 4096];
+            use std::io::Read;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = app_h.emit(
+                            "terminal-output",
+                            TerminalChunk {
+                                session_id: id,
+                                stream: "stderr".into(),
+                                data: s,
+                            },
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    let stdin = child.stdin.take();
+    let session = TerminalSession { child, stdin };
+    state.0.lock().map_err(|e| e.to_string())?.insert(id, session);
+    {
+        let app_h = app.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let s: State<'_, TerminalState> = app_h.state();
+            let mut map = match s.0.lock() {
+                Ok(g) => g,
+                Err(_) => break,
+            };
+            let entry = match map.get_mut(&id) {
+                Some(e) => e,
+                None => break,
+            };
+            match entry.child.try_wait() {
+                Ok(Some(status)) => {
+                    let _ = app_h.emit(
+                        "terminal-exit",
+                        TerminalExit {
+                            session_id: id,
+                            code: status.code(),
+                        },
+                    );
+                    map.remove(&id);
+                    break;
+                }
+                Ok(None) => continue,
+                Err(_) => break,
+            }
+        });
+    }
+    Ok(id)
+}
+
+// ===== SSH 鍵 / 接続管理 =====
+
+fn home_dir() -> Result<std::path::PathBuf, String> {
+    #[cfg(windows)]
+    let h = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE 取得失敗".to_string())?;
+    #[cfg(not(windows))]
+    let h = std::env::var("HOME").map_err(|_| "HOME 取得失敗".to_string())?;
+    Ok(std::path::PathBuf::from(h))
+}
+
+fn ssh_dir() -> Result<std::path::PathBuf, String> {
+    let mut p = home_dir()?;
+    p.push(".ssh");
+    if !p.exists() {
+        std::fs::create_dir_all(&p).map_err(|e| format!(".ssh 作成失敗: {}", e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Ok(p)
+}
+
+#[cfg(unix)]
+fn set_private_perm(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+#[cfg(not(unix))]
+fn set_private_perm(_path: &std::path::Path) {}
+
+#[derive(Serialize)]
+struct SshKeyInfo {
+    name: String,
+    private_path: String,
+    public_path: String,
+    has_private: bool,
+    has_public: bool,
+    key_type: String,
+    comment: String,
+    fingerprint: String,
+}
+
+fn parse_pubkey(content: &str) -> (String, String) {
+    // "<type> <base64> <comment...>"
+    let trimmed = content.trim();
+    let mut parts = trimmed.splitn(3, char::is_whitespace);
+    let kt = parts.next().unwrap_or("").to_string();
+    let _ = parts.next();
+    let comment = parts.next().unwrap_or("").to_string();
+    (kt, comment)
+}
+
+fn fingerprint_pub(content: &str) -> String {
+    use base64::Engine;
+    let trimmed = content.trim();
+    let mut parts = trimmed.split_whitespace();
+    let _kt = parts.next().unwrap_or("");
+    let b64 = parts.next().unwrap_or("");
+    if b64.is_empty() {
+        return String::new();
+    }
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(_) => return String::new(),
+    };
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    let b = base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest);
+    format!("SHA256:{}", b)
+}
+
+#[tauri::command]
+fn ssh_list_keys() -> Result<Vec<SshKeyInfo>, String> {
+    let dir = ssh_dir()?;
+    let mut out: Vec<SshKeyInfo> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let fname = match p.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            // 公開鍵 (.pub) ベースで列挙
+            if fname.ends_with(".pub") {
+                let base = fname.trim_end_matches(".pub").to_string();
+                if seen.contains(&base) {
+                    continue;
+                }
+                seen.insert(base.clone());
+                let priv_path = dir.join(&base);
+                let pub_path = p.clone();
+                let pub_content =
+                    std::fs::read_to_string(&pub_path).unwrap_or_default();
+                let (kt, comment) = parse_pubkey(&pub_content);
+                let fp = fingerprint_pub(&pub_content);
+                out.push(SshKeyInfo {
+                    name: base,
+                    private_path: priv_path.to_string_lossy().to_string(),
+                    public_path: pub_path.to_string_lossy().to_string(),
+                    has_private: priv_path.is_file(),
+                    has_public: true,
+                    key_type: kt,
+                    comment,
+                    fingerprint: fp,
+                });
+            }
+        }
+    }
+    // 公開鍵が無い秘密鍵 (id_rsa など) も拾う
+    let candidates = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
+    for c in candidates {
+        let priv_path = dir.join(c);
+        if priv_path.is_file() && !seen.contains(c) {
+            seen.insert(c.to_string());
+            out.push(SshKeyInfo {
+                name: c.to_string(),
+                private_path: priv_path.to_string_lossy().to_string(),
+                public_path: dir.join(format!("{}.pub", c)).to_string_lossy().to_string(),
+                has_private: true,
+                has_public: false,
+                key_type: String::new(),
+                comment: String::new(),
+                fingerprint: String::new(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+#[tauri::command]
+fn ssh_read_pubkey(name: String) -> Result<String, String> {
+    let dir = ssh_dir()?;
+    let p = dir.join(format!("{}.pub", sanitize_key_name(&name)?));
+    std::fs::read_to_string(&p).map_err(|e| format!("読込失敗: {}", e))
+}
+
+fn sanitize_key_name(name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("鍵名が空です".to_string());
+    }
+    if n.contains('/') || n.contains('\\') || n.contains("..") {
+        return Err("鍵名に / \\ .. は使用できません".to_string());
+    }
+    if n.ends_with(".pub") {
+        return Err("名前に .pub を含めないでください".to_string());
+    }
+    Ok(n.to_string())
+}
+
+#[tauri::command]
+fn ssh_generate_key(
+    name: String,
+    key_type: String,
+    comment: Option<String>,
+    overwrite: Option<bool>,
+) -> Result<SshKeyInfo, String> {
+    let n = sanitize_key_name(&name)?;
+    let kt = match key_type.trim().to_lowercase().as_str() {
+        "" | "ed25519" => "ed25519".to_string(),
+        "rsa" => "rsa".to_string(),
+        "ecdsa" => "ecdsa".to_string(),
+        other => return Err(format!("未対応の鍵種別: {}", other)),
+    };
+    let dir = ssh_dir()?;
+    let priv_path = dir.join(&n);
+    let pub_path = dir.join(format!("{}.pub", n));
+    if priv_path.exists() || pub_path.exists() {
+        if overwrite.unwrap_or(false) {
+            let _ = std::fs::remove_file(&priv_path);
+            let _ = std::fs::remove_file(&pub_path);
+        } else {
+            return Err("同名の鍵が既に存在します".to_string());
+        }
+    }
+    let mut cmd = Command::new("ssh-keygen");
+    cmd.arg("-t").arg(&kt);
+    if kt == "rsa" {
+        cmd.arg("-b").arg("4096");
+    }
+    cmd.arg("-f").arg(&priv_path);
+    cmd.arg("-N").arg(""); // パスフレーズ無し
+    cmd.arg("-q");
+    if let Some(c) = comment.as_ref() {
+        let c = c.trim();
+        if !c.is_empty() {
+            cmd.arg("-C").arg(c);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("ssh-keygen 起動失敗 (OpenSSH クライアントが必要): {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ssh-keygen 失敗: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    set_private_perm(&priv_path);
+    // 結果取得
+    let pub_content = std::fs::read_to_string(&pub_path).unwrap_or_default();
+    let (kt2, comment2) = parse_pubkey(&pub_content);
+    let fp = fingerprint_pub(&pub_content);
+    Ok(SshKeyInfo {
+        name: n.clone(),
+        private_path: priv_path.to_string_lossy().to_string(),
+        public_path: pub_path.to_string_lossy().to_string(),
+        has_private: true,
+        has_public: true,
+        key_type: kt2,
+        comment: comment2,
+        fingerprint: fp,
+    })
+}
+
+#[tauri::command]
+fn ssh_import_key(
+    name: String,
+    private_pem: String,
+    public_pem: Option<String>,
+    overwrite: Option<bool>,
+) -> Result<SshKeyInfo, String> {
+    let n = sanitize_key_name(&name)?;
+    let dir = ssh_dir()?;
+    let priv_path = dir.join(&n);
+    let pub_path = dir.join(format!("{}.pub", n));
+    if (priv_path.exists() || pub_path.exists()) && !overwrite.unwrap_or(false) {
+        return Err("同名の鍵が既に存在します".to_string());
+    }
+    let priv_text = private_pem.trim().to_string();
+    if !priv_text.contains("BEGIN") || !priv_text.contains("PRIVATE KEY") {
+        return Err("秘密鍵の形式が不正です (PEM 形式を貼り付けてください)".to_string());
+    }
+    // 末尾改行を保証
+    let mut priv_out = priv_text;
+    if !priv_out.ends_with('\n') {
+        priv_out.push('\n');
+    }
+    std::fs::write(&priv_path, priv_out.as_bytes())
+        .map_err(|e| format!("秘密鍵書き込み失敗: {}", e))?;
+    set_private_perm(&priv_path);
+
+    let pub_text = public_pem.unwrap_or_default().trim().to_string();
+    if !pub_text.is_empty() {
+        let mut p = pub_text;
+        if !p.ends_with('\n') {
+            p.push('\n');
+        }
+        std::fs::write(&pub_path, p.as_bytes())
+            .map_err(|e| format!("公開鍵書き込み失敗: {}", e))?;
+    } else {
+        // ssh-keygen -y で公開鍵を再生成
+        let mut cmd = Command::new("ssh-keygen");
+        cmd.arg("-y").arg("-f").arg(&priv_path);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+                if !s.ends_with('\n') {
+                    s.push('\n');
+                }
+                let _ = std::fs::write(&pub_path, s.as_bytes());
+            }
+        }
+    }
+    let pub_content = std::fs::read_to_string(&pub_path).unwrap_or_default();
+    let (kt2, comment2) = parse_pubkey(&pub_content);
+    let fp = fingerprint_pub(&pub_content);
+    Ok(SshKeyInfo {
+        name: n,
+        private_path: priv_path.to_string_lossy().to_string(),
+        public_path: pub_path.to_string_lossy().to_string(),
+        has_private: true,
+        has_public: pub_path.is_file(),
+        key_type: kt2,
+        comment: comment2,
+        fingerprint: fp,
+    })
+}
+
+#[tauri::command]
+fn ssh_delete_key(name: String) -> Result<(), String> {
+    let n = sanitize_key_name(&name)?;
+    let dir = ssh_dir()?;
+    let _ = std::fs::remove_file(dir.join(&n));
+    let _ = std::fs::remove_file(dir.join(format!("{}.pub", n)));
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct SshHostEntry {
+    alias: String,
+    hostname: String,
+    user: String,
+    port: u16,
+    identity_file: String,
+    extra: String,
+}
+
+fn parse_ssh_config(text: &str) -> Vec<SshHostEntry> {
+    let mut out: Vec<SshHostEntry> = Vec::new();
+    let mut cur: Option<SshHostEntry> = None;
+    let mut extra_lines: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut it = line.splitn(2, char::is_whitespace);
+        let key = it.next().unwrap_or("").to_lowercase();
+        let val = it.next().unwrap_or("").trim().to_string();
+        if key == "host" {
+            if let Some(mut e) = cur.take() {
+                e.extra = extra_lines.join("\n");
+                if !e.alias.is_empty() {
+                    out.push(e);
+                }
+            }
+            extra_lines.clear();
+            // Host A B C → 最初のエイリアスのみ取り扱う (yuzu 管理対象は単一)
+            let alias = val.split_whitespace().next().unwrap_or("").to_string();
+            cur = Some(SshHostEntry {
+                alias,
+                ..Default::default()
+            });
+        } else if let Some(e) = cur.as_mut() {
+            match key.as_str() {
+                "hostname" => e.hostname = val,
+                "user" => e.user = val,
+                "port" => e.port = val.parse().unwrap_or(0),
+                "identityfile" => e.identity_file = val,
+                _ => extra_lines.push(format!("{} {}", key, val)),
+            }
+        }
+    }
+    if let Some(mut e) = cur.take() {
+        e.extra = extra_lines.join("\n");
+        if !e.alias.is_empty() {
+            out.push(e);
+        }
+    }
+    out
+}
+
+fn render_ssh_config(entries: &[SshHostEntry]) -> String {
+    let mut s = String::new();
+    s.push_str("# Managed by yuzu-browser\n");
+    for e in entries {
+        s.push_str(&format!("Host {}\n", e.alias));
+        if !e.hostname.is_empty() {
+            s.push_str(&format!("    HostName {}\n", e.hostname));
+        }
+        if !e.user.is_empty() {
+            s.push_str(&format!("    User {}\n", e.user));
+        }
+        if e.port != 0 && e.port != 22 {
+            s.push_str(&format!("    Port {}\n", e.port));
+        }
+        if !e.identity_file.is_empty() {
+            s.push_str(&format!("    IdentityFile {}\n", e.identity_file));
+        }
+        for ex in e.extra.lines() {
+            let l = ex.trim();
+            if !l.is_empty() {
+                s.push_str("    ");
+                s.push_str(l);
+                s.push('\n');
+            }
+        }
+        s.push('\n');
+    }
+    s
+}
+
+#[tauri::command]
+fn ssh_list_hosts() -> Result<Vec<SshHostEntry>, String> {
+    let dir = ssh_dir()?;
+    let p = dir.join("config");
+    if !p.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&p).map_err(|e| format!("読込失敗: {}", e))?;
+    Ok(parse_ssh_config(&text))
+}
+
+#[tauri::command]
+fn ssh_save_host(entry: SshHostEntry) -> Result<(), String> {
+    let alias = entry.alias.trim().to_string();
+    if alias.is_empty() {
+        return Err("Host エイリアスを入力してください".to_string());
+    }
+    if alias.contains(char::is_whitespace) {
+        return Err("Host エイリアスに空白は使えません".to_string());
+    }
+    let dir = ssh_dir()?;
+    let p = dir.join("config");
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut entries = parse_ssh_config(&text);
+    let mut new_entry = entry;
+    new_entry.alias = alias.clone();
+    if let Some(idx) = entries.iter().position(|e| e.alias == alias) {
+        entries[idx] = new_entry;
+    } else {
+        entries.push(new_entry);
+    }
+    let rendered = render_ssh_config(&entries);
+    std::fs::write(&p, rendered.as_bytes()).map_err(|e| format!("書き込み失敗: {}", e))?;
+    set_private_perm(&p);
+    Ok(())
+}
+
+#[tauri::command]
+fn ssh_delete_host(alias: String) -> Result<(), String> {
+    let alias = alias.trim().to_string();
+    if alias.is_empty() {
+        return Err("alias 空".to_string());
+    }
+    let dir = ssh_dir()?;
+    let p = dir.join("config");
+    if !p.is_file() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut entries = parse_ssh_config(&text);
+    entries.retain(|e| e.alias != alias);
+    let rendered = render_ssh_config(&entries);
+    std::fs::write(&p, rendered.as_bytes()).map_err(|e| format!("書き込み失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ssh_open_dir() -> Result<String, String> {
+    let dir = ssh_dir()?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+// ===== ダウンロードマネージャー =====
+
+use sha2::Digest as _Sha2Digest;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct DownloadItem {
+    id: u64,
+    url: String,
+    filename: String,
+    path: String,
+    bytes: u64,
+    started_at: u64,
+    finished_at: Option<u64>,
+    status: String, // "in-progress" | "completed" | "failed" | "cancelled"
+    mime: Option<String>,
+    sha256: Option<String>,
+    md5: Option<String>,
+    referrer: Option<String>,
+    tab_id: Option<u64>,
+    user_agent: Option<String>,
+}
+
+#[derive(Default)]
+struct DownloadStateInner {
+    items: Vec<DownloadItem>,
+    next_id: u64,
+    path: Option<PathBuf>,
+}
+
+impl DownloadStateInner {
+    fn save(&self) {
+        if let Some(p) = &self.path {
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // 直近 500 件まで残す
+            let trimmed: Vec<&DownloadItem> = self.items.iter().rev().take(500).collect();
+            let mut out: Vec<DownloadItem> = trimmed.into_iter().rev().cloned().collect();
+            // in-progress は永続化時に failed 扱い
+            for it in out.iter_mut() {
+                if it.status == "in-progress" {
+                    it.status = "failed".into();
+                }
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&out) {
+                let _ = std::fs::write(p, json);
+            }
+        }
+    }
+    fn load(path: PathBuf) -> Self {
+        let mut s = Self::default();
+        s.path = Some(path.clone());
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(items) = serde_json::from_str::<Vec<DownloadItem>>(&text) {
+                s.next_id = items.iter().map(|i| i.id).max().unwrap_or(0);
+                s.items = items;
+            }
+        }
+        s
+    }
+}
+
+#[derive(Default)]
+struct DownloadState(Mutex<DownloadStateInner>);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn unique_path(dir: &PathBuf, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    for n in 1..10000 {
+        let p = dir.join(format!("{} ({}){}", stem, n, ext));
+        if !p.exists() {
+            return p;
+        }
+    }
+    candidate
+}
+
+fn guess_filename_from_url(url: &str) -> String {
+    if let Ok(u) = url::Url::parse(url) {
+        if let Some(seg) = u.path_segments().and_then(|mut s| s.next_back()) {
+            let decoded = percent_decode(seg);
+            if !decoded.is_empty() {
+                return sanitize_filename(&decoded);
+            }
+        }
+    }
+    "download".to_string()
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((a * 16 + b) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn sniff_mime(path: &PathBuf) -> Option<String> {
+    let mut buf = [0u8; 16];
+    let n = std::fs::File::open(path)
+        .ok()
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut buf).ok())?;
+    let b = &buf[..n];
+    let m = if b.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if b.starts_with(b"RIFF") && b.len() > 11 && &b[8..12] == b"WEBP" {
+        "image/webp"
+    } else if b.starts_with(&[0x25, 0x50, 0x44, 0x46]) {
+        "application/pdf"
+    } else if b.starts_with(&[0x50, 0x4B, 0x03, 0x04]) {
+        "application/zip"
+    } else if b.starts_with(&[0x1F, 0x8B]) {
+        "application/gzip"
+    } else if b.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        "application/x-7z-compressed"
+    } else if b.starts_with(&[0x52, 0x61, 0x72, 0x21]) {
+        "application/vnd.rar"
+    } else if b.starts_with(b"%!PS") {
+        "application/postscript"
+    } else if b.starts_with(b"\x7FELF") {
+        "application/x-elf"
+    } else if b.starts_with(b"MZ") {
+        "application/x-msdownload"
+    } else if b.starts_with(b"ID3") || (b.len() > 1 && b[0] == 0xFF && (b[1] & 0xE0) == 0xE0) {
+        "audio/mpeg"
+    } else if b.starts_with(b"OggS") {
+        "audio/ogg"
+    } else if b.starts_with(b"fLaC") {
+        "audio/flac"
+    } else if b.len() > 11 && &b[4..8] == b"ftyp" {
+        "video/mp4"
+    } else if b.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        "video/x-matroska"
+    } else {
+        return None;
+    };
+    Some(m.to_string())
+}
+
+fn handle_download_event(app: &AppHandle, tab_id: u64, event: DownloadEvent<'_>) -> bool {
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            // 設定の download_dir を使う
+            let url_str = url.to_string();
+            let mut name = guess_filename_from_url(&url_str);
+            // 拡張子が無く destination に拡張子があれば借用
+            if !name.contains('.') {
+                if let Some(ext) = destination.extension().and_then(|e| e.to_str()) {
+                    name.push('.');
+                    name.push_str(ext);
+                }
+            }
+            let dir = {
+                let st: State<'_, ToolboxState> = app.state();
+                let g = st.0.lock();
+                g.ok()
+                    .and_then(|s| {
+                        if s.settings.download_dir.is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(&s.settings.download_dir))
+                        }
+                    })
+                    .or_else(default_download_dir)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            };
+            let _ = std::fs::create_dir_all(&dir);
+            let final_path = unique_path(&dir, &name);
+            *destination = final_path.clone();
+
+            let dl_state: State<'_, DownloadState> = app.state();
+            let item = if let Ok(mut s) = dl_state.0.lock() {
+                s.next_id += 1;
+                let it = DownloadItem {
+                    id: s.next_id,
+                    url: url_str.clone(),
+                    filename: final_path
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| name.clone()),
+                    path: final_path.to_string_lossy().to_string(),
+                    bytes: 0,
+                    started_at: now_ms(),
+                    finished_at: None,
+                    status: "in-progress".into(),
+                    mime: None,
+                    sha256: None,
+                    md5: None,
+                    referrer: None,
+                    tab_id: Some(tab_id),
+                    user_agent: None,
+                };
+                s.items.push(it.clone());
+                Some(it)
+            } else {
+                None
+            };
+            if let Some(it) = item {
+                let _ = app.emit("download-started", &it);
+            }
+            true
+        }
+        DownloadEvent::Finished { url, path, success } => {
+            let url_str = url.to_string();
+            let dl_state: State<'_, DownloadState> = app.state();
+            let mut updated: Option<DownloadItem> = None;
+            if let Ok(mut s) = dl_state.0.lock() {
+                if let Some(it) = s.items.iter_mut().rev().find(|i| {
+                    i.url == url_str && i.status == "in-progress"
+                }) {
+                    it.status = if success { "completed".into() } else { "failed".into() };
+                    it.finished_at = Some(now_ms());
+                    if let Some(p) = &path {
+                        it.path = p.to_string_lossy().to_string();
+                        if let Ok(meta) = std::fs::metadata(p) {
+                            it.bytes = meta.len();
+                        }
+                        it.mime = sniff_mime(p);
+                    }
+                    updated = Some(it.clone());
+                }
+                s.save();
+            }
+            if let Some(it) = updated {
+                let _ = app.emit("download-finished", &it);
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+#[tauri::command]
+fn downloads_list(state: State<'_, DownloadState>) -> Result<Vec<DownloadItem>, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.items.clone())
+}
+
+#[tauri::command]
+fn downloads_clear(state: State<'_, DownloadState>) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.items.retain(|i| i.status == "in-progress");
+    s.save();
+    Ok(())
+}
+
+#[tauri::command]
+fn downloads_remove(id: u64, state: State<'_, DownloadState>) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.items.retain(|i| i.id != id);
+    s.save();
+    Ok(())
+}
+
+#[tauri::command]
+fn downloads_open_file(id: u64, state: State<'_, DownloadState>) -> Result<(), String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let it = s.items.iter().find(|i| i.id == id).ok_or("not found")?;
+    open_with_default(&PathBuf::from(&it.path))
+}
+
+#[tauri::command]
+fn downloads_show_in_folder(id: u64, state: State<'_, DownloadState>) -> Result<(), String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let it = s.items.iter().find(|i| i.id == id).ok_or("not found")?;
+    show_in_folder(&PathBuf::from(&it.path))
+}
+
+#[tauri::command]
+fn downloads_open_folder(state: State<'_, DownloadState>, app: AppHandle) -> Result<(), String> {
+    let st: State<'_, ToolboxState> = app.state();
+    let dir = if let Ok(g) = st.0.lock() {
+        if !g.settings.download_dir.is_empty() {
+            PathBuf::from(&g.settings.download_dir)
+        } else {
+            default_download_dir().unwrap_or_else(|| PathBuf::from("."))
+        }
+    } else {
+        default_download_dir().unwrap_or_else(|| PathBuf::from("."))
+    };
+    let _ = state;
+    open_with_default(&dir)
+}
+
+fn open_with_default(p: &PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+}
+
+fn show_in_folder(p: &PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(parent) = p.parent() {
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+}
+
+#[derive(Serialize)]
+struct HashResult {
+    sha256: String,
+    md5: String,
+    bytes: u64,
+}
+
+#[tauri::command]
+fn downloads_compute_hash(
+    id: u64,
+    state: State<'_, DownloadState>,
+) -> Result<HashResult, String> {
+    let path = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        let it = s.items.iter().find(|i| i.id == id).ok_or("not found")?;
+        it.path.clone()
+    };
+    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut sha = sha2::Sha256::new();
+    let mut md5 = md5::Md5::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        sha.update(&buf[..n]);
+        md5.update(&buf[..n]);
+        total += n as u64;
+    }
+    let sha_hex = format!("{:x}", sha.finalize());
+    let md5_hex = format!("{:x}", md5.finalize());
+    {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+            it.sha256 = Some(sha_hex.clone());
+            it.md5 = Some(md5_hex.clone());
+        }
+        s.save();
+    }
+    Ok(HashResult {
+        sha256: sha_hex,
+        md5: md5_hex,
+        bytes: total,
+    })
+}
+
+#[tauri::command]
+fn downloads_verify_hash(id: u64, expected: String, state: State<'_, DownloadState>) -> Result<bool, String> {
+    let h = downloads_compute_hash(id, state)?;
+    let exp = expected.trim().to_lowercase();
+    Ok(exp == h.sha256 || exp == h.md5)
+}
+
+/// 任意の URL を手動でダウンロード（Engineer モード: ヘッダ指定可）
+#[derive(Deserialize, Clone)]
+struct SaveUrlOpts {
+    url: String,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    headers: Vec<(String, String)>,
+    #[serde(default)]
+    user_agent: Option<String>,
+    #[serde(default)]
+    referrer: Option<String>,
+    #[serde(default = "default_true")]
+    parallel: bool,
+    #[serde(default = "default_connections")]
+    connections: usize,
+}
+fn default_true() -> bool { true }
+fn default_connections() -> usize { 8 }
+
+#[tauri::command]
+fn downloads_save_url(
+    opts: SaveUrlOpts,
+    app: AppHandle,
+    state: State<'_, DownloadState>,
+    tb: State<'_, ToolboxState>,
+) -> Result<u64, String> {
+    let dir = {
+        let g = tb.0.lock().map_err(|e| e.to_string())?;
+        if g.settings.download_dir.is_empty() {
+            default_download_dir().unwrap_or_else(|| PathBuf::from("."))
+        } else {
+            PathBuf::from(&g.settings.download_dir)
+        }
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let name = opts
+        .filename
+        .clone()
+        .filter(|s| !s.is_empty())
+        .map(|s| sanitize_filename(&s))
+        .unwrap_or_else(|| guess_filename_from_url(&opts.url));
+    let final_path = unique_path(&dir, &name);
+
+    let id = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.next_id += 1;
+        let it = DownloadItem {
+            id: s.next_id,
+            url: opts.url.clone(),
+            filename: final_path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or(name.clone()),
+            path: final_path.to_string_lossy().to_string(),
+            bytes: 0,
+            started_at: now_ms(),
+            finished_at: None,
+            status: "in-progress".into(),
+            mime: None,
+            sha256: None,
+            md5: None,
+            referrer: opts.referrer.clone(),
+            tab_id: None,
+            user_agent: opts.user_agent.clone(),
+        };
+        s.items.push(it.clone());
+        let _ = app.emit("download-started", &it);
+        it.id
+    };
+
+    let url = opts.url.clone();
+    let final_path_thread = final_path.clone();
+    let app_thread = app.clone();
+    std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(60))
+            .build();
+
+        // 並列ダウンロードを試行
+        if opts.parallel && opts.connections >= 2 {
+            if let Some((total_size, mime)) =
+                probe_range_support(&agent, &url, &opts)
+            {
+                if total_size > 1_000_000 {
+                    if parallel_download(
+                        &agent,
+                        &url,
+                        &opts,
+                        &final_path_thread,
+                        total_size,
+                        mime.clone(),
+                        &app_thread,
+                        id,
+                    )
+                    .is_ok()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // フォールバック: 単一接続
+        let mut req = agent.get(&url);
+        if let Some(ua) = &opts.user_agent {
+            req = req.set("User-Agent", ua);
+        } else {
+            req = req.set("User-Agent", "yuzu-browser/1.0");
+        }
+        if let Some(r) = &opts.referrer {
+            req = req.set("Referer", r);
+        }
+        for (k, v) in &opts.headers {
+            req = req.set(k, v);
+        }
+        let res = req.call();
+        let dl_state: State<'_, DownloadState> = app_thread.state();
+        match res {
+            Ok(resp) => {
+                let total_hint: Option<u64> = resp
+                    .header("Content-Length")
+                    .and_then(|s| s.parse().ok());
+                let mime = resp.header("Content-Type").map(|s| s.to_string());
+                let mut reader = resp.into_reader();
+                let file = std::fs::File::create(&final_path_thread);
+                if let Err(e) = file {
+                    if let Ok(mut s) = dl_state.0.lock() {
+                        if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                            it.status = "failed".into();
+                            it.finished_at = Some(now_ms());
+                            let _ = app_thread.emit("download-finished", &it.clone());
+                        }
+                        s.save();
+                    }
+                    let _ = e;
+                    return;
+                }
+                let mut file = file.unwrap();
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut total: u64 = 0;
+                let mut last_emit = std::time::Instant::now();
+                loop {
+                    let n = match std::io::Read::read(&mut reader, &mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => {
+                            if let Ok(mut s) = dl_state.0.lock() {
+                                if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                                    it.status = "failed".into();
+                                    it.finished_at = Some(now_ms());
+                                    let _ = app_thread.emit("download-finished", &it.clone());
+                                }
+                                s.save();
+                            }
+                            return;
+                        }
+                    };
+                    if std::io::Write::write_all(&mut file, &buf[..n]).is_err() {
+                        break;
+                    }
+                    total += n as u64;
+                    if last_emit.elapsed().as_millis() > 250 {
+                        last_emit = std::time::Instant::now();
+                        let _ = app_thread.emit(
+                            "download-progress",
+                            serde_json::json!({
+                                "id": id,
+                                "bytes": total,
+                                "total": total_hint,
+                            }),
+                        );
+                    }
+                }
+                if let Ok(mut s) = dl_state.0.lock() {
+                    if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                        it.status = "completed".into();
+                        it.finished_at = Some(now_ms());
+                        it.bytes = total;
+                        it.mime = mime.or_else(|| sniff_mime(&final_path_thread));
+                        let _ = app_thread.emit("download-finished", &it.clone());
+                    }
+                    s.save();
+                }
+            }
+            Err(e) => {
+                if let Ok(mut s) = dl_state.0.lock() {
+                    if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                        it.status = "failed".into();
+                        it.finished_at = Some(now_ms());
+                        let _ = app_thread.emit("download-finished", &it.clone());
+                    }
+                    s.save();
+                }
+                let _ = e;
+            }
+        }
+    });
+    Ok(id)
+}
+
+#[tauri::command]
+fn downloads_curl_for(id: u64, state: State<'_, DownloadState>) -> Result<String, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let it = s.items.iter().find(|i| i.id == id).ok_or("not found")?;
+    let mut out = String::from("curl -L");
+    if let Some(ua) = &it.user_agent {
+        out.push_str(&format!(" -A {}", shell_quote(ua)));
+    }
+    if let Some(r) = &it.referrer {
+        out.push_str(&format!(" -e {}", shell_quote(r)));
+    }
+    out.push_str(&format!(" -o {}", shell_quote(&it.filename)));
+    out.push(' ');
+    out.push_str(&shell_quote(&it.url));
+    Ok(out)
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".into();
+    }
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:".contains(c)) {
+        return s.into();
+    }
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{}'", escaped)
+}
+
+#[derive(Serialize)]
+struct HexPreview {
+    hex: String,
+    ascii: String,
+    truncated: bool,
+    bytes: u64,
+}
+
+#[tauri::command]
+fn downloads_hex_preview(id: u64, state: State<'_, DownloadState>) -> Result<HexPreview, String> {
+    let path = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        let it = s.items.iter().find(|i| i.id == id).ok_or("not found")?;
+        it.path.clone()
+    };
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let total = meta.len();
+    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 512];
+    let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| e.to_string())?;
+    let bytes = &buf[..n];
+    let mut hex_lines = String::new();
+    let mut ascii_lines = String::new();
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        hex_lines.push_str(&format!("{:08x}  ", i * 16));
+        for (j, b) in chunk.iter().enumerate() {
+            hex_lines.push_str(&format!("{:02x} ", b));
+            if j == 7 {
+                hex_lines.push(' ');
+            }
+        }
+        for _ in chunk.len()..16 {
+            hex_lines.push_str("   ");
+        }
+        hex_lines.push_str("  |");
+        for b in chunk {
+            let c = *b as char;
+            hex_lines.push(if c.is_ascii_graphic() || c == ' ' { c } else { '.' });
+        }
+        hex_lines.push_str("|\n");
+        for b in chunk {
+            let c = *b as char;
+            ascii_lines.push(if c.is_ascii_graphic() || c == ' ' { c } else { '.' });
+        }
+    }
+    Ok(HexPreview {
+        hex: hex_lines,
+        ascii: ascii_lines,
+        truncated: total > n as u64,
+        bytes: total,
+    })
+}
+
+
+// ===== 並列ダウンロード =====
+
+fn apply_headers(mut req: ureq::Request, opts: &SaveUrlOpts) -> ureq::Request {
+    if let Some(ua) = &opts.user_agent {
+        req = req.set("User-Agent", ua);
+    } else {
+        req = req.set("User-Agent", "yuzu-browser/1.0");
+    }
+    if let Some(r) = &opts.referrer {
+        req = req.set("Referer", r);
+    }
+    for (k, v) in &opts.headers {
+        req = req.set(k, v);
+    }
+    req
+}
+
+/// HEAD リクエストで Range サポートと Content-Length を確認
+fn probe_range_support(
+    agent: &ureq::Agent,
+    url: &str,
+    opts: &SaveUrlOpts,
+) -> Option<(u64, Option<String>)> {
+    // まず HEAD を試す
+    let req = apply_headers(agent.head(url), opts);
+    if let Ok(resp) = req.call() {
+        let accept = resp
+            .header("Accept-Ranges")
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        let len: Option<u64> = resp.header("Content-Length").and_then(|s| s.parse().ok());
+        let mime = resp.header("Content-Type").map(|s| s.to_string());
+        if accept.contains("bytes") {
+            if let Some(l) = len {
+                return Some((l, mime));
+            }
+        }
+        // HEAD で範囲不明な場合は Range リクエストを直接試す
+    }
+    // Range: bytes=0-0 で確認
+    let req = apply_headers(agent.get(url), opts).set("Range", "bytes=0-0");
+    if let Ok(resp) = req.call() {
+        if resp.status() == 206 {
+            // Content-Range: bytes 0-0/<total>
+            if let Some(cr) = resp.header("Content-Range") {
+                if let Some(slash) = cr.rfind('/') {
+                    if let Ok(total) = cr[slash + 1..].trim().parse::<u64>() {
+                        let mime = resp.header("Content-Type").map(|s| s.to_string());
+                        return Some((total, mime));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// HTTP Range で N 分割して並列ダウンロード
+fn parallel_download(
+    agent: &ureq::Agent,
+    url: &str,
+    opts: &SaveUrlOpts,
+    final_path: &PathBuf,
+    total_size: u64,
+    mime: Option<String>,
+    app: &AppHandle,
+    id: u64,
+) -> Result<(), ()> {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let n = opts.connections.max(2).min(32) as u64;
+    let chunk_size = total_size / n;
+    if chunk_size == 0 {
+        return Err(());
+    }
+    // ファイルを事前作成し total_size に拡張
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(final_path)
+    {
+        Ok(f) => f,
+        Err(_) => return Err(()),
+    };
+    if file.set_len(total_size).is_err() {
+        return Err(());
+    }
+    drop(file);
+
+    let progress = Arc::new(AtomicU64::new(0));
+    let aborted = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+
+    for i in 0..n {
+        let start = i * chunk_size;
+        let end = if i == n - 1 {
+            total_size - 1
+        } else {
+            (start + chunk_size) - 1
+        };
+        let url_c = url.to_string();
+        let opts_c = opts.clone();
+        let path_c = final_path.clone();
+        let agent_c = agent.clone();
+        let progress_c = progress.clone();
+        let aborted_c = aborted.clone();
+
+        let h = std::thread::spawn(move || -> Result<(), ()> {
+            let req = apply_headers(agent_c.get(&url_c), &opts_c)
+                .set("Range", &format!("bytes={}-{}", start, end));
+            let resp = match req.call() {
+                Ok(r) => r,
+                Err(_) => {
+                    aborted_c.store(true, Ordering::SeqCst);
+                    return Err(());
+                }
+            };
+            if resp.status() != 206 && resp.status() != 200 {
+                aborted_c.store(true, Ordering::SeqCst);
+                return Err(());
+            }
+            let mut reader = resp.into_reader();
+            let mut file = match std::fs::OpenOptions::new().write(true).open(&path_c) {
+                Ok(f) => f,
+                Err(_) => {
+                    aborted_c.store(true, Ordering::SeqCst);
+                    return Err(());
+                }
+            };
+            if file.seek(SeekFrom::Start(start)).is_err() {
+                aborted_c.store(true, Ordering::SeqCst);
+                return Err(());
+            }
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                if aborted_c.load(Ordering::SeqCst) {
+                    return Err(());
+                }
+                let n = match std::io::Read::read(&mut reader, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => {
+                        aborted_c.store(true, Ordering::SeqCst);
+                        return Err(());
+                    }
+                };
+                if file.write_all(&buf[..n]).is_err() {
+                    aborted_c.store(true, Ordering::SeqCst);
+                    return Err(());
+                }
+                progress_c.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        handles.push(h);
+    }
+
+    // 進捗エミットスレッド
+    let progress_emit = progress.clone();
+    let aborted_emit = aborted.clone();
+    let app_emit = app.clone();
+    let emitter = std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let cur = progress_emit.load(Ordering::Relaxed);
+            let _ = app_emit.emit(
+                "download-progress",
+                serde_json::json!({"id": id, "bytes": cur, "total": total_size}),
+            );
+            if aborted_emit.load(Ordering::SeqCst) || cur >= total_size {
+                break;
+            }
+        }
+    });
+
+    let mut all_ok = true;
+    for h in handles {
+        if h.join().map(|r| r.is_err()).unwrap_or(true) {
+            all_ok = false;
+        }
+    }
+    aborted.store(true, Ordering::SeqCst);
+    let _ = emitter.join();
+
+    let dl_state: State<'_, DownloadState> = app.state();
+    if !all_ok {
+        let _ = std::fs::remove_file(final_path);
+        if let Ok(mut s) = dl_state.0.lock() {
+            if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                it.status = "failed".into();
+                it.finished_at = Some(now_ms());
+                let _ = app.emit("download-finished", &it.clone());
+            }
+            s.save();
+        }
+        return Err(());
+    }
+    if let Ok(mut s) = dl_state.0.lock() {
+        if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+            it.status = "completed".into();
+            it.finished_at = Some(now_ms());
+            it.bytes = total_size;
+            it.mime = mime.or_else(|| sniff_mime(final_path));
+            let _ = app.emit("download-finished", &it.clone());
+        }
+        s.save();
+    }
+    Ok(())
 }

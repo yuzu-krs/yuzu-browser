@@ -106,6 +106,34 @@ body {
   color: #6aa9ff;
 }
 
+/* ===== クロームアクションバー (旧ブックマークバーの位置) ===== */
+.chrome-actions-bar {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 6px;
+  background: #1f1f1f;
+  border-bottom: 1px solid #2c2c2c;
+  user-select: none;
+}
+.chrome-actions-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: #cfcfcf;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.chrome-actions-btn:hover {
+  background: #2a2a2a;
+  color: #fff;
+}
+
 /* ===== ブックマークボタン ===== */
 .bookmark-toggle-btn,
 .bookmarks-open-btn {
@@ -132,16 +160,19 @@ body {
   align-items: center;
   gap: 2px;
   flex: 1 1 auto;
-  overflow-x: auto;
+  /* overflow を hidden にすることで Windows WebView2 の middle-click autoscroll の
+     起動条件 (scrollable element) を無くす。autoscroll が動くとメインスレッドの
+     メッセージループが停止し Tauri の run_on_main_thread が実行されずフリーズする。 */
+  overflow-x: hidden;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
 .bookmarks-bar-items::-webkit-scrollbar {
-  height: 6px;
+  display: none;
+  height: 0;
 }
 .bookmarks-bar-items::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
-  border-radius: 3px;
+  background: transparent;
 }
 .bookmarks-bar-item {
   display: inline-flex;
@@ -321,6 +352,10 @@ body {
   display: flex;
   flex-direction: column;
 }
+/* hidden 属性を確実に効かせる (display: flex に上書きされないように) */
+.toolbox-panel[hidden] {
+  display: none !important;
+}
 .toolbox-body {
   padding: 0;
   display: flex;
@@ -362,11 +397,19 @@ body {
   border-left-color: #2f6fdb;
   color: #fff;
 }
+.toolbox-nav-item.dragging {
+  opacity: 0.4;
+}
+.toolbox-nav-item.drag-over {
+  outline: 2px dashed #6aa9ff;
+  outline-offset: -2px;
+}
 .toolbox-nav-icon {
   font-size: 16px;
-  width: 18px;
+  min-width: 18px;
   text-align: center;
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 .toolbox-content {
   flex: 1 1 auto;
@@ -670,8 +713,10 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
-  min-width: 120px;
-  max-width: 220px;
+  /* タブ幅は常に一定。新規タブ追加時に他タブが縮んで UI がチラつくのを防ぐ。
+     超えた分は .tabs の overflow-x: auto でスクロールさせる。 */
+  flex: 0 0 200px;
+  width: 200px;
   height: 100%;
   border-right: 1px solid #2c2c2c;
   background: #232323;
@@ -679,9 +724,9 @@ body {
   font-size: 12px;
   cursor: pointer;
   user-select: none;
-  flex: 0 1 200px;
   white-space: nowrap;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .tab:hover {
@@ -810,25 +855,25 @@ body {
 
 /* ===== charcount / todo / clock cards ===== */
 .cc-card {
-  background: #f6f8fa;
+  background: #1f1f1f;
   padding: 10px;
   border-radius: 6px;
-  border: 1px solid #ddd;
+  border: 1px solid #333;
   text-align: center;
 }
 .cc-card-label {
   font-size: 11px;
-  color: #666;
+  color: #aaa;
 }
 .cc-card-value {
   font-size: 22px;
   font-weight: bold;
-  color: #1f883d;
+  color: #4ade80;
 }
 .cc-bar {
   width: 100%;
   height: 8px;
-  background: #e1e4e8;
+  background: #2a2a2a;
   border-radius: 4px;
   overflow: hidden;
   margin-top: 4px;
@@ -843,14 +888,15 @@ body {
   gap: 8px;
   align-items: center;
   padding: 6px 8px;
-  border: 1px solid #ddd;
+  border: 1px solid #2c2c2c;
   border-radius: 6px;
   margin-bottom: 4px;
-  background: #fff;
+  background: #1e1e1e;
+  color: #e0e0e0;
 }
 .todo-item.done {
   opacity: 0.55;
-  background: #f0f0f0;
+  background: #161616;
 }
 .todo-item.done .todo-text {
   text-decoration: line-through;
@@ -858,37 +904,50 @@ body {
 .todo-text {
   flex: 1;
   cursor: pointer;
+  color: #e0e0e0;
 }
-.todo-pri-low { color: #6c757d; }
-.todo-pri-medium { color: #0969da; }
-.todo-pri-high { color: #cf222e; font-weight: bold; }
+.todo-pri-low {
+  color: #9aa4ad;
+}
+.todo-pri-medium {
+  color: #6cb6ff;
+}
+.todo-pri-high {
+  color: #ff6b6b;
+  font-weight: bold;
+}
 .todo-meta {
   font-size: 10px;
-  color: #888;
+  color: #9e9e9e;
   display: flex;
   gap: 6px;
 }
 .todo-tag {
-  background: #ddf4ff;
-  color: #0969da;
+  background: #143a52;
+  color: #6cb6ff;
   padding: 1px 6px;
   border-radius: 9999px;
   font-size: 10px;
 }
-.todo-overdue { color: #cf222e !important; font-weight: bold; }
+.todo-overdue {
+  color: #ff6b6b !important;
+  font-weight: bold;
+}
 .cl-tab.active {
   background: #2f6fdb !important;
   color: #fff !important;
 }
-.cl-wc-item, .cl-al-item {
+.cl-wc-item,
+.cl-al-item {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border: 1px solid #ddd;
+  border: 1px solid #2c2c2c;
   border-radius: 6px;
   margin-bottom: 4px;
-  background: #fff;
+  background: #1e1e1e;
+  color: #e0e0e0;
 }
 .tm-tab {
   padding: 4px 10px;
@@ -910,4 +969,497 @@ body {
   color: #888;
   cursor: pointer;
 }
-.tm-tab-close:hover { color: #cf222e; }
+.tm-tab-close:hover {
+  color: #cf222e;
+}
+
+/* ===== ダウンロードパネル ===== */
+.downloads-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 9998;
+}
+.downloads-backdrop[hidden],
+.downloads-panel[hidden],
+.downloads-hex-view[hidden],
+.downloads-engineer[hidden] {
+  display: none !important;
+}
+/* ダウンロードオープン中のクラス（JS 側で backgroundImage を inline で設定するため CSS では何もしない） */
+body.downloads-overlay-open {
+  background-color: #1a1a1a;
+}
+.downloads-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  background: #d63031;
+  color: white;
+  border-radius: 9px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  min-width: 14px;
+  text-align: center;
+  pointer-events: none;
+  font-weight: bold;
+}
+.downloads-panel {
+  position: fixed;
+  top: 120px;
+  right: 8px;
+  width: 480px;
+  min-height: 360px;
+  max-height: calc(100vh - 136px);
+  background: #1f1f1f;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 8px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.downloads-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #2a2a2a;
+  border-bottom: 1px solid #444;
+}
+.downloads-panel-header button {
+  background: transparent;
+  color: #ddd;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.downloads-panel-header button:hover {
+  background: #3a3a3a;
+}
+.downloads-stat {
+  font-size: 11px;
+  color: #888;
+}
+.downloads-engineer {
+  background: #161616;
+  padding: 8px 10px;
+  border-bottom: 1px solid #333;
+  font-size: 12px;
+}
+.downloads-engineer details {
+  margin-top: 6px;
+}
+.downloads-engineer summary {
+  cursor: pointer;
+  color: #6cc;
+  padding: 2px 0;
+  user-select: none;
+}
+.downloads-engineer input,
+.downloads-engineer textarea,
+.downloads-engineer select {
+  background: #0d0d0d;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+.downloads-engineer button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.downloads-engineer button:hover {
+  background: #1d4ed8;
+}
+.dl-eng-row {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0;
+  align-items: center;
+}
+.downloads-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.downloads-empty {
+  padding: 30px 10px;
+  text-align: center;
+  color: #888;
+  font-size: 12px;
+}
+.dl-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dl-item:hover {
+  background: #262626;
+}
+.dl-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dl-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.dl-name {
+  flex: 1;
+  font-weight: 600;
+  color: #eee;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dl-name:hover {
+  color: #6cf;
+  text-decoration: underline;
+}
+.dl-meta {
+  font-size: 11px;
+  color: #999;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dl-status-completed {
+  color: #4ade80;
+}
+.dl-status-failed {
+  color: #f87171;
+}
+.dl-status-cancelled {
+  color: #fbbf24;
+}
+.dl-status-in-progress {
+  color: #60a5fa;
+}
+.dl-progress {
+  height: 4px;
+  background: #333;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.dl-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2563eb, #06b6d4);
+  width: 0%;
+  transition: width 0.2s;
+}
+.dl-progress-fill.indeterminate {
+  background: linear-gradient(90deg, #333 0%, #60a5fa 50%, #333 100%);
+  background-size: 200% 100%;
+  animation: dl-indet 1.4s linear infinite;
+  width: 100%;
+}
+@keyframes dl-indet {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ===== ⬇ ボタンのパルス & トースト ===== */
+@keyframes dl-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.7);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 10px rgba(96, 165, 250, 0);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(96, 165, 250, 0);
+  }
+}
+#downloads-btn.dl-pulse {
+  animation: dl-pulse 0.9s ease-out 2;
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+#downloads-btn .downloads-badge {
+  transition: transform 0.2s;
+}
+#downloads-btn.dl-pulse .downloads-badge {
+  transform: scale(1.3);
+}
+@keyframes dl-toast-in {
+  from {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes dl-toast-out {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+}
+.dl-toast-host {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  z-index: 10010;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.dl-toast {
+  background: #1f2937;
+  color: #f1f5f9;
+  border-left: 4px solid #60a5fa;
+  border-radius: 6px;
+  padding: 10px 14px;
+  min-width: 240px;
+  max-width: 360px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  animation: dl-toast-in 0.25s ease-out;
+  pointer-events: auto;
+}
+.dl-toast.dl-toast-finished {
+  border-left-color: #4ade80;
+}
+.dl-toast.dl-toast-failed {
+  border-left-color: #f87171;
+}
+.dl-toast.dl-toast-leave {
+  animation: dl-toast-out 0.25s ease-in forwards;
+}
+.dl-toast-title {
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+.dl-toast-body {
+  font-size: 11px;
+  opacity: 0.85;
+  word-break: break-all;
+}
+.dl-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.dl-actions button {
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.dl-actions button:hover {
+  background: #3a3a3a;
+  border-color: #666;
+}
+.dl-hash {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  color: #aaa;
+  word-break: break-all;
+}
+.dl-modal {
+  display: none;
+}
+.downloads-hex-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #0d0d0d;
+}
+.dl-hex-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #2a2a2a;
+  border-bottom: 1px solid #444;
+}
+.dl-hex-bar button {
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.dl-hex-bar button:hover {
+  background: #3a3a3a;
+}
+.dl-hex-content {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #dcdcaa;
+  background: #0d0d0d;
+  flex: 1;
+  min-height: 0;
+  white-space: pre;
+}
+.dl-speed {
+  color: #06b6d4;
+  font-weight: bold;
+}
+
+/* ===== スクリーンショット編集ダイアログ ===== */
+.ss-editor {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 9999;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+.ss-editor[hidden] {
+  display: none;
+}
+.ss-editor-dialog {
+  margin: 16px;
+  flex: 1;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ss-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.ss-editor-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.ss-editor-close {
+  background: transparent;
+  border: 0;
+  color: #ddd;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.ss-editor-close:hover {
+  background: #2a2a2a;
+}
+.ss-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 14px;
+  border-bottom: 1px solid #2a2a2a;
+  background: #161616;
+}
+.ss-editor-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #ddd;
+}
+.ss-editor-toolbar select,
+.ss-editor-toolbar input[type="color"],
+.ss-editor-toolbar input[type="range"] {
+  background: #222;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+.ss-editor-toolbar input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+}
+.ss-editor-toolbar button {
+  background: #262626;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.ss-editor-toolbar button:hover:not([disabled]) {
+  background: #333;
+}
+.ss-editor-toolbar .toolbox-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.ss-editor-toolbar .toolbox-primary:hover:not([disabled]) {
+  background: #1d4ed8;
+}
+.ss-editor-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #0e0e0e;
+  background-image:
+    linear-gradient(45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1a1a 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+}
+#ss-canvas {
+  display: block;
+  cursor: crosshair;
+  box-shadow: 0 0 0 1px #444;
+  background: #fff;
+  max-width: none;
+}
