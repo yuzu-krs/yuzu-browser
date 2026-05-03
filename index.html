@@ -228,6 +228,7 @@
       </div>
       <div class="toolbox-body">
         <nav class="toolbox-nav" id="toolbox-nav">
+          <div class="toolbox-nav-cat">🌐 ブラウジング</div>
           <button
             type="button"
             class="toolbox-nav-item active"
@@ -239,10 +240,6 @@
           <button type="button" class="toolbox-nav-item" data-tool="ytdlp">
             <span class="toolbox-nav-icon">⬇</span>
             <span>YouTube ダウンロード</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="converter">
-            <span class="toolbox-nav-icon">⇄</span>
-            <span>ファイル形式コンバータ</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="vboost">
             <span class="toolbox-nav-icon">🔊</span>
@@ -260,6 +257,46 @@
             <span class="toolbox-nav-icon">📷</span>
             <span>スクリーンショット</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="userscript">
+            <span class="toolbox-nav-icon">🐵</span>
+            <span>ユーザースクリプト</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="ogp">
+            <span class="toolbox-nav-icon">🏷️</span>
+            <span>OGP チェッカー</span>
+          </button>
+          <button
+            type="button"
+            class="toolbox-nav-item"
+            data-tool="techprofile"
+          >
+            <span class="toolbox-nav-icon">🔬</span>
+            <span>技術プロファイラ</span>
+          </button>
+
+          <div class="toolbox-nav-cat">🎞️ メディア / ファイル</div>
+          <button type="button" class="toolbox-nav-item" data-tool="converter">
+            <span class="toolbox-nav-icon">⇄</span>
+            <span>ファイル形式コンバータ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="imgstudio">
+            <span class="toolbox-nav-icon">🎨</span>
+            <span>画像スタジオ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="vidstudio">
+            <span class="toolbox-nav-icon">🎬</span>
+            <span>動画スタジオ</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="unzip">
+            <span class="toolbox-nav-icon">🗄</span>
+            <span>ZIP 解凍</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="filemeta">
+            <span class="toolbox-nav-icon">📄</span>
+            <span>ファイルメタ</span>
+          </button>
+
+          <div class="toolbox-nav-cat">{ } テキスト / データ</div>
           <button type="button" class="toolbox-nav-item" data-tool="json">
             <span class="toolbox-nav-icon">{}</span>
             <span>JSON 整形 / 検証</span>
@@ -300,6 +337,16 @@
             <span class="toolbox-nav-icon">±</span>
             <span>テキスト Diff</span>
           </button>
+          <button type="button" class="toolbox-nav-item" data-tool="charcount">
+            <span class="toolbox-nav-icon">🔢</span>
+            <span>文字数カウント</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="clipboard">
+            <span class="toolbox-nav-icon">📋</span>
+            <span>クリップボード履歴</span>
+          </button>
+
+          <div class="toolbox-nav-cat">📡 ネットワーク / 診断</div>
           <button type="button" class="toolbox-nav-item" data-tool="useragent">
             <span class="toolbox-nav-icon">🌐</span>
             <span>User-Agent 表示</span>
@@ -308,62 +355,30 @@
             <span class="toolbox-nav-icon">🕸</span>
             <span>スクレイピング</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="unzip">
-            <span class="toolbox-nav-icon">🗄</span>
-            <span>ZIP 解凍</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="clipboard">
-            <span class="toolbox-nav-icon">📋</span>
-            <span>クリップボード履歴</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="filemeta">
-            <span class="toolbox-nav-icon">📄</span>
-            <span>ファイルメタ</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="minigame">
-            <span class="toolbox-nav-icon">🎮</span>
-            <span>ミニゲーム</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="ai">
-            <span class="toolbox-nav-icon">✨</span>
-            <span>AI アシスタント</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="userscript">
-            <span class="toolbox-nav-icon">🐵</span>
-            <span>ユーザースクリプト</span>
-          </button>
-          <button
-            type="button"
-            class="toolbox-nav-item"
-            data-tool="techprofile"
-          >
-            <span class="toolbox-nav-icon">🔬</span>
-            <span>技術プロファイラ</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="ogp">
-            <span class="toolbox-nav-icon">🏷️</span>
-            <span>OGP チェッカー</span>
+          <button type="button" class="toolbox-nav-item" data-tool="speedtest">
+            <span class="toolbox-nav-icon">📶</span>
+            <span>スピードテスト</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="pentest">
             <span class="toolbox-nav-icon">🛡️</span>
             <span>ペネトレ ツール</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="imgstudio">
-            <span class="toolbox-nav-icon">🎨</span>
-            <span>画像スタジオ</span>
+
+          <div class="toolbox-nav-cat">🛠️ 開発 / システム</div>
+          <button type="button" class="toolbox-nav-item" data-tool="terminal">
+            <span class="toolbox-nav-icon">💻</span>
+            <span>ターミナル</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="vidstudio">
-            <span class="toolbox-nav-icon">🎬</span>
-            <span>動画スタジオ</span>
+          <button type="button" class="toolbox-nav-item" data-tool="ssh">
+            <span class="toolbox-nav-icon">🔐</span>
+            <span>SSH 接続</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="speedtest">
-            <span class="toolbox-nav-icon">📶</span>
-            <span>スピードテスト</span>
+          <button type="button" class="toolbox-nav-item" data-tool="ai">
+            <span class="toolbox-nav-icon">✨</span>
+            <span>AI アシスタント</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="charcount">
-            <span class="toolbox-nav-icon">🔢</span>
-            <span>文字数カウント</span>
-          </button>
+
+          <div class="toolbox-nav-cat">🎲 その他</div>
           <button type="button" class="toolbox-nav-item" data-tool="todo">
             <span class="toolbox-nav-icon">✅</span>
             <span>Todo</span>
@@ -372,13 +387,9 @@
             <span class="toolbox-nav-icon">⏰</span>
             <span>クロック</span>
           </button>
-          <button type="button" class="toolbox-nav-item" data-tool="terminal">
-            <span class="toolbox-nav-icon">💻</span>
-            <span>ターミナル</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="ssh">
-            <span class="toolbox-nav-icon">🔐</span>
-            <span>SSH 接続</span>
+          <button type="button" class="toolbox-nav-item" data-tool="minigame">
+            <span class="toolbox-nav-icon">🎮</span>
+            <span>ミニゲーム</span>
           </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">

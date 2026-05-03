@@ -649,6 +649,128 @@ fn tab_attach(pid: u32, url: String) -> Result<(), String> {
     ipc_send_open_tab(pid, &url)
 }
 
+/// カーソル下にある「自プロセスの別 yuzu ウィンドウ」のラベルを返す。
+/// Firefox 風タブ D&D マージ用 (呼び出し元のウィンドウは除外)。
+#[cfg(windows)]
+#[tauri::command]
+fn tab_drop_target_window(window: Window, app: AppHandle) -> Option<String> {
+    use std::os::raw::c_void;
+    #[repr(C)]
+    struct POINT { x: i32, y: i32 }
+    type HWND = *mut c_void;
+    extern "system" {
+        fn GetCursorPos(p: *mut POINT) -> i32;
+        fn WindowFromPoint(p: POINT) -> HWND;
+        fn GetAncestor(hwnd: HWND, ga: u32) -> HWND;
+    }
+    const GA_ROOT: u32 = 2;
+    let source = window.label().to_string();
+    let target_hwnd = unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 { return None; }
+        let h = WindowFromPoint(pt);
+        if h.is_null() { return None; }
+        let r = GetAncestor(h, GA_ROOT);
+        if r.is_null() { h } else { r }
+    };
+    for (label, win) in app.windows() {
+        if label == source { continue; }
+        if let Ok(hwnd) = win.hwnd() {
+            if hwnd.0 as *mut c_void == target_hwnd {
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn tab_drop_target_window(_window: Window, _app: AppHandle) -> Option<String> {
+    None
+}
+
+/// 既存タブを別の自ウィンドウへ移し替える（reparent）。再生継続。
+#[tauri::command]
+async fn tab_reattach(
+    window: Window,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    target_window: String,
+) -> Result<(), String> {
+    use std::sync::mpsc;
+    let src_label = window.label().to_string();
+    if src_label == target_window {
+        return Err("same window".into());
+    }
+    {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        let owner = s.window_of.get(&id).cloned().unwrap_or_default();
+        if owner != src_label {
+            return Err("tab not in source window".into());
+        }
+        if app.get_window(&target_window).is_none() {
+            return Err("target window not found".into());
+        }
+    }
+
+    // メインスレッドで reparent。
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let app_clone = app.clone();
+    let src_clone = src_label.clone();
+    let tgt_clone = target_window.clone();
+    let view_lbl = view_label(id);
+    app.run_on_main_thread(move || {
+        let res = (|| -> Result<(), String> {
+            let src_win = app_clone.get_window(&src_clone)
+                .ok_or_else(|| "source window gone".to_string())?;
+            let tgt_win = app_clone.get_window(&tgt_clone)
+                .ok_or_else(|| "target window gone".to_string())?;
+            let view = src_win.get_webview(&view_lbl)
+                .ok_or_else(|| "view not found".to_string())?;
+            view.reparent(&tgt_win).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        let _ = tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())??;
+
+    // 状態更新: window_of 移動、active 切替。
+    let close_src = {
+        let mut s = state.0.lock().map_err(|e| e.to_string())?;
+        s.window_of.insert(id, target_window.clone());
+        // ターゲットでアクティブに。
+        s.set_active_in(&target_window, Some(id));
+        // ソースの active 更新。
+        let next = s.order_in(&src_label).last().copied();
+        s.set_active_in(&src_label, next);
+        // ソースが空 & main でなければ閉じる。
+        s.order_in(&src_label).is_empty() && src_label != "main"
+    };
+
+    if let Some(tgt_win) = app.get_window(&target_window) {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&tgt_win, &s);
+        apply_active_title(&tgt_win, &s);
+    }
+
+    if close_src {
+        if let Some(src_win) = app.get_window(&src_label) {
+            let _ = src_win.close();
+        }
+    } else {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        relayout(&window, &s);
+        apply_active_title(&window, &s);
+    }
+
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    emit_tabs(&app, &s);
+    Ok(())
+}
+
 /// 全 webview をウィンドウサイズに合わせて再配置する（指定ウィンドウ分のみ）。
 fn relayout(window: &Window, state: &TabState) {
     let win_label = window.label().to_string();
@@ -5070,6 +5192,8 @@ pub fn run() {
             tab_detach,
             tab_drop_target_pid,
             tab_attach,
+            tab_drop_target_window,
+            tab_reattach,
             show_tab_context_menu,
             browser_navigate,
             browser_history,

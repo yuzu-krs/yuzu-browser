@@ -344,13 +344,24 @@ function startTabDrag(
       ev.clientY < rect.top - 60 || ev.clientY > rect.bottom + 60;
     if (farOutside) {
       // タブバーから大きく離れたドロップ。
-      // まずカーソル下に「別の yuzu-browser ウィンドウ」があるか問い合わせ、
-      // あればそのインスタンスへ URL を送って新規タブとして開かせる。
-      // なければ同プロセス内で新規ウィンドウへ切り離す（リロードなし）。
+      // 1) まずカーソル下に「自プロセスの別 yuzu ウィンドウ」があれば
+      //    そこへ reparent (Firefox 風タブマージ、再生継続)。
+      // 2) 別プロセスの yuzu があれば IPC で URL を送って新規タブ化。
+      // 3) いずれもなければ同プロセス内で新ウィンドウへ切り離す。
       const tab = tabs.find((t) => t.id === tabId);
       const url = tab?.url || "";
       void (async () => {
         try {
+          const targetWin = await invoke<string | null>(
+            "tab_drop_target_window",
+          );
+          if (targetWin) {
+            await invoke("tab_reattach", {
+              id: tabId,
+              targetWindow: targetWin,
+            });
+            return;
+          }
           const pid = await invoke<number | null>("tab_drop_target_pid");
           if (pid && url) {
             await invoke("tab_attach", { pid, url });
@@ -360,7 +371,7 @@ function startTabDrag(
           // 同一プロセス内の新ウィンドウへ reparent（再生継続）。
           await invoke("tab_detach", { id: tabId });
         } catch (err) {
-          console.error("tab_detach failed:", err);
+          console.error("tab drop failed:", err);
         }
       })();
       return;
@@ -870,41 +881,9 @@ async function setupToolbox(): Promise<void> {
 
   // ===== ツールの並び替え (D&D) =====
   // localStorage に並び順を保存して再起動後も維持する。
-  const TOOL_ORDER_KEY = "yuzu.toolboxNavOrder";
+  // v2: カテゴリ分け導入で旧順序データを破棄。
+  // 現状はカテゴリ見出しを尊重したいので保存/復元は行わない。
   const navParent = document.getElementById("toolbox-nav");
-  const applySavedToolOrder = (): void => {
-    if (!navParent) return;
-    let saved: string[] = [];
-    try {
-      const raw = localStorage.getItem(TOOL_ORDER_KEY);
-      if (raw) saved = JSON.parse(raw);
-    } catch {
-      /* ignore */
-    }
-    if (!Array.isArray(saved) || saved.length === 0) return;
-    const map = new Map<string, HTMLElement>();
-    Array.from(navParent.children).forEach((c) => {
-      const el = c as HTMLElement;
-      const t = el.dataset?.tool;
-      if (t) map.set(t, el);
-    });
-    saved.forEach((name) => {
-      const el = map.get(name);
-      if (el) navParent.appendChild(el);
-    });
-  };
-  const saveToolOrder = (): void => {
-    if (!navParent) return;
-    const order = Array.from(navParent.children)
-      .map((c) => (c as HTMLElement).dataset?.tool)
-      .filter((s): s is string => typeof s === "string" && s.length > 0);
-    try {
-      localStorage.setItem(TOOL_ORDER_KEY, JSON.stringify(order));
-    } catch {
-      /* ignore */
-    }
-  };
-  applySavedToolOrder();
   navItems.forEach((btn) => {
     btn.setAttribute("draggable", "true");
     btn.addEventListener("dragstart", (e) => {
@@ -947,7 +926,6 @@ async function setupToolbox(): Promise<void> {
       const dropEv = e as DragEvent;
       const before = dropEv.clientY < r.top + r.height / 2;
       navParent.insertBefore(srcEl, before ? btn : btn.nextSibling);
-      saveToolOrder();
     });
   });
   ytdlpFillBtn?.addEventListener("click", () => {
