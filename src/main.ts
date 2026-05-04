@@ -727,12 +727,17 @@ window.addEventListener("DOMContentLoaded", () => {
   // ダウンロード UI を初期化（ツールボックスから開くパネル）
   void setupDownloadsUI();
 
-  // 初期タブリスト取得
+  // 初期タブリスト取得 + バックエンドへ chrome 準備完了を通知。
+  // バックエンドは chrome_ready を受け取ったら即座に tabs-updated を再 emit するので、
+  // detach/reattach 直後の取りこぼしも吸収できる。
   void invoke<TabInfo[]>("tab_list")
     .then(onTabsUpdated)
     .catch((e) => {
       console.error("tab_list failed:", e);
     });
+  void invoke("chrome_ready").catch((e) => {
+    console.error("chrome_ready failed:", e);
+  });
 });
 
 // ===== ツールボックス =====

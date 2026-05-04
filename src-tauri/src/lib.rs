@@ -768,6 +768,9 @@ async fn tab_reattach(
 
     let s = state.0.lock().map_err(|e| e.to_string())?;
     emit_tabs(&app, &s);
+    drop(s);
+    // 保険: 受け側 chrome がロード未完なら chrome_ready で救うが、念のため遅延再 emit。
+    schedule_emit_tabs(&app, &[150, 500, 1500]);
     Ok(())
 }
 
@@ -822,6 +825,23 @@ fn relayout(window: &Window, state: &TabState) {
 fn emit_tabs(app: &AppHandle, state: &TabState) {
     for win in state.windows() {
         let _ = app.emit_to(chrome_label_for(&win), "tabs-updated", state.summary_for(&win));
+    }
+}
+
+/// detach/reattach 直後の chrome WebView は dev サーバからのロードがまだ完了していない
+/// ことがあり、emit_tabs を取りこぼす。フロント側 chrome_ready コマンドで本来は救えるが、
+/// 何らかの理由で chrome_ready が届かなかったときの保険として、複数の遅延で再送する。
+fn schedule_emit_tabs(app: &AppHandle, delays_ms: &[u64]) {
+    for &d in delays_ms {
+        let app_c = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(d));
+            let s_state: State<'_, AppState> = app_c.state();
+            let guard = s_state.0.lock();
+            if let Ok(s) = guard {
+                emit_tabs(&app_c, &s);
+            }
+        });
     }
 }
 
@@ -1023,6 +1043,7 @@ async fn tab_detach(
                 .map_err(|e| e.to_string())?;
             // 新ウィンドウにもクローム (UI) を作る。ラベルは "ui-N"。
             let chrome_label = chrome_label_for(&new_label_clone);
+            let app_for_chrome = app_clone.clone();
             new_window
                 .add_child(
                     WebviewBuilder::new(&chrome_label, WebviewUrl::default())
@@ -1030,6 +1051,27 @@ async fn tab_detach(
                             "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
                         )
                         .disable_drag_drop_handler()
+                        .on_page_load(move |wv, _payload| {
+                            // chrome の DOM 準備完了直後に必ずタブ一覧を流し込む。
+                            // フロント側の chrome_ready / 遅延再 emit に頼らず確実に届ける。
+                            let win_label = wv.window().label().to_string();
+                            let s_state: State<'_, AppState> = app_for_chrome.state();
+                            let guard = s_state.0.lock();
+                            if let Ok(s) = guard {
+                                let summary = s.summary_for(&win_label);
+                                eprintln!(
+                                    "[on_page_load] chrome={} window={} -> emit {} tabs",
+                                    wv.label(),
+                                    win_label,
+                                    summary.len()
+                                );
+                                let _ = app_for_chrome.emit_to(
+                                    chrome_label_for(&win_label),
+                                    "tabs-updated",
+                                    summary,
+                                );
+                            }
+                        })
                         .transparent(true),
                     LogicalPosition::new(0.0, 0.0),
                     LogicalSize::new(osize.width.max(400.0), CHROME_HEIGHT),
@@ -1081,6 +1123,8 @@ async fn tab_detach(
         apply_active_title(&window, &s);
         emit_tabs(&app, &s);
     }
+    // 新ウィンドウの chrome がロード完了する前の取りこぼし対策。
+    schedule_emit_tabs(&app, &[150, 500, 1500]);
     Ok(())
 }
 
@@ -1167,9 +1211,34 @@ async fn tab_switch(
 }
 
 #[tauri::command]
-fn tab_list(window: Window, state: State<'_, AppState>) -> Result<Vec<TabInfo>, String> {
+fn tab_list(webview: Webview, state: State<'_, AppState>) -> Result<Vec<TabInfo>, String> {
+    // chrome WebView の親ウィンドウラベルを明示取得。
+    // Tauri 2 で multi-webview window の場合、Window 注入よりも
+    // webview.window().label() の方が確実。
+    let win_label = webview.window().label().to_string();
     let s = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(s.summary_for(&window.label()))
+    let r = s.summary_for(&win_label);
+    eprintln!(
+        "[tab_list] webview={} window={} -> {} tabs",
+        webview.label(),
+        win_label,
+        r.len()
+    );
+    Ok(r)
+}
+
+/// chrome WebView がマウント完了したことを通知。
+/// バックエンドは即座に該当ウィンドウのタブ一覧を再 emit する。
+/// detach/reattach の直後に chrome がまだロード中で
+/// 最初の "tabs-updated" を取りこぼした場合の保険。
+#[tauri::command]
+fn chrome_ready(webview: Webview, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let win_label = webview.window().label().to_string();
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    let summary = s.summary_for(&win_label);
+    eprintln!("[chrome_ready] webview={} window={} -> emit {} tabs", webview.label(), win_label, summary.len());
+    let _ = app.emit_to(chrome_label_for(&win_label), "tabs-updated", summary);
+    Ok(())
 }
 
 /// 指定タブを複製（同じ URL で新規タブを開く）。
@@ -5194,6 +5263,7 @@ pub fn run() {
             tab_attach,
             tab_drop_target_window,
             tab_reattach,
+            chrome_ready,
             show_tab_context_menu,
             browser_navigate,
             browser_history,
@@ -5324,12 +5394,32 @@ pub fn run() {
             // UI（アドレスバー＋タブバー）。
             // disable_drag_drop_handler() で Tauri の OS ドラッグ&ドロップ横取りを止め、
             // HTML5 の dragover/drop イベントを JS 側に届くようにする (タブバーへの URL ドロップ用)。
+            let app_for_chrome = app.handle().clone();
             window.add_child(
                 WebviewBuilder::new("ui", WebviewUrl::default())
                     .additional_browser_args(
                         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
                     )
                     .disable_drag_drop_handler()
+                    .on_page_load(move |wv, _payload| {
+                        let win_label = wv.window().label().to_string();
+                        let s_state: State<'_, AppState> = app_for_chrome.state();
+                        let guard = s_state.0.lock();
+                        if let Ok(s) = guard {
+                            let summary = s.summary_for(&win_label);
+                            eprintln!(
+                                "[on_page_load] chrome={} window={} -> emit {} tabs",
+                                wv.label(),
+                                win_label,
+                                summary.len()
+                            );
+                            let _ = app_for_chrome.emit_to(
+                                chrome_label_for(&win_label),
+                                "tabs-updated",
+                                summary,
+                            );
+                        }
+                    })
                     .transparent(true),
                 LogicalPosition::new(0.0, 0.0),
                 LogicalSize::new(initial_w, CHROME_HEIGHT),
