@@ -4,14 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "npm run build:ublock && vite",
+    "build": "tsc && vite build && npm run build:ublock",
+    "build:ublock": "vite build -c vite.ublock.config.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@ghostery/adblocker": "^2.5.0",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "tldts": "^6.1.75"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

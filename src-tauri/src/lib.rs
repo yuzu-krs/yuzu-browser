@@ -16,6 +16,8 @@ use tauri::{
 };
 use url::Url;
 
+mod adblock;
+
 const TOOLBAR_HEIGHT: f64 = 50.0;
 const TABBAR_HEIGHT: f64 = 36.0;
 const ACTIONS_BAR_HEIGHT: f64 = 30.0;
@@ -23,10 +25,84 @@ const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + TABBAR_HEIGHT + ACTIONS_BAR_HEIGHT;
 const HOME_URL: &str = "https://duckduckgo.com/";
 const OFFSCREEN_X: f64 = -20000.0;
 
-// 広告ブロック機能はユーザー要望により無効化したため adblock.js は注入しない。
-// adblock.js ファイル自体は将来的な再有効化のために残してある。
-#[allow(dead_code)]
-const ADBLOCK_SCRIPT: &str = include_str!("../adblock.js");
+// uBlock Origin 相当の広告/トラッカーブロッカー。
+// `npm run build:ublock` が `@ghostery/adblocker`（uBO フィルタ構文互換エンジン）と
+// 起動コードを IIFE バンドルし `src-tauri/ublock.bundle.js` を生成する。
+// 各 view webview の初期化スクリプトとして注入される。
+const UBLOCK_SCRIPT: &str = include_str!("../ublock.bundle.js");
+
+// YouTube 等の動画広告は googlevideo.com から本編と同 CDN で来るため URL/hosts では
+// 止められない。uBO と同じく JSON.parse / Response.json をフックして
+// playerResponse から adPlacements / playerAds / adSlots / adBreakHeartbeatParams を
+// 削り、SPF/embed の ytInitialPlayerResponse もスクリプト挿入時点で書き換える。
+// document_start で同期実行する必要があるため独立スクリプトに切り出している。
+const ADBLOCK_PRELUDE: &str = r#"
+(function () {
+  if (window.__yuzuAdPreludeInstalled) return;
+  window.__yuzuAdPreludeInstalled = true;
+  const AD_KEYS = [
+    'adPlacements','playerAds','adSlots','adBreakHeartbeatParams',
+    'adReasons','adRequestConfig','playbackTracking',
+  ];
+  function strip(obj, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 8) return obj;
+    if (Array.isArray(obj)) { for (let i=0;i<obj.length;i++) strip(obj[i], depth+1); return obj; }
+    for (const k of AD_KEYS) { if (k in obj) { try { delete obj[k]; } catch(_){} } }
+    // YouTube 内部の adPlacements は playerResponse.adPlacements 直下と
+    // playerResponse.playerAds の他、playerResponse.frameworkUpdates 内にも
+    // 紛れることがあるので再帰的に潰す。
+    for (const k in obj) {
+      const v = obj[k];
+      if (v && typeof v === 'object') strip(v, depth+1);
+    }
+    return obj;
+  }
+  // 1) JSON.parse をフック
+  const origParse = JSON.parse;
+  JSON.parse = function (text, reviver) {
+    const r = origParse.call(this, text, reviver);
+    try { strip(r, 0); } catch(_) {}
+    return r;
+  };
+  // 2) Response.prototype.json をフック (fetch JSON 経路)
+  try {
+    const origJson = Response.prototype.json;
+    Response.prototype.json = function () {
+      return origJson.apply(this, arguments).then((r) => { try { strip(r, 0); } catch(_) {} return r; });
+    };
+  } catch (_) {}
+  // 3) ytInitialPlayerResponse / ytInitialData をスクリプトタグ挿入時点で書き換える
+  //    (YouTube は <script>var ytInitialPlayerResponse = {...};</script> を直書きする)
+  const STRIP_RE = /("(?:adPlacements|playerAds|adSlots|adBreakHeartbeatParams|adReasons|adRequestConfig|playbackTracking)":)/g;
+  function scrubText(src) {
+    if (typeof src !== 'string' || src.indexOf('adPlacements') < 0 && src.indexOf('playerAds') < 0) return src;
+    // 値を [] に潰す簡易置換 (uBO と同じ手口)。
+    return src.replace(/"adPlacements":\[[^\]]*\]/g, '"adPlacements":[]')
+              .replace(/"playerAds":\[[^\]]*\]/g, '"playerAds":[]')
+              .replace(/"adSlots":\[[^\]]*\]/g, '"adSlots":[]');
+  }
+  try {
+    const desc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'textContent')
+              || Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    if (desc && desc.set) {
+      const origSet = desc.set;
+      Object.defineProperty(HTMLScriptElement.prototype, 'textContent', {
+        configurable: true, enumerable: true, get: desc.get,
+        set(v) { try { v = scrubText(v); } catch(_) {} return origSet.call(this, v); },
+      });
+    }
+  } catch (_) {}
+  // 4) ytInitialPlayerResponse プロパティ自体を defineProperty で監視。
+  try {
+    let _ytipr;
+    Object.defineProperty(window, 'ytInitialPlayerResponse', {
+      configurable: true,
+      get() { return _ytipr; },
+      set(v) { try { strip(v, 0); } catch(_) {} _ytipr = v; },
+    });
+  } catch (_) {}
+})();
+"#;
 
 const URL_WATCH_SCRIPT: &str = r#"
 (function () {
@@ -484,6 +560,101 @@ fn set_view_native_muted(view: &tauri::webview::Webview, muted: bool) {
 #[cfg(not(windows))]
 fn set_view_native_muted(_view: &tauri::webview::Webview, _muted: bool) {}
 
+/// view webview に WebView2 ネイティブの `WebResourceRequested` フックを仕掛けて、
+/// `adblock::is_blocked` がヒットした URL のみ HTTP 403 で潰す。
+///
+/// JS 側 (`UBLOCK_SCRIPT`) は `<img>` や `<iframe>` 等パーサ由来のリクエストを
+/// 捕まえられないので、ネイティブでこの段を併用しないと実効ブロックにならない。
+#[cfg(windows)]
+fn install_adblock_for_view(view: &tauri::webview::Webview) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_2, ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+    };
+    use webview2_com::take_pwstr;
+    use webview2_com::WebResourceRequestedEventHandler;
+    use windows::core::{Interface, HSTRING, PWSTR};
+
+    let label = view.label().to_string();
+    let r = view.with_webview(move |pwv| unsafe {
+        let controller = pwv.controller();
+        let core = match controller.CoreWebView2() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[adblock] {label} CoreWebView2 err: {e:?}");
+                return;
+            }
+        };
+        // `*` フィルタで全リクエストを拾う。
+        let filter = HSTRING::from("*");
+        let filter_pcwstr = windows::core::PCWSTR(filter.as_ptr());
+        if let Ok(c22) = core.cast::<ICoreWebView2_22>() {
+            if let Err(e) = c22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                filter_pcwstr,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+            ) {
+                eprintln!("[adblock] {label} AddFilterWithKinds err: {e:?}");
+            }
+        } else if let Err(e) =
+            core.AddWebResourceRequestedFilter(filter_pcwstr, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+        {
+            eprintln!("[adblock] {label} AddWebResourceRequestedFilter err: {e:?}");
+            return;
+        }
+
+        // 403 応答を作るのに ICoreWebView2Environment が必要。
+        let env = match core.cast::<ICoreWebView2_2>().and_then(|c2| c2.Environment()) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[adblock] {label} Environment err: {e:?}");
+                return;
+            }
+        };
+
+        let label_for_handler = label.clone();
+        let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let req = args.Request()?;
+            let mut uri = PWSTR::null();
+            req.Uri(&mut uri)?;
+            let uri = take_pwstr(uri);
+            let host = url::Url::parse(&uri)
+                .ok()
+                .and_then(|u| u.host_str().map(|s| s.to_string()));
+            let Some(host) = host else { return Ok(()) };
+            if !crate::adblock::is_blocked(&host) {
+                return Ok(());
+            }
+            let resp = env.CreateWebResourceResponse(
+                None,
+                403,
+                &HSTRING::from("Blocked by yuzu-browser"),
+                &HSTRING::from(""),
+            )?;
+            args.SetResponse(&resp)?;
+            #[cfg(debug_assertions)]
+            eprintln!("[adblock] {label_for_handler} blocked {host}");
+            #[cfg(not(debug_assertions))]
+            let _ = &label_for_handler;
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        if let Err(e) = core.add_WebResourceRequested(&handler, &mut token) {
+            eprintln!("[adblock] {label} add_WebResourceRequested err: {e:?}");
+        }
+    });
+    if let Err(e) = r {
+        eprintln!("[adblock] with_webview err: {e:?}");
+    }
+}
+
+#[cfg(not(windows))]
+fn install_adblock_for_view(_view: &tauri::webview::Webview) {}
+
 // ===== ウィンドウ間タブ転送 (TCP ループバック IPC) =====
 //
 // 各 yuzu-browser インスタンスが 127.0.0.1 のランダムポートで listen し、
@@ -883,6 +1054,8 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
                 .additional_browser_args(
                     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MiddleClickAutoscroll",
                 )
+                .initialization_script(ADBLOCK_PRELUDE)
+                .initialization_script(UBLOCK_SCRIPT)
                 .initialization_script(URL_WATCH_SCRIPT)
                 .initialization_script(TITLE_WATCH_SCRIPT)
                 .initialization_script(VOLUME_SCRIPT)
@@ -918,6 +1091,10 @@ fn create_view(window: &Window, app: &AppHandle, id: u64, url: &str) -> Result<(
             LogicalSize::new(1.0, 1.0),
         )
         .map_err(|e| e.to_string())?;
+    // 生成直後の view にネイティブ広告ブロックフックを仕掛ける。
+    if let Some(view) = window.get_webview(&label) {
+        install_adblock_for_view(&view);
+    }
     Ok(())
 }
 
@@ -5353,6 +5530,11 @@ pub fn run() {
                     }
                 }
                 Err(e) => eprintln!("ipc listener bind failed: {e}"),
+            }
+            // 広告ブロック用 hosts リストをバックグラウンドでロード/取得。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                crate::adblock::init(dir);
             }
             // ツールボックス設定をロード。
             if let Ok(dir) = app.path().app_data_dir() {
