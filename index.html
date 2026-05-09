@@ -1623,7 +1623,7 @@
                 width="480"
                 height="320"
                 style="
-                  background: #f7f7f7;
+                  background: #1f2330; color: #e6e8ee;
                   border-radius: 4px;
                   display: block;
                   outline: none;
@@ -2360,6 +2360,15 @@ document.title = '✨ ' + document.title;"
                     <option value="dirb-small">
                       dirb 風 small (約 200 語)
                     </option>
+                    <option value="seclists-common">
+                      SecLists common (約 4700 語) ※初回 DL
+                    </option>
+                    <option value="seclists-big">
+                      SecLists big.txt (約 20000 語) ※初回 DL
+                    </option>
+                    <option value="seclists-raft-medium">
+                      SecLists raft-medium-directories (約 20000 語) ※初回 DL
+                    </option>
                     <option value="custom">カスタム (下記)</option>
                   </select>
                   <span style="font-size: 11px; color: #666"
@@ -2701,9 +2710,9 @@ document.title = '✨ ' + document.title;"
                     font-size: 11px;
                     max-height: 400px;
                     overflow: auto;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                   "
                 ></pre>
@@ -3171,11 +3180,29 @@ document.title = '✨ ' + document.title;"
                   rows="2"
                   placeholder="HS256 JWT を貼り付け"
                 ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 4px">
+                  <select id="jwtb-wordlist">
+                    <option value="default">デフォルト (約 50 語)</option>
+                    <option value="seclists-jwt">
+                      SecLists jwt.secrets.list (約 100 語) ※初回 DL
+                    </option>
+                    <option value="seclists-10k">
+                      SecLists 10-million-top-10000 (約 10000 語) ※初回 DL
+                    </option>
+                    <option value="seclists-rockyou-1k">
+                      rockyou Top 1k ※初回 DL
+                    </option>
+                    <option value="seclists-rockyou-100k">
+                      rockyou Top 100k (やや時間かかる) ※初回 DL
+                    </option>
+                    <option value="custom">カスタム (下記)</option>
+                  </select>
+                </div>
                 <textarea
                   id="jwtb-words"
                   class="toolbox-textarea"
                   rows="4"
-                  placeholder="ワードリスト (1 行 1 語)。空ならデフォルト辞書 (~200 語) を使用"
+                  placeholder="カスタム選択時のみ使用 (1 行 1 語)"
                   style="margin-top: 4px"
                 ></textarea>
                 <button
@@ -3295,9 +3322,9 @@ document.title = '✨ ' + document.title;"
                     font-size: 11px;
                     max-height: 420px;
                     overflow: auto;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3328,9 +3355,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3358,9 +3385,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3395,9 +3422,9 @@ document.title = '✨ ' + document.title;"
                     overflow: auto;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 320px;
@@ -3440,9 +3467,9 @@ document.title = '✨ ' + document.title;"
                     word-break: break-all;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 240px;
@@ -3472,9 +3499,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 420px;
@@ -3508,9 +3535,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3544,9 +3571,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 420px;
@@ -3576,9 +3603,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3604,9 +3631,9 @@ document.title = '✨ ' + document.title;"
                     overflow: auto;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 420px;
@@ -3673,9 +3700,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3710,9 +3737,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 360px;
@@ -3742,9 +3769,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 360px;
@@ -3774,9 +3801,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 360px;
@@ -3813,9 +3840,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                   "
@@ -3850,9 +3877,9 @@ document.title = '✨ ' + document.title;"
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 280px;
@@ -3867,30 +3894,30 @@ document.title = '✨ ' + document.title;"
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
                   <input
-                    id="diff-a"
+                    id="rdiff-a"
                     type="text"
                     placeholder="URL A (正常)"
                     style="flex: 1"
                   />
                   <input
-                    id="diff-b"
+                    id="rdiff-b"
                     type="text"
                     placeholder="URL B (payload入り)"
                     style="flex: 1"
                   />
-                  <button type="button" id="diff-run" class="toolbox-primary">
+                  <button type="button" id="rdiff-run" class="toolbox-primary">
                     比較
                   </button>
                 </div>
                 <pre
-                  id="diff-out"
+                  id="rdiff-out"
                   style="
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 360px;
@@ -3927,9 +3954,9 @@ document.title = '✨ ' + document.title;"
                     overflow: auto;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #f6f8fa;
+                    background: #1f2330; color: #e6e8ee;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     margin-top: 6px;
                     max-height: 360px;
@@ -4258,7 +4285,14 @@ document.title = '✨ ' + document.title;"
                     font-size: 11px;
                   "
                 >
-                  <thead style="position: sticky; top: 0; background: #f6f8fa">
+                  <thead
+                    style="
+                      position: sticky;
+                      top: 0;
+                      background: #1f2330;
+                      color: #e6e8ee;
+                    "
+                  >
                     <tr>
                       <th
                         style="
@@ -4552,7 +4586,7 @@ document.title = '✨ ' + document.title;"
                   style="
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     background: #1f1f1f;
                   "
@@ -4616,7 +4650,7 @@ document.title = '✨ ' + document.title;"
                   style="
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     background: #1f1f1f;
                   "
@@ -4738,7 +4772,7 @@ document.title = '✨ ' + document.title;"
                   style="
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                   "
                 ></canvas>
@@ -4791,7 +4825,7 @@ document.title = '✨ ' + document.title;"
                   style="
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                     background: #fff;
                   "
@@ -4836,7 +4870,7 @@ document.title = '✨ ' + document.title;"
                   style="
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                   "
                 ></canvas>
@@ -4960,7 +4994,7 @@ document.title = '✨ ' + document.title;"
                     display: none;
                     margin-top: 8px;
                     max-width: 100%;
-                    border: 1px solid #ddd;
+                    border: 1px solid #444;
                     border-radius: 4px;
                   "
                 ></canvas>

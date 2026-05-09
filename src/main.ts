@@ -2316,7 +2316,6 @@ function setupUnzipTool(): void {
   });
 }
 
-
 // ===== ファイルメタデータ =====
 interface FileMetaInfo {
   path: string;
@@ -7281,6 +7280,42 @@ wiki`;
 
 let dbAbort = false;
 
+// SecLists (MIT) のガチ辞書を初回だけ DL して localStorage にキャッシュ。
+const SECLISTS_URLS: Record<string, string> = {
+  "seclists-common":
+    "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt",
+  "seclists-big":
+    "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/big.txt",
+  "seclists-raft-medium":
+    "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-medium-directories.txt",
+};
+
+async function fetchSecListsWordlist(key: string): Promise<string> {
+  const cacheKey = `yuzu-wordlist-${key}-v1`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) return cached;
+  const url = SECLISTS_URLS[key];
+  if (!url) throw new Error(`unknown wordlist: ${key}`);
+  // pentest_http_request 経由で DL (CORS 回避)
+  const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+    method: "GET",
+    url,
+    headers: [],
+    body: null,
+    timeoutMs: 30000,
+    followRedirects: true,
+  });
+  if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+  const text = r.body || "";
+  if (!text || text.length < 100) throw new Error("empty body");
+  try {
+    localStorage.setItem(cacheKey, text);
+  } catch {
+    /* quota over は無視 (キャッシュなしで動かす) */
+  }
+  return text;
+}
+
 function setupDirBusterSub(): void {
   const baseEl = document.getElementById("db-base") as HTMLInputElement | null;
   const extEl = document.getElementById("db-ext") as HTMLInputElement | null;
@@ -7318,7 +7353,20 @@ function setupDirBusterSub(): void {
     const wl = wlEl?.value || "common";
     if (wl === "common") words = WORDLIST_COMMON.split(/\n/);
     else if (wl === "dirb-small") words = WORDLIST_DIRB_SMALL.split(/\n/);
-    else words = (wordsEl?.value || "").split(/\n/);
+    else if (
+      wl === "seclists-common" ||
+      wl === "seclists-big" ||
+      wl === "seclists-raft-medium"
+    ) {
+      try {
+        if (statusEl) statusEl.textContent = "辞書 DL 中…";
+        const text = await fetchSecListsWordlist(wl);
+        words = text.split(/\r?\n/);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `辞書 DL 失敗: ${String(e)}`;
+        return;
+      }
+    } else words = (wordsEl?.value || "").split(/\n/);
     words = [...new Set(words.map((w) => w.trim()).filter(Boolean))];
     const exts = (extEl?.value || "")
       .split(/[,\s]+/)
@@ -7345,6 +7393,39 @@ function setupDirBusterSub(): void {
     let found = 0;
     const total = paths.length;
     if (statusEl) statusEl.textContent = `0/${total}`;
+
+    // ---- ソフト 404 検出 ----
+    // 存在しないパスを 2 つプローブして、両方とも同じサイズの 200 を返したら
+    // それは「キャッチオール (SPA など)」とみなしてそのサイズの 200 を除外する。
+    const baselineSizes = new Set<number>();
+    try {
+      const probes = [
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}`,
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}_x`,
+      ];
+      const probeSizes: number[] = [];
+      for (const probe of probes) {
+        const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+          method: "GET",
+          url: `${base}/${probe}`,
+          headers: [],
+          body: null,
+          timeoutMs: 8000,
+          followRedirects: false,
+        });
+        if (r.status === 200) probeSizes.push(r.bytes);
+      }
+      // 2 つとも同じサイズならキャッチオール確定
+      if (probeSizes.length === 2 && probeSizes[0] === probeSizes[1]) {
+        baselineSizes.add(probeSizes[0]);
+        outEl.textContent +=
+          `[INFO] ソフト 404 検出: 存在しないパスでも 200 (${probeSizes[0]}B) を返します。\n` +
+          `       このサイズの 200 応答は除外して表示します (本物だけ拾う)。\n\n`;
+      }
+    } catch {
+      /* プローブ失敗は無視 */
+    }
+    // ----
     const queue = [...paths];
     async function worker(): Promise<void> {
       while (queue.length > 0 && !dbAbort) {
@@ -7360,7 +7441,10 @@ function setupDirBusterSub(): void {
             followRedirects: false,
           });
           done++;
-          if (!excludeSet.has(r.status)) {
+          // ソフト 404 と同じサイズの 200 は偽陽性として除外。
+          const isSoft404 =
+            r.status === 200 && baselineSizes.has(r.bytes);
+          if (!excludeSet.has(r.status) && !isSoft404) {
             found++;
             outEl!.textContent += `[${r.status}] ${url}  (${r.bytes}B)\n`;
             outEl!.scrollTop = outEl!.scrollHeight;
@@ -8100,6 +8184,39 @@ function setupSensitiveFilesSub(): void {
       return;
     }
     outEl.textContent = "";
+
+    // ---- ソフト 404 検出 ----
+    // 存在しないパスを 2 つプローブして、両方とも同じサイズの 200 を返したら
+    // それは「キャッチオール (SPA など)」とみなしてそのサイズの 200 を除外する。
+    const baselineSizes = new Set<number>();
+    try {
+      const probes = [
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}`,
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}_x`,
+      ];
+      const probeSizes: number[] = [];
+      for (const probe of probes) {
+        const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+          method: "GET",
+          url: `${base}/${probe}`,
+          headers: [],
+          body: null,
+          timeoutMs: 5000,
+          followRedirects: false,
+        });
+        if (r.status === 200) probeSizes.push(r.bytes);
+      }
+      if (probeSizes.length === 2 && probeSizes[0] === probeSizes[1]) {
+        baselineSizes.add(probeSizes[0]);
+        outEl.textContent +=
+          `[INFO] ソフト 404 検出: 存在しないパスでも 200 (${probeSizes[0]}B) を返します。\n` +
+          `       このサイズの 200 応答は偽陽性として除外します。\n\n`;
+      }
+    } catch {
+      /* プローブ失敗は無視 */
+    }
+    // ----
+
     for (const p of PATHS) {
       const url = `${base}/${p}`;
       try {
@@ -8111,10 +8228,14 @@ function setupSensitiveFilesSub(): void {
           timeoutMs: 5000,
           followRedirects: false,
         });
+        const isSoft404 =
+          r.status === 200 && baselineSizes.has(r.bytes);
         const interesting =
-          r.status === 200 || r.status === 401 || r.status === 403;
-        const tag = interesting ? "⚠️" : "  ";
-        outEl.textContent += `${tag} [${r.status}] ${url}  (${r.bytes}B)\n`;
+          !isSoft404 &&
+          (r.status === 200 || r.status === 401 || r.status === 403);
+        const tag = interesting ? "⚠️" : isSoft404 ? "🚫" : "  ";
+        const note = isSoft404 ? " (ソフト404)" : "";
+        outEl.textContent += `${tag} [${r.status}] ${url}  (${r.bytes}B)${note}\n`;
         outEl.scrollTop = outEl.scrollHeight;
       } catch {
         outEl.textContent += `   [ERR] ${url}\n`;
@@ -8955,6 +9076,34 @@ function setupGitExposureSub(): void {
     let base = (u?.value || "").trim().replace(/\/+$/, "");
     if (!base) return;
     out.textContent = "スキャン中...";
+
+    // ---- ソフト 404 検出 (キャッチオール SPA 対策) ----
+    const baselineSizes = new Set<number>();
+    try {
+      const probes = [
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}`,
+        `__yuzu_probe_${Math.random().toString(36).slice(2, 10)}_x`,
+      ];
+      const probeSizes: number[] = [];
+      for (const probe of probes) {
+        try {
+          const pr = await fetch(`${base}/${probe}`);
+          if (pr.ok) {
+            const ptxt = await pr.text();
+            probeSizes.push(ptxt.length);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (probeSizes.length === 2 && probeSizes[0] === probeSizes[1]) {
+        baselineSizes.add(probeSizes[0]);
+      }
+    } catch {
+      /* ignore */
+    }
+    // ----
+
     const targets = [
       "/.git/HEAD",
       "/.git/config",
@@ -8992,12 +9141,22 @@ function setupGitExposureSub(): void {
       "/dump.sql",
     ];
     const lines: string[] = [];
+    if (baselineSizes.size > 0) {
+      const bs = [...baselineSizes][0];
+      lines.push(
+        `[INFO] ソフト 404 検出: 存在しないパスでも 200 (${bs}b) を返します。同サイズの 200 は除外。\n`,
+      );
+    }
     for (const p of targets) {
       try {
         const r = await fetch(base + p);
         if (r.ok) {
           const ct = r.headers.get("content-type") || "";
           const txt = await r.text();
+          // ソフト 404 と同サイズなら除外
+          if (baselineSizes.has(txt.length)) {
+            continue;
+          }
           const looksReal =
             !/<html|<!DOCTYPE/i.test(txt.slice(0, 200)) ||
             /\.(zip|gz|sql|json|conf|ini)$/i.test(p);
@@ -9012,7 +9171,7 @@ function setupGitExposureSub(): void {
         /* noop */
       }
     }
-    if (lines.length === 0)
+    if (lines.filter((l) => !l.startsWith("[INFO]")).length === 0)
       lines.push("⭕ 既知の露出ファイルは検出されませんでした");
     else lines.push(`\n→ git 露出があれば: git-dumper ${base}/.git/ /tmp/repo`);
     out.textContent = lines.join("\n");
@@ -9044,7 +9203,17 @@ function setupSourceMapSub(): void {
         const guess = url.replace(/(\?|$)/, ".map$1");
         const r2 = await fetch(guess);
         if (r2.ok) {
-          out.textContent = `🚨 推測ヒット: ${guess}\n${(await r2.text()).slice(0, 4000)}…`;
+          const body = await r2.text();
+          // SPA のキャッチオールは HTML が返るので、本物の sourcemap か検証
+          const trimmed = body.trim();
+          const looksLikeMap =
+            trimmed.startsWith("{") &&
+            /["']version["']\s*:\s*3/.test(trimmed.slice(0, 200));
+          if (!looksLikeMap) {
+            out.textContent = `⚠️ ${guess} は 200 を返しましたが内容が source map ではありません (キャッチオール 404 の可能性)`;
+            return;
+          }
+          out.textContent = `🚨 推測ヒット: ${guess}\n${body.slice(0, 4000)}…`;
           return;
         }
         out.textContent = "sourceMappingURL なし & .map 推測も 404";
@@ -9213,11 +9382,29 @@ function setupFlagExtractSub(): void {
 
 // ===== 🌀 Response Diff =====
 function setupRespDiffSub(): void {
-  const a = document.getElementById("diff-a") as HTMLInputElement | null;
-  const b = document.getElementById("diff-b") as HTMLInputElement | null;
-  const btn = document.getElementById("diff-run") as HTMLButtonElement | null;
-  const out = document.getElementById("diff-out") as HTMLPreElement | null;
+  const a = document.getElementById("rdiff-a") as HTMLInputElement | null;
+  const b = document.getElementById("rdiff-b") as HTMLInputElement | null;
+  const btn = document.getElementById("rdiff-run") as HTMLButtonElement | null;
+  const out = document.getElementById("rdiff-out") as HTMLPreElement | null;
   if (!btn || !out) return;
+
+  type HttpReqResult = {
+    status: number;
+    body: string;
+    bytes: number;
+    time_ms: number;
+  };
+
+  const httpGet = (url: string): Promise<HttpReqResult> =>
+    invoke<HttpReqResult>("pentest_http_request", {
+      method: "GET",
+      url,
+      headers: [],
+      body: null,
+      timeoutMs: 15000,
+      followRedirects: true,
+    });
+
   btn.addEventListener("click", async () => {
     const ua = (a?.value || "").trim();
     const ub = (b?.value || "").trim();
@@ -9227,23 +9414,18 @@ function setupRespDiffSub(): void {
     }
     out.textContent = "取得中...";
     try {
-      const t0a = performance.now();
-      const ra = await fetch(ua);
-      const ta = await ra.text();
-      const t1a = performance.now() - t0a;
-      const t0b = performance.now();
-      const rb = await fetch(ub);
-      const tb = await rb.text();
-      const t1b = performance.now() - t0b;
+      const ra = await httpGet(ua);
+      const rb = await httpGet(ub);
+      const ta = ra.body;
+      const tb = rb.body;
       const lines = [
-        `URL A: ${ra.status} / ${ta.length} bytes / ${t1a.toFixed(0)} ms`,
-        `URL B: ${rb.status} / ${tb.length} bytes / ${t1b.toFixed(0)} ms`,
+        `URL A: ${ra.status} / ${ra.bytes} bytes / ${ra.time_ms} ms`,
+        `URL B: ${rb.status} / ${rb.bytes} bytes / ${rb.time_ms} ms`,
         ``,
         `Status 一致: ${ra.status === rb.status ? "✅" : "🚨 異なる"}`,
-        `Length 差  : ${tb.length - ta.length} bytes${Math.abs(tb.length - ta.length) > 30 ? " 🚨" : ""}`,
-        `時間差     : ${(t1b - t1a).toFixed(0)} ms${Math.abs(t1b - t1a) > 1000 ? " 🚨 (Time-based blind の兆候)" : ""}`,
+        `Length 差  : ${rb.bytes - ra.bytes} bytes${Math.abs(rb.bytes - ra.bytes) > 30 ? " 🚨" : ""}`,
+        `時間差     : ${rb.time_ms - ra.time_ms} ms${Math.abs(rb.time_ms - ra.time_ms) > 1000 ? " 🚨 (Time-based blind の兆候)" : ""}`,
       ];
-      // 共通 prefix の長さ
       let common = 0;
       const max = Math.min(ta.length, tb.length);
       while (common < max && ta[common] === tb[common]) common++;
@@ -10308,9 +10490,49 @@ function setupJwtBruteSub(): void {
   const wEl = document.getElementById(
     "jwtb-words",
   ) as HTMLTextAreaElement | null;
+  const wlEl = document.getElementById(
+    "jwtb-wordlist",
+  ) as HTMLSelectElement | null;
   const btn = document.getElementById("jwtb-run") as HTMLButtonElement | null;
   const out = document.getElementById("jwtb-out") as HTMLDivElement | null;
   if (!btn || !out) return;
+
+  // SecLists のガチ辞書 (初回 DL → localStorage キャッシュ)
+  const JWT_WORDLIST_URLS: Record<string, string> = {
+    "seclists-jwt":
+      "https://raw.githubusercontent.com/wallarm/jwt-secrets/master/jwt.secrets.list",
+    "seclists-10k":
+      "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-10000.txt",
+    "seclists-rockyou-1k":
+      "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-1000.txt",
+    "seclists-rockyou-100k":
+      "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-100000.txt",
+  };
+  async function fetchJwtWordlist(key: string): Promise<string> {
+    const cacheKey = `yuzu-jwt-wordlist-${key}-v1`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) return cached;
+    const url = JWT_WORDLIST_URLS[key];
+    if (!url) throw new Error(`unknown wordlist: ${key}`);
+    const r = await invoke<HttpReqResultTS>("pentest_http_request", {
+      method: "GET",
+      url,
+      headers: [],
+      body: null,
+      timeoutMs: 30000,
+      followRedirects: true,
+    });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const text = r.body || "";
+    if (!text || text.length < 100) throw new Error("empty body");
+    try {
+      localStorage.setItem(cacheKey, text);
+    } catch {
+      /* quota over は無視 */
+    }
+    return text;
+  }
+
   btn.addEventListener("click", async () => {
     const tok = (inEl?.value || "").trim();
     const parts = tok.split(".");
@@ -10334,14 +10556,31 @@ function setupJwtBruteSub(): void {
     }
     const data = parts[0] + "." + parts[1];
     const target = parts[2];
-    const wlRaw = (wEl?.value || "").trim();
-    const words = (wlRaw || JWT_DEFAULT_DICT)
-      .split(/\n/)
+
+    const wl = wlEl?.value || "default";
+    let wlRaw = "";
+    if (wl === "default") {
+      wlRaw = JWT_DEFAULT_DICT;
+    } else if (wl === "custom") {
+      wlRaw = (wEl?.value || "").trim() || JWT_DEFAULT_DICT;
+    } else {
+      try {
+        out.innerHTML = `<span style="color:#888">辞書 DL 中…</span>`;
+        wlRaw = await fetchJwtWordlist(wl);
+      } catch (e) {
+        out.innerHTML = `<span style="color:#cf222e">辞書 DL 失敗: ${escapeHtml(String(e))}</span>`;
+        return;
+      }
+    }
+    const words = wlRaw
+      .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean);
+
     out.innerHTML = `<span style="color:#888">${words.length} 候補をテスト中…</span>`;
     let found: string | null = null;
     let i = 0;
+    const t0 = performance.now();
     for (const w of words) {
       const sig = await hmacSha256B64Url(w, data);
       if (sig === target) {
@@ -10349,6 +10588,12 @@ function setupJwtBruteSub(): void {
         break;
       }
       i++;
+      // 1000 件ごとに進捗表示
+      if (i % 1000 === 0) {
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+        out.innerHTML = `<span style="color:#888">${i} / ${words.length} 試行中… (${elapsed}s)</span>`;
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
     if (found) {
       out.innerHTML = `<div style="color:#1a7f37;font-weight:600">🎉 シークレット発見: <code style="background:#1f1f1f;padding:2px 6px;border-radius:3px">${escapeHtml(found)}</code> (${i + 1} / ${words.length})</div>`;
