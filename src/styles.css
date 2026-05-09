@@ -111,11 +111,11 @@ body {
   height: 30px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   padding: 0 6px;
   background: #1f1f1f;
   border-bottom: 1px solid #2c2c2c;
   user-select: none;
+  gap: 4px;
 }
 .chrome-actions-btn {
   flex: 0 0 auto;
@@ -158,34 +158,23 @@ body {
 .bookmarks-bar-items {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex: 1 1 auto;
-  /* overflow を hidden にすることで Windows WebView2 の middle-click autoscroll の
-     起動条件 (scrollable element) を無くす。autoscroll が動くとメインスレッドの
-     メッセージループが停止し Tauri の run_on_main_thread が実行されずフリーズする。 */
-  overflow-x: hidden;
-  overflow-y: hidden;
-  scrollbar-width: none;
-}
-.bookmarks-bar-items::-webkit-scrollbar {
-  display: none;
-  height: 0;
-}
-.bookmarks-bar-items::-webkit-scrollbar-thumb {
-  background: transparent;
+  min-width: 0;
+  overflow: hidden;
 }
 .bookmarks-bar-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 6px;
-  border-radius: 4px;
+  gap: 3px;
+  height: 22px;
+  padding: 0 3px;
+  border-radius: 3px;
   color: #d8d8d8;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   flex: 0 0 auto;
-  max-width: 130px;
+  max-width: 70px;
   white-space: nowrap;
 }
 .bookmarks-bar-item:hover {
@@ -201,8 +190,8 @@ body {
   box-shadow: inset -2px 0 0 0 #6aa9ff;
 }
 .bookmarks-bar-item .bb-favicon {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
   object-fit: contain;
   -webkit-user-drag: none;
@@ -215,7 +204,7 @@ body {
 .bookmarks-bar-item .bb-title {
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100px;
+  max-width: 48px;
 }
 .bookmarks-bar-empty {
   color: #888;
@@ -289,9 +278,31 @@ body {
   gap: 10px;
   padding: 8px 16px;
   cursor: pointer;
+  user-select: none;
 }
 .bookmarks-list .bookmark-item:hover {
   background: #232323;
+}
+.bookmarks-list .bookmark-item.dragging {
+  opacity: 0.5;
+}
+.bookmarks-list .bookmark-item.drop-before {
+  box-shadow: inset 0 2px 0 0 #6aa9ff;
+}
+.bookmarks-list .bookmark-item.drop-after {
+  box-shadow: inset 0 -2px 0 0 #6aa9ff;
+}
+.bookmarks-list .bookmark-handle {
+  flex: 0 0 auto;
+  width: 16px;
+  color: #666;
+  font-size: 14px;
+  cursor: grab;
+  text-align: center;
+  user-select: none;
+}
+.bookmarks-list .bookmark-handle:active {
+  cursor: grabbing;
 }
 .bookmarks-list .bookmark-favicon {
   width: 16px;
@@ -493,6 +504,8 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .toolbox-row button:hover:not([disabled]) {
   background: #353535;
@@ -1244,24 +1257,25 @@ body.downloads-overlay-open {
 }
 .dl-toast-host {
   position: fixed;
-  top: 60px;
-  right: 16px;
+  top: 56px;
+  right: 12px;
   z-index: 10010;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   pointer-events: none;
 }
 .dl-toast {
   background: #1f2937;
   color: #f1f5f9;
-  border-left: 4px solid #60a5fa;
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-left: 3px solid #60a5fa;
+  border-radius: 4px;
+  padding: 4px 8px;
   min-width: 240px;
-  max-width: 360px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-  font-size: 13px;
+  max-width: 320px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 11px;
+  line-height: 1.25;
   animation: dl-toast-in 0.25s ease-out;
   pointer-events: auto;
 }
@@ -1276,11 +1290,71 @@ body.downloads-overlay-open {
 }
 .dl-toast-title {
   font-weight: bold;
-  margin-bottom: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dl-toast-body {
-  font-size: 11px;
+  font-size: 10px;
   opacity: 0.85;
+  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dl-toast-progress {
+  cursor: pointer;
+}
+.dl-toast-barwrap {
+  margin-top: 3px;
+  width: 100%;
+  height: 4px;
+  background: #0f172a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.dl-toast-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #60a5fa, #3b82f6);
+  border-radius: 2px;
+  transition: width 0.15s ease-out;
+}
+.dl-toast.dl-toast-finished .dl-toast-bar {
+  background: linear-gradient(90deg, #4ade80, #22c55e);
+}
+.dl-toast.dl-toast-failed .dl-toast-bar {
+  background: linear-gradient(90deg, #f87171, #ef4444);
+}
+.dl-toast-bar-indet {
+  animation: dl-toast-indet 1.4s ease-in-out infinite;
+}
+@keyframes dl-toast-indet {
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.4;
+  }
+}
+.dl-toast-meta {
+  margin-top: 2px;
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  opacity: 0.85;
+}
+.dl-toast-pct {
+  font-weight: bold;
+  flex: 0 0 auto;
+}
+.dl-toast-stats {
+  flex: 1 1 auto;
+  text-align: right;
   word-break: break-all;
 }
 .dl-actions {

@@ -685,6 +685,128 @@ fn ipc_remove_self_port() {
     let _ = std::fs::remove_file(ipc_registry_path(std::process::id()));
 }
 
+// ===== 異常終了からの復旧 =====
+//
+// ダウンロード中等にユーザがアプリを強制終了すると、
+//   - 親 (yuzu-browser.exe) は死んだのに子 msedgewebview2.exe が残る
+//   - EBWebView/Default に書きかけのセッション/ダウンロード状態が残る
+// という状況になる。次回起動時、新しい WebView2 が同じ user_data_folder を
+// 触ろうとしてヘルパープロセスのクラッシュリカバリ待ちで固まり、
+// 「yuzu-browser (応答なし)」になる。
+//
+// 起動時に lock ファイルの有無で前回の異常終了を検出し、必要なら
+// 残存ヘルパーを taskkill して、リカバリ用ファイルを掃除する。
+// 正常終了 (RunEvent::Exit) で lock を消すので、誤発動はしない。
+
+fn dirty_run_lock_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("running.lock"))
+}
+
+fn webview2_user_data_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(d) = app.path().app_local_data_dir() {
+        out.push(d.join("EBWebView"));
+    }
+    if let Ok(d) = app.path().app_data_dir() {
+        let p = d.join("EBWebView");
+        if !out.iter().any(|x| x == &p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn recover_from_dirty_shutdown(app: &AppHandle) {
+    let Some(lock) = dirty_run_lock_path(app) else { return };
+    let dirty = lock.exists();
+    if let Some(parent) = lock.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if dirty {
+        eprintln!("[recover] previous run did not exit cleanly; cleaning up WebView2 state");
+        for udf in webview2_user_data_dirs(app) {
+            if !udf.exists() {
+                continue;
+            }
+            kill_orphan_webview2(&udf);
+            cleanup_webview2_recovery_files(&udf);
+        }
+    }
+    // 自分の run マーカーを置き直す。
+    let _ = std::fs::write(&lock, format!("{}", std::process::id()));
+}
+
+fn clear_dirty_run_marker(app: &AppHandle) {
+    if let Some(p) = dirty_run_lock_path(app) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn kill_orphan_webview2(user_data_folder: &PathBuf) {
+    // PowerShell 経由で msedgewebview2.exe のうち、CommandLine に
+    // この user_data_folder を含むものだけを Stop-Process する。
+    // 他アプリの WebView2 を巻き込まないために必ずパス一致を見る。
+    let path = user_data_folder.to_string_lossy().to_string();
+    // PowerShell 文字列リテラル用に ' をエスケープ。
+    let escaped = path.replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue';\
+         $needle='{escaped}';\
+         try {{ \
+           Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | \
+             Where-Object {{ $_.CommandLine -and $_.CommandLine.ToLower().Contains($needle.ToLower()) }} | \
+             ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }} \
+         }} catch {{}}"
+    );
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .spawn()
+        .and_then(|mut c| c.wait());
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_orphan_webview2(_user_data_folder: &PathBuf) {}
+
+fn cleanup_webview2_recovery_files(user_data_folder: &PathBuf) {
+    // Chromium 系のセッション復元/ダウンロード復元のトリガになるファイル類。
+    // 消しても Cookie/履歴/キャッシュは残るので、ユーザデータは失わない。
+    let default_dir = user_data_folder.join("Default");
+    let candidates: &[&str] = &[
+        "Sessions",
+        "Session Storage",
+        "Current Session",
+        "Current Tabs",
+        "Last Session",
+        "Last Tabs",
+        "DownloadMetadata",
+    ];
+    for name in candidates {
+        let p = default_dir.join(name);
+        if p.is_dir() {
+            let _ = std::fs::remove_dir_all(&p);
+        } else if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    // 中途半端な partial download (.crdownload) も掃除する。
+    if let Ok(rd) = std::fs::read_dir(&default_dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("crdownload") {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+}
+
 fn ipc_read_port_for_pid(pid: u32) -> Option<u16> {
     let txt = std::fs::read_to_string(ipc_registry_path(pid)).ok()?;
     let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
@@ -928,9 +1050,27 @@ async fn tab_reattach(
     }
 
     if close_src {
-        if let Some(src_win) = app.get_window(&src_label) {
-            let _ = src_win.close();
+        // 重要: reparent 直後に src_win.close() すると、Tauri 内部の WebviewManager が
+        // 「reparent 済み」を反映する前に旧ウィンドウの破棄処理が走り、
+        // 移したばかりの webview まで一緒に破壊されてしまうことがある (タブが消える)。
+        // 別スレッドで遅延させ、Tauri 側のブックキーピングが追いつくのを待ってから閉じる。
+        // 併せて TabState の active マップから src のエントリを除去する。
+        {
+            let mut s = state.0.lock().map_err(|e| e.to_string())?;
+            s.active.remove(&src_label);
+            s.closed.remove(&src_label);
         }
+        let app_c = app.clone();
+        let src_c = src_label.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let app_inner = app_c.clone();
+            let _ = app_c.run_on_main_thread(move || {
+                if let Some(w) = app_inner.get_window(&src_c) {
+                    let _ = w.close();
+                }
+            });
+        });
     } else {
         let s = state.0.lock().map_err(|e| e.to_string())?;
         relayout(&window, &s);
@@ -1313,6 +1453,27 @@ async fn tab_close(
     id: u64,
 ) -> Result<(), String> {
     let win_label = window.label().to_string();
+    // 進行中ダウンロードを抱えているタブは閉じさせない。
+    // フロント側で確認ダイアログを出して `force=true` で再呼び出し可能にしたい
+    // ところだが、現状の UI からは強制クローズは不要なので素直に拒否する。
+    {
+        let dl_state = app.state::<DownloadState>();
+        let busy = dl_state
+            .0
+            .lock()
+            .map(|s| {
+                s.items
+                    .iter()
+                    .any(|i| i.tab_id == Some(id) && i.status == "in-progress")
+            })
+            .unwrap_or(false);
+        if busy {
+            return Err(
+                "このタブはダウンロード中のため閉じられません。完了するか中止してください。"
+                    .to_string(),
+            );
+        }
+    }
     // 1) ロック内で状態を更新（webview close は別途）
     let close_window = {
         let mut s = state.0.lock().map_err(|e| e.to_string())?;
@@ -1333,9 +1494,9 @@ async fn tab_close(
             let next = s.order_in(&owner).last().copied();
             s.set_active_in(&owner, next);
         }
-        // そのウィンドウのタブがゼロになったらウィンドウも閉じる（ただしメインは閉じない）。
-        let empty = s.order_in(&owner).is_empty();
-        empty && owner != "main"
+        // そのウィンドウのタブがゼロになったらウィンドウも閉じる。
+        // 全ウィンドウが閉じれば Tauri が自動で終了する。
+        s.order_in(&owner).is_empty()
     };
     // 2) ロック外で webview close
     if let Some(view) = window.get_webview(&view_label(id)) {
@@ -2220,6 +2381,209 @@ fn view_set_volume_boost(
     Ok(())
 }
 
+// ===== ブックマーク =====
+//
+// シンプルな URL ブックマーク機能。`app_data_dir/bookmarks.json` に永続化し、
+// フロントエンドから一覧取得 / 追加 / 削除 / 並べ替えを行う。
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Bookmark {
+    id: u64,
+    url: String,
+    title: String,
+    #[serde(default)]
+    favicon: String,
+    #[serde(default)]
+    added_at: i64,
+}
+
+#[derive(Default)]
+struct BookmarkStoreInner {
+    items: Vec<Bookmark>,
+    next_id: u64,
+    path: Option<PathBuf>,
+}
+
+impl BookmarkStoreInner {
+    fn load(path: PathBuf) -> Self {
+        let mut store = BookmarkStoreInner {
+            items: Vec::new(),
+            next_id: 1,
+            path: Some(path.clone()),
+        };
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(items) = serde_json::from_str::<Vec<Bookmark>>(&text) {
+                let max_id = items.iter().map(|b| b.id).max().unwrap_or(0);
+                store.items = items;
+                store.next_id = max_id + 1;
+            }
+        }
+        store
+    }
+    fn save(&self) -> Result<(), String> {
+        if let Some(path) = &self.path {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let json = serde_json::to_string_pretty(&self.items).map_err(|e| e.to_string())?;
+            std::fs::write(path, json).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct BookmarkStore(Mutex<BookmarkStoreInner>);
+
+fn emit_bookmarks(app: &AppHandle, items: &[Bookmark]) {
+    // 全 chrome ウィンドウへ配信。フロントは受信したら再描画する。
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(s) = state.0.lock() {
+            for win in s.windows() {
+                let _ = app.emit_to(chrome_label_for(&win), "bookmarks-updated", items);
+            }
+            return;
+        }
+    }
+    let _ = app.emit_to("ui", "bookmarks-updated", items);
+}
+
+#[tauri::command]
+fn bookmarks_list(state: State<'_, BookmarkStore>) -> Result<Vec<Bookmark>, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.items.clone())
+}
+
+#[tauri::command]
+fn bookmarks_add(
+    app: AppHandle,
+    state: State<'_, BookmarkStore>,
+    url: String,
+    title: String,
+    favicon: Option<String>,
+) -> Result<Bookmark, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("url is empty".to_string());
+    }
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    // 同一 URL が既にあれば、その項目を返す（重複追加を抑止）。
+    if let Some(existing) = s.items.iter().find(|b| b.url == url).cloned() {
+        return Ok(existing);
+    }
+    let id = s.next_id;
+    s.next_id += 1;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let bm = Bookmark {
+        id,
+        url,
+        title: if title.trim().is_empty() {
+            "(無題)".to_string()
+        } else {
+            title
+        },
+        favicon: favicon.unwrap_or_default(),
+        added_at: now,
+    };
+    s.items.push(bm.clone());
+    let _ = s.save();
+    let items = s.items.clone();
+    drop(s);
+    emit_bookmarks(&app, &items);
+    Ok(bm)
+}
+
+#[tauri::command]
+fn bookmarks_remove(
+    app: AppHandle,
+    state: State<'_, BookmarkStore>,
+    id: u64,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let before = s.items.len();
+    s.items.retain(|b| b.id != id);
+    if s.items.len() == before {
+        return Ok(());
+    }
+    let _ = s.save();
+    let items = s.items.clone();
+    drop(s);
+    emit_bookmarks(&app, &items);
+    Ok(())
+}
+
+#[tauri::command]
+fn bookmarks_remove_url(
+    app: AppHandle,
+    state: State<'_, BookmarkStore>,
+    url: String,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let before = s.items.len();
+    s.items.retain(|b| b.url != url);
+    if s.items.len() == before {
+        return Ok(());
+    }
+    let _ = s.save();
+    let items = s.items.clone();
+    drop(s);
+    emit_bookmarks(&app, &items);
+    Ok(())
+}
+
+#[tauri::command]
+fn bookmarks_reorder(
+    app: AppHandle,
+    state: State<'_, BookmarkStore>,
+    id: u64,
+    to_index: usize,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let from = match s.items.iter().position(|b| b.id == id) {
+        Some(i) => i,
+        None => return Ok(()),
+    };
+    let item = s.items.remove(from);
+    let dest = to_index.min(s.items.len());
+    s.items.insert(dest, item);
+    let _ = s.save();
+    let items = s.items.clone();
+    drop(s);
+    emit_bookmarks(&app, &items);
+    Ok(())
+}
+
+#[tauri::command]
+fn bookmarks_update(
+    app: AppHandle,
+    state: State<'_, BookmarkStore>,
+    id: u64,
+    title: Option<String>,
+    url: Option<String>,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    let Some(item) = s.items.iter_mut().find(|b| b.id == id) else {
+        return Ok(());
+    };
+    if let Some(t) = title {
+        item.title = if t.trim().is_empty() { item.title.clone() } else { t };
+    }
+    if let Some(u) = url {
+        let u = u.trim();
+        if !u.is_empty() {
+            item.url = u.to_string();
+        }
+    }
+    let _ = s.save();
+    let items = s.items.clone();
+    drop(s);
+    emit_bookmarks(&app, &items);
+    Ok(())
+}
+
 // ===== ツールボックス =====
 //
 // 拡張可能な「ツールボックス」UI 用のコマンド群。第 1 弾として yt-dlp を
@@ -2435,6 +2799,43 @@ struct YtdlpRunArgs {
     quality: String,
 }
 
+/// `&list=...&index=...` のような再生リスト系クエリを取り除き、単一動画として扱える URL に
+/// 整形する。`--no-playlist` だけでは消えないケース (watch?v=X&list=Y) があるため明示的に削る。
+fn normalize_ytdlp_url(input: &str) -> String {
+    let trimmed = input.trim();
+    let parsed = match url::Url::parse(trimmed) {
+        Ok(u) => u,
+        Err(_) => return trimmed.to_string(),
+    };
+    // YouTube ホスト以外はそのまま返す
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let is_youtube = host.ends_with("youtube.com")
+        || host.ends_with("youtube-nocookie.com")
+        || host == "youtu.be"
+        || host.ends_with(".youtu.be");
+    if !is_youtube {
+        return trimmed.to_string();
+    }
+    let mut out = parsed.clone();
+    let drop = ["list", "index", "start_radio", "pp", "feature"];
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| !drop.iter().any(|d| k.eq_ignore_ascii_case(d)))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    {
+        let mut q = out.query_pairs_mut();
+        q.clear();
+        for (k, v) in &kept {
+            q.append_pair(k, v);
+        }
+    }
+    if kept.is_empty() {
+        out.set_query(None);
+    }
+    out.to_string()
+}
+
 #[tauri::command]
 fn toolbox_ytdlp_run(
     app: AppHandle,
@@ -2454,10 +2855,15 @@ fn toolbox_ytdlp_run(
     let ytdlp_pathbuf = ensure_ytdlp(&app)?;
     let exe = ytdlp_pathbuf.to_string_lossy().to_string();
 
+    // YouTube などで `&list=…&index=…` が付いていると yt-dlp が再生リスト全体を
+    // ダウンロードしてしまうので、関連するクエリを取り除いた URL を組み立てる。
+    let normalized_url = normalize_ytdlp_url(&args.url);
+
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--no-colors")
         .arg("--newline")
         .arg("--no-mtime")
+        .arg("--no-playlist")
         .arg("-o")
         .arg(format!("{}/%(title)s [%(id)s].%(ext)s", download_dir));
 
@@ -2474,7 +2880,7 @@ fn toolbox_ytdlp_run(
         };
         cmd.args(["-f", &format, "--merge-output-format", "mp4"]);
     }
-    cmd.arg(&args.url);
+    cmd.arg(&normalized_url);
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null());
@@ -2509,7 +2915,7 @@ fn toolbox_ytdlp_run(
         "toolbox-ytdlp-progress",
         YtdlpProgress {
             job_id,
-            line: format!("$ {} {}", exe, args.url),
+            line: format!("$ {} {}", exe, normalized_url),
             kind: "info".to_string(),
         },
     );
@@ -3017,7 +3423,11 @@ fn toolbox_save_page_html(url: String, dir: String) -> Result<String, String> {
             return Err("ファイル名候補を使い切りました".to_string());
         }
     }
-    std::fs::write(&path, &bytes).map_err(|e| format!("書き込み失敗: {}", e))?;
+    // 取得した HTML に <base href="..."> を挿入し、相対パスのリソースが
+    // ローカルで開いた時にも解決できるようにする。
+    let text_with_base = inject_base_href(&text, parsed.as_str());
+    std::fs::write(&path, text_with_base.as_bytes())
+        .map_err(|e| format!("書き込み失敗: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -3187,9 +3597,7 @@ fn view_set_reader_mode(
 // ===== スクリーンショット =====
 
 #[derive(Default)]
-struct ScreenshotState(Mutex<Option<PageMetrics>>);
-
-#[derive(Clone, Copy, Debug)]
+struct ScreenshotState(Mutex<Option<PageMetrics>>);#[derive(Clone, Copy, Debug)]
 struct PageMetrics {
     scroll_height: f64,
     inner_height: f64,
@@ -3378,8 +3786,10 @@ async fn toolbox_screenshot_full_page(
     let view_size = view.size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let viewport_h_logical = metrics.inner_height.max(1.0);
-    // 安全のため大きすぎるページは制限（最大 30000px logical）
-    let total_h_logical = metrics.scroll_height.min(30000.0).max(viewport_h_logical);
+    // 安全のため大きすぎるページは制限（最大 16000px logical）。
+    // 16000 × DPR=1.5 = 24000px の PNG でもメモリ ~370MB なので
+    // これより大きいと体感的に「終わらない」になる。
+    let total_h_logical = metrics.scroll_height.min(16000.0).max(viewport_h_logical);
     let total_h_px = ((total_h_logical * scale) as u32).max(1);
     let total_w_px = view_size.width.max(1);
 
@@ -3387,14 +3797,16 @@ async fn toolbox_screenshot_full_page(
 
     let mut y_logical = 0.0_f64;
     let mut iter = 0;
-    while y_logical < total_h_logical && iter < 200 {
+    // タイル数上限。viewport_h=600 でも 60 タイル = 36000px までカバー。
+    let max_iter = 60_u32;
+    while y_logical < total_h_logical && iter < max_iter {
         let script = format!(
             "window.scrollTo({{left:0,top:{},behavior:'auto'}});",
             y_logical
         );
         view.eval(&script).map_err(|e| e.to_string())?;
-        // レイアウト・再描画を待つ
-        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        // レイアウト・再描画を待つ (短めにして体感を改善)。
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
         let tile = capture_view_viewport(&window, &view)?;
         let dest_y_px = (y_logical * scale) as i64;
@@ -3447,6 +3859,176 @@ fn toolbox_save_data_url(dir: String, data_url: String) -> Result<String, String
         .unwrap_or(0);
     let path = dir_path.join(format!("screenshot_{}.png", ts));
     std::fs::write(&path, &bytes).map_err(|e| format!("保存失敗: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+// ===== アクティブタブの HTML 取得 =====
+
+/// `view_get_active_html` が完了通知を待つためのバッファ。
+/// req_id -> (html, url).
+#[derive(Default)]
+struct ActiveHtmlState(Mutex<HashMap<u64, (String, String)>>);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportActiveHtmlArgs {
+    req_id: u64,
+    html: String,
+    #[serde(default)]
+    url: String,
+}
+
+#[tauri::command]
+fn report_active_html(
+    state: State<'_, ActiveHtmlState>,
+    args: ReportActiveHtmlArgs,
+) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    s.insert(args.req_id, (args.html, args.url));
+    Ok(())
+}
+
+/// アクティブタブの webview から `document.documentElement.outerHTML` と `location.href` を
+/// 取得して返す。`<base href>` を head に挿入し、相対 URL のリソースが開いた時に解決できるようにする。
+async fn fetch_active_html_inner(
+    window: &Window,
+    state: &State<'_, AppState>,
+    html_state: &State<'_, ActiveHtmlState>,
+) -> Result<(String, String), String> {
+    let id = {
+        let s = state.0.lock().map_err(|e| e.to_string())?;
+        s.active_in(&window.label())
+            .ok_or_else(|| "アクティブなタブがありません".to_string())?
+    };
+    let view = window
+        .get_webview(&view_label(id))
+        .ok_or_else(|| "アクティブなビューが見つかりません".to_string())?;
+    let req_id: u64 = {
+        // 単純なミリ秒タイムスタンプを id 代わりに使う
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0)
+    };
+    let script = format!(
+        r#"(function(){{
+  try {{
+    var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    var url = location.href;
+    if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+      window.__TAURI_INTERNALS__.invoke('report_active_html', {{
+        args: {{ reqId: {req_id}, html: html, url: url }}
+      }});
+    }}
+  }} catch (e) {{
+    if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+      window.__TAURI_INTERNALS__.invoke('report_active_html', {{
+        args: {{ reqId: {req_id}, html: '', url: '' }}
+      }});
+    }}
+  }}
+}})();"#,
+        req_id = req_id
+    );
+    view.eval(&script).map_err(|e| e.to_string())?;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        if let Ok(mut s) = html_state.0.lock() {
+            if let Some(entry) = s.remove(&req_id) {
+                if entry.0.is_empty() {
+                    return Err("ページの HTML を取得できませんでした".to_string());
+                }
+                return Ok(entry);
+            }
+        }
+    }
+    Err("ページの HTML 取得がタイムアウトしました".to_string())
+}
+
+#[tauri::command]
+async fn view_get_active_html(
+    window: Window,
+    state: State<'_, AppState>,
+    html_state: State<'_, ActiveHtmlState>,
+) -> Result<ActiveHtmlPayload, String> {
+    let (html, url) = fetch_active_html_inner(&window, &state, &html_state).await?;
+    Ok(ActiveHtmlPayload { html, url })
+}
+
+#[derive(serde::Serialize)]
+struct ActiveHtmlPayload {
+    html: String,
+    url: String,
+}
+
+/// `<head>` の先頭 (charset の直後あたり) に `<base href>` を差し込む。
+fn inject_base_href(html: &str, base_url: &str) -> String {
+    if base_url.is_empty() || html.contains("<base ") {
+        return html.to_string();
+    }
+    let lower = html.to_ascii_lowercase();
+    let tag = format!(
+        "<base href=\"{}\">",
+        base_url.replace('"', "&quot;")
+    );
+    if let Some(pos) = lower.find("<head") {
+        if let Some(close) = lower[pos..].find('>') {
+            let insert_at = pos + close + 1;
+            let mut out = String::with_capacity(html.len() + tag.len());
+            out.push_str(&html[..insert_at]);
+            out.push_str(&tag);
+            out.push_str(&html[insert_at..]);
+            return out;
+        }
+    }
+    // <head> が無い場合は先頭に挿入
+    format!("{}\n{}", tag, html)
+}
+
+/// アクティブタブの描画済み HTML を保存する。SPA でも実描画後の DOM を取れる。
+#[tauri::command]
+async fn toolbox_save_active_page_html(
+    window: Window,
+    state: State<'_, AppState>,
+    html_state: State<'_, ActiveHtmlState>,
+    dir: String,
+) -> Result<String, String> {
+    let dir = dir.trim().to_string();
+    if dir.is_empty() {
+        return Err("保存先が未設定です".to_string());
+    }
+    let (html, url) = fetch_active_html_inner(&window, &state, &html_state).await?;
+    let parsed = url::Url::parse(&url).ok();
+    let title = extract_title(&html);
+    let base_name = title
+        .as_deref()
+        .map(sanitize_filename)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            parsed
+                .as_ref()
+                .and_then(|u| u.host_str().map(|h| sanitize_filename(h)))
+                .unwrap_or_else(|| "page".to_string())
+        });
+    let mut base_name = base_name;
+    if base_name.len() > 80 {
+        base_name.truncate(80);
+    }
+    let dir_path = std::path::PathBuf::from(&dir);
+    std::fs::create_dir_all(&dir_path)
+        .map_err(|e| format!("保存先フォルダ作成失敗: {}", e))?;
+    let mut path = dir_path.join(format!("{}.html", base_name));
+    let mut idx: u32 = 1;
+    while path.exists() {
+        path = dir_path.join(format!("{}_{}.html", base_name, idx));
+        idx += 1;
+        if idx > 9999 {
+            return Err("ファイル名候補を使い切りました".to_string());
+        }
+    }
+    let final_html = inject_base_href(&html, &url);
+    std::fs::write(&path, final_html.as_bytes())
+        .map_err(|e| format!("書き込み失敗: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -5421,10 +6003,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .manage(BookmarkStore::default())
         .manage(ToolboxState::default())
         .manage(TerminalState::default())
         .manage(DownloadState::default())
         .manage(ScreenshotState::default())
+        .manage(ActiveHtmlState::default())
         .invoke_handler(tauri::generate_handler![
             tab_new,
             tab_close,
@@ -5463,6 +6047,12 @@ pub fn run() {
             view_set_volume_boost,
             toolbox_settings_get,
             toolbox_settings_set,
+            bookmarks_list,
+            bookmarks_add,
+            bookmarks_remove,
+            bookmarks_remove_url,
+            bookmarks_reorder,
+            bookmarks_update,
             toolbox_pick_download_dir,
             toolbox_default_download_dir,
             toolbox_ytdlp_run,
@@ -5472,6 +6062,9 @@ pub fn run() {
             toolbox_convert_run,
             toolbox_convert_cancel,
             toolbox_save_page_html,
+            toolbox_save_active_page_html,
+            view_get_active_html,
+            report_active_html,
             view_set_reader_mode,
             toolbox_screenshot,
             toolbox_screenshot_full_page,
@@ -5522,6 +6115,12 @@ pub fn run() {
             downloads_verify_hash,
         ])
         .setup(|app| {
+            // 直前の起動が異常終了 (ダウンロード中の強制終了等) していた場合、
+            // 残った WebView2 ヘルパープロセスや EBWebView の中途半端な
+            // セッション/ダウンロード状態が新しい WebView2 の初期化を
+            // ブロックして「応答なし」になる。起動前にここで掃除する。
+            recover_from_dirty_shutdown(app.handle());
+
             // ウィンドウ間タブ転送用の TCP IPC を起動する。
             match ipc_spawn_listener(app.handle().clone()) {
                 Ok(port) => {
@@ -5556,6 +6155,15 @@ pub fn run() {
                 let path = dir.join("downloads.json");
                 let store = DownloadStateInner::load(path);
                 let state: State<'_, DownloadState> = app.state();
+                if let Ok(mut s) = state.0.lock() {
+                    *s = store;
+                };
+            }
+            // ブックマークをロード。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let path = dir.join("bookmarks.json");
+                let store = BookmarkStoreInner::load(path);
+                let state: State<'_, BookmarkStore> = app.state();
                 if let Ok(mut s) = state.0.lock() {
                     *s = store;
                 };
@@ -5666,6 +6274,7 @@ pub fn run() {
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 ipc_remove_self_port();
+                clear_dirty_run_marker(_app);
             }
         });
 }
@@ -7092,6 +7701,10 @@ fn handle_download_event(app: &AppHandle, tab_id: u64, event: DownloadEvent<'_>)
             };
             if let Some(it) = item {
                 let _ = app.emit("download-started", &it);
+                // WebView2 のネイティブ DownloadEvent は環境によって
+                // `Finished` を吐かないことがある。ファイルサイズを
+                // 監視して進捗イベントを生成し、停止検知で完了扱いにする。
+                spawn_native_download_watchdog(app.clone(), it.id, final_path.clone());
             }
             true
         }
@@ -7123,6 +7736,112 @@ fn handle_download_event(app: &AppHandle, tab_id: u64, event: DownloadEvent<'_>)
         }
         _ => true,
     }
+}
+
+/// WebView2 ネイティブダウンロードの伴走スレッド。
+/// 一定間隔で対象ファイル (本体 or `*.crdownload`) のサイズを計測し、
+/// `download-progress` を emit する。サイズが伸びなくなったら完了扱いにする。
+/// `DownloadEvent::Finished` が先に来た場合はそちらが状態を更新するので、
+/// このスレッドは「もう in-progress ではない」を観測した時点で離脱する。
+fn spawn_native_download_watchdog(app: AppHandle, id: u64, final_path: PathBuf) {
+    std::thread::spawn(move || {
+        // crdownload と本体の両方をチェック (どちらに書かれているかは環境依存)。
+        let crdownload = {
+            let mut p = final_path.clone();
+            let new_ext = match p.extension().and_then(|e| e.to_str()) {
+                Some(e) => format!("{}.crdownload", e),
+                None => "crdownload".to_string(),
+            };
+            p.set_extension(new_ext);
+            p
+        };
+        let measure = || -> u64 {
+            let a = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+            let b = std::fs::metadata(&crdownload).map(|m| m.len()).unwrap_or(0);
+            a.max(b)
+        };
+        let mut last_bytes: u64 = 0;
+        let mut last_change = std::time::Instant::now();
+        // 完了とみなす停滞時間。ネット詰まりも考慮して 10 秒。
+        let stall_timeout = std::time::Duration::from_secs(10);
+        // 念のための上限 (24 時間)。
+        let hard_deadline = std::time::Instant::now() + std::time::Duration::from_secs(86_400);
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // 本体の状態を確認。完了済みになっていたら抜ける。
+            let still_in_progress = {
+                if let Some(dl_state) = app.try_state::<DownloadState>() {
+                    if let Ok(s) = dl_state.0.lock() {
+                        s.items
+                            .iter()
+                            .find(|i| i.id == id)
+                            .map(|i| i.status == "in-progress")
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    }
+                } else {
+                    return;
+                }
+            };
+            if !still_in_progress {
+                return;
+            }
+
+            let bytes = measure();
+            if bytes != last_bytes {
+                last_bytes = bytes;
+                last_change = std::time::Instant::now();
+                let _ = app.emit(
+                    "download-progress",
+                    serde_json::json!({
+                        "id": id,
+                        "bytes": bytes,
+                        "total": serde_json::Value::Null,
+                    }),
+                );
+            }
+
+            let stalled = last_change.elapsed() > stall_timeout;
+            let timed_out = std::time::Instant::now() > hard_deadline;
+            if !stalled && !timed_out {
+                continue;
+            }
+
+            // 停滞 → 完了/失敗を確定する。
+            // `*.crdownload` が消えて本体が残っていれば完了。
+            // どちらも残っていれば失敗 (中断) として扱う。
+            let body_exists = final_path.exists();
+            let part_exists = crdownload.exists();
+            let final_bytes = std::fs::metadata(&final_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let success = body_exists && !part_exists && final_bytes > 0;
+
+            let mut updated: Option<DownloadItem> = None;
+            if let Some(dl_state) = app.try_state::<DownloadState>() {
+                if let Ok(mut s) = dl_state.0.lock() {
+                    if let Some(it) = s.items.iter_mut().find(|i| i.id == id) {
+                        if it.status == "in-progress" {
+                            it.status = if success { "completed".into() } else { "failed".into() };
+                            it.finished_at = Some(now_ms());
+                            it.bytes = final_bytes;
+                            if success {
+                                it.mime = sniff_mime(&final_path);
+                            }
+                            updated = Some(it.clone());
+                        }
+                    }
+                    s.save();
+                }
+            }
+            if let Some(it) = updated {
+                let _ = app.emit("download-finished", &it);
+            }
+            return;
+        }
+    });
 }
 
 #[tauri::command]

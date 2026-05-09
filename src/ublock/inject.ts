@@ -98,7 +98,8 @@ async function idbGet(): Promise<EngineRecord | null> {
     const tx = db.transaction(DB_STORE, "readonly");
     const store = tx.objectStore(DB_STORE);
     const req = store.get(DB_KEY);
-    req.onsuccess = () => resolve((req.result as EngineRecord | undefined) ?? null);
+    req.onsuccess = () =>
+      resolve((req.result as EngineRecord | undefined) ?? null);
     req.onerror = () => reject(req.error);
   });
 }
@@ -155,9 +156,7 @@ function installNetworkHooks(engine: FiltersEngine): void {
             ? input.href
             : input.url;
       if (isBlocked(engine, url, "xhr")) {
-        return Promise.reject(
-          new TypeError("blocked by yuzu-ublock"),
-        );
+        return Promise.reject(new TypeError("blocked by yuzu-ublock"));
       }
       return origFetch(input as RequestInfo, init);
     };
@@ -194,14 +193,20 @@ function installNetworkHooks(engine: FiltersEngine): void {
         } catch (_) {}
         return;
       }
-      return origSend.call(this, body as Document | XMLHttpRequestBodyInit | null);
+      return origSend.call(
+        this,
+        body as Document | XMLHttpRequestBodyInit | null,
+      );
     };
   }
 
   // sendBeacon
   if (navigator.sendBeacon) {
     const orig = navigator.sendBeacon.bind(navigator);
-    navigator.sendBeacon = function (url: string | URL, data?: BodyInit | null) {
+    navigator.sendBeacon = function (
+      url: string | URL,
+      data?: BodyInit | null,
+    ) {
       const u = typeof url === "string" ? url : url.href;
       if (isBlocked(engine, u, "ping")) return true;
       return orig(u, data ?? null);

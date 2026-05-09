@@ -71,6 +71,17 @@ async function tabClose(id: number): Promise<void> {
     await invoke("tab_close", { id });
   } catch (e) {
     console.error("tab_close failed:", e);
+    // バックエンドからの拒否メッセージ (ダウンロード中など) は素直にユーザに見せる。
+    const msg = String(e ?? "");
+    if (msg) {
+      try {
+        // alert は WebView2 でも素朴に動く。
+        // eslint-disable-next-line no-alert
+        window.alert(msg);
+      } catch {
+        /* noop */
+      }
+    }
   }
 }
 
@@ -472,6 +483,7 @@ function onViewNavigated(payload: { id: number; url: string }): void {
     if (!editing) {
       input.value = payload.url;
     }
+    updateBookmarkToggle();
   }
 }
 
@@ -494,6 +506,7 @@ function onTabsUpdated(next: TabInfo[]): void {
   if (active) {
     void syncControlsForTab(active.id);
   }
+  updateBookmarkToggle();
 }
 
 /** 指定タブのズームをツールバー UI に反映。 */
@@ -672,6 +685,10 @@ window.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       const a = activeTab();
       if (a) void tabDuplicate(a.id);
+    } else if (e.ctrlKey && !e.shiftKey && k === "d") {
+      // Ctrl+D で現在のページをブックマーク
+      e.preventDefault();
+      void toggleBookmarkCurrent();
     } else if (e.ctrlKey && k === "tab") {
       e.preventDefault();
       const idx = tabs.findIndex((t) => t.active);
@@ -726,6 +743,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ダウンロード UI を初期化（ツールボックスから開くパネル）
   void setupDownloadsUI();
+
+  // ブックマーク UI を初期化
+  void setupBookmarks();
 
   // 初期タブリスト取得 + バックエンドへ chrome 準備完了を通知。
   // バックエンドは chrome_ready を受け取ったら即座に tabs-updated を再 emit するので、
@@ -886,9 +906,52 @@ async function setupToolbox(): Promise<void> {
 
   // ===== ツールの並び替え (D&D) =====
   // localStorage に並び順を保存して再起動後も維持する。
-  // v2: カテゴリ分け導入で旧順序データを破棄。
-  // 現状はカテゴリ見出しを尊重したいので保存/復元は行わない。
+  // カテゴリ見出し (.toolbox-nav-heading) は固定位置のまま、
+  // ツール項目だけを並び替える。
   const navParent = document.getElementById("toolbox-nav");
+  const TOOL_ORDER_KEY = "yuzu-toolbox-order-v3";
+  const persistToolOrder = (): void => {
+    if (!navParent) return;
+    const order: string[] = [];
+    navParent
+      .querySelectorAll<HTMLButtonElement>(".toolbox-nav-item")
+      .forEach((b) => {
+        const t = b.dataset.tool;
+        if (t) order.push(t);
+      });
+    try {
+      localStorage.setItem(TOOL_ORDER_KEY, JSON.stringify(order));
+    } catch {
+      /* noop */
+    }
+  };
+  // 起動直後に保存済みの順序を反映する。
+  if (navParent) {
+    try {
+      const raw = localStorage.getItem(TOOL_ORDER_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as unknown;
+        if (Array.isArray(saved)) {
+          // 並び替え済みリストの順に末尾へ移動 (見出しは触らない)。
+          const map = new Map<string, HTMLElement>();
+          navParent
+            .querySelectorAll<HTMLButtonElement>(".toolbox-nav-item")
+            .forEach((b) => {
+              const t = b.dataset.tool;
+              if (t) map.set(t, b);
+            });
+          for (const t of saved) {
+            if (typeof t !== "string") continue;
+            const el = map.get(t);
+            if (el) navParent.appendChild(el);
+          }
+          // 保存に含まれなかった新規ツールは元のまま末尾に残る。
+        }
+      }
+    } catch {
+      /* noop */
+    }
+  }
   navItems.forEach((btn) => {
     btn.setAttribute("draggable", "true");
     btn.addEventListener("dragstart", (e) => {
@@ -931,6 +994,7 @@ async function setupToolbox(): Promise<void> {
       const dropEv = e as DragEvent;
       const before = dropEv.clientY < r.top + r.height / 2;
       navParent.insertBefore(srcEl, before ? btn : btn.nextSibling);
+      persistToolOrder();
     });
   });
   ytdlpFillBtn?.addEventListener("click", () => {
@@ -1038,7 +1102,6 @@ async function setupToolbox(): Promise<void> {
   setupUserAgentTool();
   setupScrapeTool();
   setupUnzipTool();
-  setupClipboardTool();
   setupFileMetaTool();
   setupAudioTagsTool();
   setupGenericMetaTool();
@@ -1297,7 +1360,11 @@ function setupSaveHtml(): void {
   runBtn.addEventListener("click", async () => {
     const url = urlEl.value.trim();
     const dir = dirEl.value.trim();
-    if (!url) {
+    const modeEl = document.getElementById(
+      "savehtml-mode",
+    ) as HTMLSelectElement | null;
+    const mode = modeEl?.value === "active" ? "active" : "fetch";
+    if (mode === "fetch" && !url) {
       if (statusEl) statusEl.textContent = "URL を入力してください";
       return;
     }
@@ -1307,12 +1374,14 @@ function setupSaveHtml(): void {
     }
     runBtn.disabled = true;
     if (statusEl) statusEl.textContent = "保存中…";
-    appendLog(`取得中: ${url}`);
+    appendLog(
+      mode === "active" ? "アクティブタブのDOMを取得中…" : `取得中: ${url}`,
+    );
     try {
-      const path = await invoke<string>("toolbox_save_page_html", {
-        url,
-        dir,
-      });
+      const path =
+        mode === "active"
+          ? await invoke<string>("toolbox_save_active_page_html", { dir })
+          : await invoke<string>("toolbox_save_page_html", { url, dir });
       if (statusEl) statusEl.textContent = "保存しました";
       appendLog(`保存: ${path}`);
     } catch (e) {
@@ -1401,10 +1470,24 @@ function setupScreenshot(): void {
       if (statusEl) statusEl.textContent = "保存先を選択してください";
       return;
     }
+    const modeEl = document.getElementById(
+      "screenshot-mode",
+    ) as HTMLSelectElement | null;
+    const mode = modeEl?.value === "viewport" ? "viewport" : "full";
     runBtn.disabled = true;
-    if (statusEl) statusEl.textContent = "撮影中…";
+    if (statusEl)
+      statusEl.textContent =
+        mode === "full" ? "ページ全体を撮影中…" : "撮影中…";
     try {
-      const path = await invoke<string>("toolbox_screenshot", { dir });
+      const dataUrl =
+        mode === "full"
+          ? await invoke<string>("toolbox_screenshot_full_page")
+          : await invoke<string>("toolbox_screenshot");
+      if (statusEl) statusEl.textContent = "保存中…";
+      const path = await invoke<string>("toolbox_save_data_url", {
+        dir,
+        dataUrl,
+      });
       if (statusEl) statusEl.textContent = `保存: ${path}`;
     } catch (e) {
       if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
@@ -2233,391 +2316,6 @@ function setupUnzipTool(): void {
   });
 }
 
-// ===== クリップボード履歴 =====
-type ClipMode = "lifo" | "fifo" | "unique" | "stack";
-interface ClipEntry {
-  text: string;
-  ts: number;
-  pinned?: boolean;
-}
-interface ClipSettings {
-  mode: ClipMode;
-  capacity: number;
-  watch: boolean;
-  noEmpty: boolean;
-  trim: boolean;
-}
-const CLIP_KEY = "yuzu.clipboardHistory.v1";
-const CLIP_SETTINGS_KEY = "yuzu.clipboardSettings.v1";
-const DEFAULT_CLIP_SETTINGS: ClipSettings = {
-  mode: "lifo",
-  capacity: 100,
-  watch: false,
-  noEmpty: true,
-  trim: false,
-};
-
-function clipLoad(): ClipEntry[] {
-  try {
-    const raw = localStorage.getItem(CLIP_KEY);
-    if (!raw) return [];
-    const v = JSON.parse(raw);
-    if (Array.isArray(v)) return v as ClipEntry[];
-  } catch {
-    /* noop */
-  }
-  return [];
-}
-
-function clipSave(list: ClipEntry[]): void {
-  try {
-    localStorage.setItem(CLIP_KEY, JSON.stringify(list));
-  } catch {
-    /* noop */
-  }
-}
-
-function clipLoadSettings(): ClipSettings {
-  try {
-    const raw = localStorage.getItem(CLIP_SETTINGS_KEY);
-    if (raw) {
-      return { ...DEFAULT_CLIP_SETTINGS, ...JSON.parse(raw) };
-    }
-  } catch {
-    /* noop */
-  }
-  return { ...DEFAULT_CLIP_SETTINGS };
-}
-
-function clipSaveSettings(s: ClipSettings): void {
-  try {
-    localStorage.setItem(CLIP_SETTINGS_KEY, JSON.stringify(s));
-  } catch {
-    /* noop */
-  }
-}
-
-function setupClipboardTool(): void {
-  const cap = $id<HTMLButtonElement>("clip-capture");
-  const addManual = $id<HTMLButtonElement>("clip-add-manual");
-  const clear = $id<HTMLButtonElement>("clip-clear");
-  const clearUnpinned = $id<HTMLButtonElement>("clip-clear-unpinned");
-  const exportBtn = $id<HTMLButtonElement>("clip-export");
-  const importBtn = $id<HTMLButtonElement>("clip-import");
-  const importFile = $id<HTMLInputElement>("clip-import-file");
-  const input = $id<HTMLTextAreaElement>("clip-input");
-  const list = $id<HTMLUListElement>("clip-list");
-  const status = $id<HTMLSpanElement>("clip-status");
-  const countEl = $id<HTMLSpanElement>("clip-count");
-  const modeSel = $id<HTMLSelectElement>("clip-mode");
-  const capInput = $id<HTMLInputElement>("clip-capacity");
-  const watchEl = $id<HTMLInputElement>("clip-watch");
-  const noEmptyEl = $id<HTMLInputElement>("clip-no-empty");
-  const trimEl = $id<HTMLInputElement>("clip-trim");
-  const searchEl = $id<HTMLInputElement>("clip-search");
-  if (!list) return;
-
-  let history: ClipEntry[] = clipLoad();
-  let settings: ClipSettings = clipLoadSettings();
-  let watchTimer: number | null = null;
-  let lastWatched: string | null = null;
-  let searchQuery = "";
-
-  // 初期 UI 反映
-  if (modeSel) modeSel.value = settings.mode;
-  if (capInput) capInput.value = String(settings.capacity);
-  if (watchEl) watchEl.checked = settings.watch;
-  if (noEmptyEl) noEmptyEl.checked = settings.noEmpty;
-  if (trimEl) trimEl.checked = settings.trim;
-
-  const persistSettings = (): void => clipSaveSettings(settings);
-
-  const compileSearch = (): ((s: string) => boolean) => {
-    if (!searchQuery) return () => true;
-    const m = searchQuery.match(/^\/(.+)\/([gimsuy]*)$/);
-    if (m) {
-      try {
-        const re = new RegExp(m[1], m[2]);
-        return (s) => re.test(s);
-      } catch {
-        /* fallthrough */
-      }
-    }
-    const lower = searchQuery.toLowerCase();
-    return (s) => s.toLowerCase().includes(lower);
-  };
-
-  const trimText = (s: string): string => (settings.trim ? s.trim() : s);
-
-  const enforceCapacity = (): void => {
-    const cap = Math.max(1, settings.capacity);
-    if (history.length <= cap) return;
-    // ピンは保護: 上限超過分を末尾の非ピンから削除する
-    const newest = settings.mode === "fifo" ? "tail" : "head";
-    while (history.length > cap) {
-      let idx = -1;
-      if (newest === "head") {
-        for (let i = history.length - 1; i >= 0; i--) {
-          if (!history[i].pinned) {
-            idx = i;
-            break;
-          }
-        }
-      } else {
-        for (let i = 0; i < history.length; i++) {
-          if (!history[i].pinned) {
-            idx = i;
-            break;
-          }
-        }
-      }
-      if (idx < 0) break; // 全ピン
-      history.splice(idx, 1);
-    }
-  };
-
-  const render = (): void => {
-    list.innerHTML = "";
-    const filter = compileSearch();
-    const view = settings.mode === "fifo" ? history : history.slice().reverse();
-    // mode=fifo は配列順 (古い→新しい) で表示
-    // mode=lifo/unique/stack は新しい→古いで表示 (history 配列は常に古い→新しい)
-    let shown = 0;
-    if (view.length === 0) {
-      const li = document.createElement("li");
-      li.className = "clip-meta";
-      li.textContent = "(履歴なし)";
-      list.appendChild(li);
-    } else {
-      view.forEach((e) => {
-        if (!filter(e.text)) return;
-        shown++;
-        const li = document.createElement("li");
-        if (e.pinned) li.classList.add("pinned");
-        const text = document.createElement("div");
-        text.className = "clip-text";
-        text.textContent = e.text;
-        const meta = document.createElement("div");
-        meta.className = "clip-meta";
-        meta.textContent = `${new Date(e.ts).toLocaleString()}\n${e.text.length} 文字`;
-        const copyBtn = document.createElement("button");
-        copyBtn.type = "button";
-        copyBtn.textContent = "コピー";
-        copyBtn.addEventListener("click", () => {
-          void navigator.clipboard.writeText(e.text);
-          if (status) status.textContent = "コピーしました";
-          lastWatched = e.text;
-        });
-        const pinBtn = document.createElement("button");
-        pinBtn.type = "button";
-        pinBtn.textContent = e.pinned ? "ピン解除" : "ピン";
-        pinBtn.addEventListener("click", () => {
-          e.pinned = !e.pinned;
-          clipSave(history);
-          render();
-        });
-        const delBtn = document.createElement("button");
-        delBtn.type = "button";
-        delBtn.textContent = "削除";
-        delBtn.addEventListener("click", () => {
-          const idx = history.indexOf(e);
-          if (idx >= 0) history.splice(idx, 1);
-          clipSave(history);
-          render();
-        });
-        li.appendChild(text);
-        li.appendChild(meta);
-        li.appendChild(copyBtn);
-        li.appendChild(pinBtn);
-        li.appendChild(delBtn);
-        list.appendChild(li);
-      });
-    }
-    if (countEl) {
-      const total = history.length;
-      countEl.textContent =
-        searchQuery && shown !== total ? `${shown}/${total}` : `${total} 件`;
-    }
-  };
-
-  const push = (raw: string): boolean => {
-    let t = trimText(raw);
-    if (settings.noEmpty && !t) return false;
-    // 重複処理
-    if (settings.mode === "unique" || settings.mode === "stack") {
-      // 既存と同一なら、古い方を消して末尾に再追加 (最近使った順を維持)
-      const existing = history.findIndex((e) => e.text === t);
-      if (existing >= 0) {
-        const [e] = history.splice(existing, 1);
-        e.ts = Date.now();
-        history.push(e);
-        enforceCapacity();
-        clipSave(history);
-        return true;
-      }
-    } else if (settings.mode === "lifo" || settings.mode === "fifo") {
-      // 直近と完全一致は無視 (連続コピー対策)
-      const last = history[history.length - 1];
-      if (last && last.text === t) return false;
-    }
-    history.push({ text: t, ts: Date.now() });
-    enforceCapacity();
-    clipSave(history);
-    return true;
-  };
-
-  const startWatch = (): void => {
-    if (watchTimer != null) return;
-    watchTimer = window.setInterval(async () => {
-      if (!document.hasFocus()) return;
-      try {
-        const t = await navigator.clipboard.readText();
-        if (t === lastWatched) return;
-        lastWatched = t;
-        if (push(t)) render();
-      } catch {
-        /* 権限なし: 静かに */
-      }
-    }, 1000);
-  };
-  const stopWatch = (): void => {
-    if (watchTimer != null) {
-      window.clearInterval(watchTimer);
-      watchTimer = null;
-    }
-  };
-
-  modeSel?.addEventListener("change", () => {
-    settings.mode = (modeSel.value as ClipMode) || "lifo";
-    persistSettings();
-    render();
-  });
-  capInput?.addEventListener("change", () => {
-    const v = parseInt(capInput.value, 10);
-    settings.capacity = Math.max(1, Math.min(10000, isFinite(v) ? v : 100));
-    capInput.value = String(settings.capacity);
-    persistSettings();
-    enforceCapacity();
-    clipSave(history);
-    render();
-  });
-  watchEl?.addEventListener("change", () => {
-    settings.watch = watchEl.checked;
-    persistSettings();
-    if (settings.watch) startWatch();
-    else stopWatch();
-    if (status)
-      status.textContent = settings.watch
-        ? "自動監視を開始しました (このウィンドウがフォーカス時のみ)"
-        : "自動監視を停止しました";
-  });
-  noEmptyEl?.addEventListener("change", () => {
-    settings.noEmpty = noEmptyEl.checked;
-    persistSettings();
-  });
-  trimEl?.addEventListener("change", () => {
-    settings.trim = trimEl.checked;
-    persistSettings();
-  });
-  searchEl?.addEventListener("input", () => {
-    searchQuery = searchEl.value;
-    render();
-  });
-
-  cap?.addEventListener("click", async () => {
-    try {
-      const t = await navigator.clipboard.readText();
-      if (push(t)) {
-        render();
-        if (status) status.textContent = `${t.length} 文字を追加`;
-      } else if (status) {
-        status.textContent = "追加されませんでした (重複/空など)";
-      }
-    } catch (e) {
-      if (status)
-        status.textContent = `読取失敗 (権限が必要かもしれません): ${String(e)}`;
-    }
-  });
-  addManual?.addEventListener("click", () => {
-    if (input && input.value) {
-      if (push(input.value)) {
-        render();
-        if (status) status.textContent = `${input.value.length} 文字を追加`;
-        input.value = "";
-      } else if (status) {
-        status.textContent = "追加されませんでした (重複/空など)";
-      }
-    }
-  });
-  clearUnpinned?.addEventListener("click", () => {
-    if (!confirm("ピン以外を削除しますか?")) return;
-    history = history.filter((e) => e.pinned);
-    clipSave(history);
-    render();
-  });
-  clear?.addEventListener("click", () => {
-    if (!confirm("ピンを含めすべて削除しますか?")) return;
-    history = [];
-    clipSave(history);
-    render();
-  });
-
-  exportBtn?.addEventListener("click", () => {
-    const blob = new Blob([JSON.stringify({ settings, history }, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `clipboard-history-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-  importBtn?.addEventListener("click", () => importFile?.click());
-  importFile?.addEventListener("change", () => {
-    const f = importFile.files?.[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const obj = JSON.parse(String(reader.result));
-        if (Array.isArray(obj)) {
-          // 旧形式 (配列のみ)
-          history = obj.filter(
-            (e) => e && typeof e.text === "string",
-          ) as ClipEntry[];
-        } else if (obj && Array.isArray(obj.history)) {
-          history = obj.history.filter(
-            (e: unknown): e is ClipEntry =>
-              typeof (e as ClipEntry)?.text === "string",
-          );
-          if (obj.settings) {
-            settings = { ...DEFAULT_CLIP_SETTINGS, ...obj.settings };
-            persistSettings();
-            if (modeSel) modeSel.value = settings.mode;
-            if (capInput) capInput.value = String(settings.capacity);
-            if (watchEl) watchEl.checked = settings.watch;
-            if (noEmptyEl) noEmptyEl.checked = settings.noEmpty;
-            if (trimEl) trimEl.checked = settings.trim;
-          }
-        } else {
-          throw new Error("形式が不正");
-        }
-        enforceCapacity();
-        clipSave(history);
-        render();
-        if (status) status.textContent = `${history.length} 件をインポート`;
-      } catch (e) {
-        if (status) status.textContent = `インポート失敗: ${String(e)}`;
-      }
-      importFile.value = "";
-    };
-    reader.readAsText(f);
-  });
-
-  if (settings.watch) startWatch();
-  render();
-}
 
 // ===== ファイルメタデータ =====
 interface FileMetaInfo {
@@ -4133,7 +3831,7 @@ function startSuikaGame(
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < ra + rb - 1) {
+        if (d <= ra + rb + 0.5) {
           const newType = a.type + 1;
           const nx = (a.x + b.x) / 2;
           const ny = (a.y + b.y) / 2;
@@ -6658,22 +6356,47 @@ function setupTechProfileTool(): void {
   ) as HTMLDivElement | null;
   if (!scanBtn || !urlEl || !resultEl) return;
 
-  async function scan(url: string): Promise<void> {
-    if (!url) {
+  async function scan(url: string, useActiveDom = false): Promise<void> {
+    if (!url && !useActiveDom) {
       if (statusEl) statusEl.textContent = "URL がありません";
       return;
     }
     if (statusEl) statusEl.textContent = "解析中…";
     resultEl!.innerHTML = "";
     try {
-      const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
-        url,
-        userAgent: null,
-      });
-      const detected = detectTechFromHtml(r.body, r.content_type);
+      let body = "";
+      let contentType = "text/html";
+      let status = 200;
+      let bytes = 0;
+      let displayUrl = url;
+      if (useActiveDom) {
+        try {
+          const got = await invoke<{ html: string; url: string }>(
+            "view_get_active_html",
+          );
+          body = got.html;
+          displayUrl = got.url || url;
+          bytes = body.length;
+        } catch (e) {
+          // フォールバックでサーバ取得
+          if (statusEl)
+            statusEl.textContent = `DOM取得失敗 (${String(e)})、サーバから取得中…`;
+        }
+      }
+      if (!body) {
+        const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
+          url,
+          userAgent: null,
+        });
+        body = r.body;
+        contentType = r.content_type;
+        status = r.status;
+        bytes = r.bytes;
+      }
+      const detected = detectTechFromHtml(body, contentType);
       if (statusEl)
-        statusEl.textContent = `${detected.length} 件検出 (HTTP ${r.status}, ${r.bytes.toLocaleString()} bytes)`;
-      renderTechResult(url, detected);
+        statusEl.textContent = `${detected.length} 件検出 (${useActiveDom && status === 200 && contentType === "text/html" ? "DOM" : `HTTP ${status}`}, ${bytes.toLocaleString()} bytes)`;
+      renderTechResult(displayUrl, detected);
     } catch (e) {
       if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
     }
@@ -6720,7 +6443,7 @@ function setupTechProfileTool(): void {
       if (statusEl) statusEl.textContent = "アクティブなタブがありません";
       return;
     }
-    void scan(a.url);
+    void scan(a.url, true);
   });
   scanUrlBtn?.addEventListener("click", () => {
     void scan(urlEl.value.trim());
@@ -14923,6 +14646,163 @@ async function setupDownloadsUI(): Promise<void> {
     }, durationMs);
   };
 
+  // ---- 進捗付きトースト (ダウンロード単位で固定表示) ----
+  interface ProgressToast {
+    el: HTMLDivElement;
+    body: HTMLSpanElement;
+    bar: HTMLDivElement;
+    pct: HTMLSpanElement;
+    finished: boolean;
+  }
+  const progressToasts = new Map<number, ProgressToast>();
+  const fmtETA = (sec: number): string => {
+    if (!isFinite(sec) || sec < 0) return "--";
+    if (sec < 60) return `${Math.ceil(sec)}秒`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}分${Math.ceil(sec % 60)}秒`;
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return `${h}時間${m}分`;
+  };
+  const openDownloadsPanelQuick = (): void => {
+    panel.hidden = false;
+    if (backdrop) backdrop.hidden = false;
+    void (async () => {
+      try {
+        await closeToolboxPanel();
+      } catch {
+        /* noop */
+      }
+      try {
+        await invoke("ui_set_expanded", { expanded: true });
+      } catch {
+        /* noop */
+      }
+      await refresh();
+    })();
+  };
+  const ensureProgressToast = (id: number, filename: string): ProgressToast => {
+    const existing = progressToasts.get(id);
+    if (existing && document.body.contains(existing.el)) return existing;
+    const host = ensureToastHost();
+    const el = document.createElement("div");
+    el.className = "dl-toast dl-toast-info dl-toast-progress";
+    const t = document.createElement("div");
+    t.className = "dl-toast-title";
+    t.textContent = "⬇ ダウンロード中";
+    el.appendChild(t);
+    const fname = document.createElement("div");
+    fname.className = "dl-toast-body";
+    fname.textContent = filename;
+    el.appendChild(fname);
+    const barWrap = document.createElement("div");
+    barWrap.className = "dl-toast-barwrap";
+    const bar = document.createElement("div");
+    bar.className = "dl-toast-bar";
+    bar.style.width = "0%";
+    barWrap.appendChild(bar);
+    el.appendChild(barWrap);
+    const meta = document.createElement("div");
+    meta.className = "dl-toast-meta";
+    const pct = document.createElement("span");
+    pct.className = "dl-toast-pct";
+    pct.textContent = "0%";
+    const body = document.createElement("span");
+    body.className = "dl-toast-stats";
+    body.textContent = "計測中...";
+    meta.appendChild(pct);
+    meta.appendChild(body);
+    el.appendChild(meta);
+    el.addEventListener("click", () => openDownloadsPanelQuick());
+    host.appendChild(el);
+    const rec: ProgressToast = { el, body, bar, pct, finished: false };
+    progressToasts.set(id, rec);
+    return rec;
+  };
+  const updateProgressToast = (
+    id: number,
+    bytes: number,
+    total: number | null,
+    speed: number,
+  ): void => {
+    const rec = progressToasts.get(id);
+    if (!rec || rec.finished) return;
+    if (total && total > 0) {
+      const ratio = Math.min(1, bytes / total);
+      rec.bar.style.width = `${(ratio * 100).toFixed(1)}%`;
+      rec.pct.textContent = `${(ratio * 100).toFixed(1)}%`;
+      const remain = total - bytes;
+      const eta = speed > 0 ? remain / speed : Infinity;
+      rec.body.textContent = `${fmtBytes(bytes)} / ${fmtBytes(total)} · ${
+        speed > 0 ? `${fmtBytes(speed)}/s` : "--"
+      } · 残り ${fmtETA(eta)}`;
+    } else {
+      rec.bar.style.width = "100%";
+      rec.bar.classList.add("dl-toast-bar-indet");
+      rec.pct.textContent = "?%";
+      rec.body.textContent = `${fmtBytes(bytes)} · ${
+        speed > 0 ? `${fmtBytes(speed)}/s` : "--"
+      }`;
+    }
+  };
+  const finishProgressToast = (
+    id: number,
+    status: string,
+    filename: string,
+    totalBytes?: number,
+  ): void => {
+    const rec = progressToasts.get(id);
+    if (!rec) {
+      // 進捗トーストが無いケース (即終了など) はワンショットで通知
+      const lower = (status || "").toLowerCase();
+      if (lower === "failed") {
+        showToast("✗ ダウンロード失敗", filename, "failed", 5000);
+      } else if (lower === "cancelled" || lower === "canceled") {
+        showToast("⊘ キャンセルされました", filename, "failed", 4000);
+      } else {
+        showToast("✓ ダウンロード完了", filename, "finished", 4000);
+      }
+      return;
+    }
+    rec.finished = true;
+    const lower = (status || "").toLowerCase();
+    rec.el.classList.remove("dl-toast-info");
+    rec.bar.classList.remove("dl-toast-bar-indet");
+    if (lower === "failed") {
+      rec.el.classList.add("dl-toast-failed");
+      const t = rec.el.querySelector(".dl-toast-title");
+      if (t) t.textContent = "✗ ダウンロード失敗";
+      rec.body.textContent = filename;
+    } else if (lower === "cancelled" || lower === "canceled") {
+      rec.el.classList.add("dl-toast-failed");
+      const t = rec.el.querySelector(".dl-toast-title");
+      if (t) t.textContent = "⊘ キャンセルされました";
+      rec.body.textContent = filename;
+    } else {
+      rec.el.classList.add("dl-toast-finished");
+      const t = rec.el.querySelector(".dl-toast-title");
+      if (t) t.textContent = "✓ ダウンロード完了";
+      rec.bar.style.width = "100%";
+      rec.pct.textContent = "100%";
+      if (totalBytes && totalBytes > 0) {
+        rec.body.textContent = `${filename} · ${fmtBytes(totalBytes)}`;
+      } else {
+        rec.body.textContent = filename;
+      }
+    }
+    window.setTimeout(
+      () => {
+        rec.el.classList.add("dl-toast-leave");
+        window.setTimeout(() => {
+          rec.el.remove();
+          progressToasts.delete(id);
+        }, 260);
+      },
+      lower === "failed" || lower === "cancelled" || lower === "canceled"
+        ? 6000
+        : 4000,
+    );
+  };
+
   const triggerSave = async (
     url: string,
     filename?: string,
@@ -14958,9 +14838,8 @@ async function setupDownloadsUI(): Promise<void> {
         ),
       ),
     };
-    // 即座にフィードバック
+    // 即座にフィードバック (ボタンのパルスのみ。詳細トーストは download-started で表示)
     pulseDownloadBtn();
-    showToast("⬇ ダウンロード開始", finalName || url, "info", 2500);
     try {
       await invoke<number>("downloads_save_url", { opts });
     } catch (e) {
@@ -15131,7 +15010,7 @@ async function setupDownloadsUI(): Promise<void> {
     if (isNew) {
       pulseDownloadBtn();
       const fname = it.filename || it.url || "(ファイル)";
-      showToast("⬇ ダウンロード開始", fname, "info", 3000);
+      ensureProgressToast(it.id, fname);
     }
   });
   await listen<{ id: number; bytes: number; total: number | null }>(
@@ -15144,16 +15023,19 @@ async function setupDownloadsUI(): Promise<void> {
       // 速度推定 (EMA)
       const now = performance.now();
       const prev = speedTracker.get(ev.payload.id);
+      let ema = 0;
       if (prev) {
         const dt = (now - prev.lastTime) / 1000;
         if (dt > 0.05) {
           const inst = (ev.payload.bytes - prev.lastBytes) / dt;
-          const ema = prev.ema === 0 ? inst : prev.ema * 0.6 + inst * 0.4;
+          ema = prev.ema === 0 ? inst : prev.ema * 0.6 + inst * 0.4;
           speedTracker.set(ev.payload.id, {
             lastBytes: ev.payload.bytes,
             lastTime: now,
             ema,
           });
+        } else {
+          ema = prev.ema;
         }
       } else {
         speedTracker.set(ev.payload.id, {
@@ -15162,6 +15044,16 @@ async function setupDownloadsUI(): Promise<void> {
           ema: 0,
         });
       }
+      // 進捗トースト更新 (まだ無ければ作成)
+      const it = items.find((x) => x.id === ev.payload.id);
+      const fname = it?.filename || it?.url || "(ファイル)";
+      ensureProgressToast(ev.payload.id, fname);
+      updateProgressToast(
+        ev.payload.id,
+        ev.payload.bytes,
+        ev.payload.total,
+        ema,
+      );
       if (!panel.hidden) render();
     },
   );
@@ -15174,22 +15066,535 @@ async function setupDownloadsUI(): Promise<void> {
     if (!panel.hidden) render();
     updateBadge();
     const fname = it.filename || it.url || "(ファイル)";
-    const status = (it.status || "").toLowerCase();
-    if (
-      status === "failed" ||
-      status === "cancelled" ||
-      status === "canceled"
-    ) {
-      showToast(
-        status === "failed" ? "✗ ダウンロード失敗" : "⊘ キャンセルされました",
-        fname,
-        "failed",
-        5000,
-      );
-    } else {
-      showToast("✓ ダウンロード完了", fname, "finished", 4000);
-    }
+    finishProgressToast(it.id, it.status || "", fname, it.bytes ?? undefined);
   });
 
   await refresh();
+}
+
+// ===== ブックマーク =====
+
+interface BookmarkInfo {
+  id: number;
+  url: string;
+  title: string;
+  favicon: string;
+  added_at: number;
+}
+
+let bookmarks: BookmarkInfo[] = [];
+let bookmarksBarEl: HTMLDivElement | null = null;
+let bookmarkToggleBtn: HTMLButtonElement | null = null;
+let bookmarksPanel: HTMLDivElement | null = null;
+let bookmarksListEl: HTMLUListElement | null = null;
+let bookmarksEmptyEl: HTMLDivElement | null = null;
+let bookmarksOpen = false;
+
+function isBookmarked(url: string): boolean {
+  return bookmarks.some((b) => b.url === url);
+}
+
+function updateBookmarkToggle(): void {
+  if (!bookmarkToggleBtn) return;
+  const a = activeTab();
+  const url = a?.url ?? "";
+  const on = !!url && isBookmarked(url);
+  bookmarkToggleBtn.classList.toggle("is-bookmarked", on);
+  bookmarkToggleBtn.textContent = on ? "★" : "☆";
+  bookmarkToggleBtn.title = on
+    ? "このページのブックマークを解除 (Ctrl+D)"
+    : "このページをブックマーク (Ctrl+D)";
+}
+
+async function toggleBookmarkCurrent(): Promise<void> {
+  const a = activeTab();
+  if (!a || !a.url) return;
+  const existing = bookmarks.find((b) => b.url === a.url);
+  try {
+    if (existing) {
+      await invoke("bookmarks_remove", { id: existing.id });
+    } else {
+      await invoke<BookmarkInfo>("bookmarks_add", {
+        url: a.url,
+        title: a.title || urlToTitle(a.url),
+        favicon: a.favicon || null,
+      });
+    }
+  } catch (e) {
+    console.error("bookmark toggle failed:", e);
+  }
+}
+
+function renderBookmarksBar(): void {
+  if (!bookmarksBarEl) return;
+  bookmarksBarEl.innerHTML = "";
+  if (bookmarks.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "bookmarks-bar-empty";
+    empty.textContent =
+      "アドレスバー横の ☆ でブックマーク追加。ここに表示されます。";
+    bookmarksBarEl.appendChild(empty);
+    return;
+  }
+  for (const b of bookmarks) {
+    const el = document.createElement("div");
+    el.className = "bookmarks-bar-item";
+    el.dataset.id = String(b.id);
+    el.title = `${b.title}\n${b.url}`;
+
+    const fav = document.createElement("img");
+    fav.className = "bb-favicon";
+    fav.alt = "";
+    fav.referrerPolicy = "no-referrer";
+    fav.draggable = false;
+    setupCascadingFavicon(fav, b.favicon, b.url);
+    el.appendChild(fav);
+
+    const title = document.createElement("span");
+    title.className = "bb-title";
+    title.textContent = b.title || urlToTitle(b.url);
+    el.appendChild(title);
+
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      // Ctrl/Shift+クリックまたは中クリックは新しいタブで開く。
+      if (
+        e.ctrlKey ||
+        e.shiftKey ||
+        e.metaKey ||
+        (e as MouseEvent).button === 1
+      ) {
+        void tabNew(b.url);
+      } else {
+        void navigate(b.url);
+      }
+    });
+    el.addEventListener("auxclick", (e) => {
+      const me = e as MouseEvent;
+      if (me.button === 1) {
+        e.preventDefault();
+        void tabNew(b.url);
+      }
+    });
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      // シンプルな確認ダイアログで削除。
+      if (confirm(`ブックマークを削除しますか?\n${b.title}\n${b.url}`)) {
+        void invoke("bookmarks_remove", { id: b.id }).catch((err) =>
+          console.error("bookmarks_remove failed:", err),
+        );
+      }
+    });
+    el.addEventListener("pointerdown", (e) => {
+      const pe = e as PointerEvent;
+      if (pe.button !== 0) return;
+      startBookmarkDrag(b.id, el, pe);
+    });
+    bookmarksBarEl.appendChild(el);
+  }
+}
+
+/** ブックマークバー項目のドラッグによる並び替え。 */
+function startBookmarkDrag(
+  bmId: number,
+  el: HTMLDivElement,
+  downEvt: PointerEvent,
+): void {
+  const startX = downEvt.clientX;
+  const startY = downEvt.clientY;
+  let dragging = false;
+  let suppressClick = false;
+
+  const findTargetAtX = (
+    x: number,
+  ): { el: HTMLDivElement; index: number } | null => {
+    if (!bookmarksBarEl) return null;
+    const els = Array.from(
+      bookmarksBarEl.querySelectorAll<HTMLDivElement>(".bookmarks-bar-item"),
+    );
+    let best: { el: HTMLDivElement; index: number; dist: number } | null = null;
+    for (let i = 0; i < els.length; i++) {
+      const e = els[i];
+      if (Number(e.dataset.id) === bmId) continue;
+      const r = e.getBoundingClientRect();
+      let dist: number;
+      if (x < r.left) dist = r.left - x;
+      else if (x > r.right) dist = x - r.right;
+      else dist = 0;
+      if (best === null || dist < best.dist) {
+        best = { el: e, index: i, dist };
+      }
+    }
+    return best ? { el: best.el, index: best.index } : null;
+  };
+
+  const setMarkers = (x: number) => {
+    document
+      .querySelectorAll(
+        ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
+      )
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    const t = findTargetAtX(x);
+    if (!t) return;
+    const r = t.el.getBoundingClientRect();
+    const before = x < r.left + r.width / 2;
+    t.el.classList.toggle("drop-before", before);
+    t.el.classList.toggle("drop-after", !before);
+  };
+
+  const onMove = (ev: PointerEvent) => {
+    if (!dragging) {
+      if (
+        Math.abs(ev.clientX - startX) > 5 ||
+        Math.abs(ev.clientY - startY) > 5
+      ) {
+        dragging = true;
+        el.classList.add("dragging");
+        suppressClick = true;
+      } else {
+        return;
+      }
+    }
+    // タブバーの上にいるかをハイライト
+    const tabbarEl = document.querySelector(".tabbar") as HTMLElement | null;
+    if (tabbarEl) {
+      const tr = tabbarEl.getBoundingClientRect();
+      const overTabbar =
+        ev.clientY >= tr.top &&
+        ev.clientY <= tr.bottom &&
+        ev.clientX >= tr.left &&
+        ev.clientX <= tr.right;
+      tabbarEl.classList.toggle("drop-url", overTabbar);
+      if (overTabbar) {
+        // タブバー上のときは並び替えマーカーは消す
+        document
+          .querySelectorAll(
+            ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
+          )
+          .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+        return;
+      }
+    }
+    setMarkers(ev.clientX);
+  };
+
+  const onUp = (ev: PointerEvent) => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    document
+      .querySelectorAll(
+        ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
+      )
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    document.querySelector(".tabbar")?.classList.remove("drop-url");
+    el.classList.remove("dragging");
+    if (!dragging) return;
+    // タブバー (tabs) の上にドロップ → 新しいタブで開く。
+    const tabbarEl = document.querySelector(".tabbar") as HTMLElement | null;
+    if (tabbarEl) {
+      const tr = tabbarEl.getBoundingClientRect();
+      if (
+        ev.clientY >= tr.top &&
+        ev.clientY <= tr.bottom &&
+        ev.clientX >= tr.left &&
+        ev.clientX <= tr.right
+      ) {
+        const bm = bookmarks.find((x) => x.id === bmId);
+        if (bm) void tabNew(bm.url);
+        return;
+      }
+    }
+    // それ以外はバー内での並び替え。
+    const t = findTargetAtX(ev.clientX);
+    if (!t) return;
+    const r = t.el.getBoundingClientRect();
+    const before = ev.clientX < r.left + r.width / 2;
+    const fromIdx = bookmarks.findIndex((x) => x.id === bmId);
+    if (fromIdx < 0) return;
+    let to = before ? t.index : t.index + 1;
+    if (fromIdx < to) to -= 1;
+    if (to === fromIdx) return;
+    void invoke("bookmarks_reorder", { id: bmId, toIndex: to }).catch((err) =>
+      console.error("bookmarks_reorder failed:", err),
+    );
+  };
+
+  const onCancel = () => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    document
+      .querySelectorAll(
+        ".bookmarks-bar-item.drop-before, .bookmarks-bar-item.drop-after",
+      )
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    el.classList.remove("dragging");
+  };
+
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", onCancel, true);
+
+  // ドラッグ完了直後に発生する click を抑制する。
+  el.addEventListener(
+    "click",
+    (ce) => {
+      if (suppressClick) {
+        ce.preventDefault();
+        ce.stopPropagation();
+        suppressClick = false;
+      }
+    },
+    { once: true, capture: true },
+  );
+}
+
+function renderBookmarksPanel(): void {
+  if (!bookmarksListEl || !bookmarksEmptyEl) return;
+  bookmarksListEl.innerHTML = "";
+  if (bookmarks.length === 0) {
+    bookmarksEmptyEl.hidden = false;
+    return;
+  }
+  bookmarksEmptyEl.hidden = true;
+  for (const b of bookmarks) {
+    const li = document.createElement("li");
+    li.className = "bookmark-item";
+    (li as HTMLElement).dataset.bmId = String(b.id);
+
+    const handle = document.createElement("div");
+    handle.className = "bookmark-handle";
+    handle.textContent = "⋮⋮";
+    handle.title = "ドラッグして並び替え";
+    handle.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      startBookmarkPanelDrag(b.id, li, e);
+    });
+    handle.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+    handle.addEventListener("auxclick", (e) => {
+      e.stopPropagation();
+    });
+    li.appendChild(handle);
+
+    const fav = document.createElement("img");
+    fav.className = "bookmark-favicon";
+    fav.alt = "";
+    fav.referrerPolicy = "no-referrer";
+    setupCascadingFavicon(fav, b.favicon, b.url);
+    li.appendChild(fav);
+
+    const text = document.createElement("div");
+    text.className = "bookmark-text";
+    const t = document.createElement("div");
+    t.className = "bookmark-title";
+    t.textContent = b.title || urlToTitle(b.url);
+    const u = document.createElement("div");
+    u.className = "bookmark-url";
+    u.textContent = b.url;
+    text.appendChild(t);
+    text.appendChild(u);
+    li.appendChild(text);
+
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "bookmark-remove";
+    rm.textContent = "🗑";
+    rm.title = "ブックマークを削除";
+    rm.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void invoke("bookmarks_remove", { id: b.id }).catch((err) =>
+        console.error("bookmarks_remove failed:", err),
+      );
+    });
+    li.appendChild(rm);
+
+    li.addEventListener("click", (e) => {
+      if (e.ctrlKey || e.shiftKey || e.metaKey) {
+        void tabNew(b.url);
+      } else {
+        void navigate(b.url);
+        void closeBookmarksPanel();
+      }
+    });
+    li.addEventListener("auxclick", (e) => {
+      const me = e as MouseEvent;
+      if (me.button === 1) {
+        e.preventDefault();
+        void tabNew(b.url);
+      }
+    });
+    bookmarksListEl.appendChild(li);
+  }
+}
+
+function startBookmarkPanelDrag(
+  bmId: number,
+  el: HTMLElement,
+  downEvt: PointerEvent,
+): void {
+  if (downEvt.button !== 0) return;
+  downEvt.preventDefault();
+  const startX = downEvt.clientX;
+  const startY = downEvt.clientY;
+  let dragging = false;
+
+  const findTarget = (y: number): { el: HTMLElement; index: number } | null => {
+    if (!bookmarksListEl) return null;
+    const items = Array.from(
+      bookmarksListEl.querySelectorAll<HTMLElement>(".bookmark-item"),
+    );
+    let best: { el: HTMLElement; index: number } | null = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect();
+      const cy = r.top + r.height / 2;
+      const d = Math.abs(y - cy);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { el: items[i], index: i };
+      }
+    }
+    return best;
+  };
+
+  const setMarkers = (y: number) => {
+    if (!bookmarksListEl) return;
+    bookmarksListEl
+      .querySelectorAll(".bookmark-item.drop-before, .bookmark-item.drop-after")
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    const t = findTarget(y);
+    if (!t) return;
+    const r = t.el.getBoundingClientRect();
+    const before = y < r.top + r.height / 2;
+    t.el.classList.add(before ? "drop-before" : "drop-after");
+  };
+
+  const onMove = (ev: PointerEvent) => {
+    if (!dragging) {
+      if (
+        Math.abs(ev.clientX - startX) > 5 ||
+        Math.abs(ev.clientY - startY) > 5
+      ) {
+        dragging = true;
+        el.classList.add("dragging");
+      } else {
+        return;
+      }
+    }
+    setMarkers(ev.clientY);
+  };
+
+  const cleanup = () => {
+    window.removeEventListener("pointermove", onMove, true);
+    window.removeEventListener("pointerup", onUp, true);
+    window.removeEventListener("pointercancel", onCancel, true);
+    bookmarksListEl
+      ?.querySelectorAll(
+        ".bookmark-item.drop-before, .bookmark-item.drop-after",
+      )
+      .forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    el.classList.remove("dragging");
+  };
+
+  const onUp = (ev: PointerEvent) => {
+    cleanup();
+    if (!dragging) return;
+    const t = findTarget(ev.clientY);
+    if (!t) return;
+    const r = t.el.getBoundingClientRect();
+    const before = ev.clientY < r.top + r.height / 2;
+    const fromIdx = bookmarks.findIndex((x) => x.id === bmId);
+    if (fromIdx < 0) return;
+    let to = before ? t.index : t.index + 1;
+    if (fromIdx < to) to -= 1;
+    if (to === fromIdx) return;
+    void invoke("bookmarks_reorder", { id: bmId, toIndex: to }).catch((err) =>
+      console.error("bookmarks_reorder failed:", err),
+    );
+  };
+
+  const onCancel = () => {
+    cleanup();
+  };
+
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", onCancel, true);
+}
+
+function renderBookmarks(): void {
+  renderBookmarksBar();
+  renderBookmarksPanel();
+  updateBookmarkToggle();
+}
+
+async function openBookmarksPanel(): Promise<void> {
+  if (!bookmarksPanel) return;
+  try {
+    await invoke("ui_set_expanded", { expanded: true });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+  bookmarksPanel.hidden = false;
+  bookmarksOpen = true;
+  renderBookmarksPanel();
+}
+
+async function closeBookmarksPanel(): Promise<void> {
+  if (!bookmarksPanel) return;
+  bookmarksPanel.hidden = true;
+  bookmarksOpen = false;
+  try {
+    await invoke("ui_set_expanded", { expanded: false });
+  } catch (e) {
+    console.error("ui_set_expanded failed:", e);
+  }
+}
+
+async function setupBookmarks(): Promise<void> {
+  bookmarksBarEl = document.getElementById(
+    "bookmarks-bar-items",
+  ) as HTMLDivElement | null;
+  bookmarkToggleBtn = document.getElementById(
+    "bookmark-toggle",
+  ) as HTMLButtonElement | null;
+  bookmarksPanel = document.getElementById(
+    "bookmarks-panel",
+  ) as HTMLDivElement | null;
+  bookmarksListEl = document.getElementById(
+    "bookmarks-list",
+  ) as HTMLUListElement | null;
+  bookmarksEmptyEl = document.getElementById(
+    "bookmarks-empty",
+  ) as HTMLDivElement | null;
+  const openBtn = document.getElementById(
+    "bookmarks-open",
+  ) as HTMLButtonElement | null;
+  const closeBtn = document.getElementById(
+    "bookmarks-close",
+  ) as HTMLButtonElement | null;
+
+  bookmarkToggleBtn?.addEventListener("click", () => {
+    void toggleBookmarkCurrent();
+  });
+  openBtn?.addEventListener("click", () => {
+    void (bookmarksOpen ? closeBookmarksPanel() : openBookmarksPanel());
+  });
+  closeBtn?.addEventListener("click", () => void closeBookmarksPanel());
+
+  void listen<BookmarkInfo[]>("bookmarks-updated", (event) => {
+    bookmarks = event.payload || [];
+    renderBookmarks();
+  });
+
+  try {
+    bookmarks = await invoke<BookmarkInfo[]>("bookmarks_list");
+  } catch (e) {
+    console.error("bookmarks_list failed:", e);
+    bookmarks = [];
+  }
+  renderBookmarks();
 }

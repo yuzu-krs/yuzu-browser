@@ -17,6 +17,22 @@
     </nav>
     <header class="toolbar">
       <button
+        id="back"
+        class="nav-btn nav-history-btn"
+        type="button"
+        title="戻る (Alt+←)"
+      >
+        ←
+      </button>
+      <button
+        id="forward"
+        class="nav-btn nav-history-btn"
+        type="button"
+        title="進む (Alt+→)"
+      >
+        →
+      </button>
+      <button
         id="super-reload"
         class="nav-btn super-reload-btn"
         type="button"
@@ -34,6 +50,14 @@
           placeholder="URLを入力 または DuckDuckGo で検索"
         />
       </form>
+      <button
+        id="bookmark-toggle"
+        class="nav-btn bookmark-toggle-btn"
+        type="button"
+        title="このページをブックマーク (Ctrl+D)"
+      >
+        ☆
+      </button>
       <div class="zoom-control" title="ズーム (Ctrl+ホイール / Ctrl+0 で 100%)">
         <button id="zoom-out" class="nav-btn zoom-btn" type="button">−</button>
         <span id="zoom-display" class="zoom-display">100%</span>
@@ -205,6 +229,15 @@
       class="chrome-actions-bar"
       aria-label="アクションバー"
     >
+      <div id="bookmarks-bar-items" class="bookmarks-bar-items"></div>
+      <button
+        id="bookmarks-open"
+        class="chrome-actions-btn bookmarks-open-btn"
+        type="button"
+        title="ブックマークを管理"
+      >
+        📑
+      </button>
       <button
         id="toolbox-open"
         class="chrome-actions-btn toolbox-open-btn"
@@ -214,6 +247,23 @@
         🧰
       </button>
     </nav>
+    <div id="bookmarks-panel" class="bookmarks-panel" hidden>
+      <div class="bookmarks-header">
+        <span>📑 ブックマーク</span>
+        <button
+          id="bookmarks-close"
+          class="bookmarks-close"
+          type="button"
+          title="閉じる"
+        >
+          ×
+        </button>
+      </div>
+      <ul id="bookmarks-list" class="bookmarks-list"></ul>
+      <div id="bookmarks-empty" class="bookmarks-empty" hidden>
+        ブックマークはまだありません。アドレスバー横の ☆ ボタンで追加できます。
+      </div>
+    </div>
     <div id="toolbox-panel" class="bookmarks-panel toolbox-panel" hidden>
       <div class="bookmarks-header">
         <span>🧰 ツールボックス</span>
@@ -340,10 +390,6 @@
           <button type="button" class="toolbox-nav-item" data-tool="charcount">
             <span class="toolbox-nav-icon">🔢</span>
             <span>文字数カウント</span>
-          </button>
-          <button type="button" class="toolbox-nav-item" data-tool="clipboard">
-            <span class="toolbox-nav-icon">📋</span>
-            <span>クリップボード履歴</span>
           </button>
 
           <div class="toolbox-nav-cat">📡 ネットワーク / 診断</div>
@@ -720,9 +766,20 @@
             <h3>ページHTML保存</h3>
             <p class="toolbox-note">
               指定 URL のページ HTML を取得して .html ファイルとして保存します。
-              JavaScript 実行後の DOM ではなく、サーバから返される生の HTML
-              が保存されます。
+              「アクティブタブのDOMを保存」を選ぶと JavaScript 実行後の
+              DOM（描画済み HTML）を保存できます。
             </p>
+            <div class="toolbox-row">
+              <label for="savehtml-mode">モード</label>
+              <select
+                id="savehtml-mode"
+                class="zoom-display"
+                style="padding: 0 4px"
+              >
+                <option value="fetch" selected>サーバから取得 (生 HTML)</option>
+                <option value="active">アクティブタブのDOMを保存</option>
+              </select>
+            </div>
             <div class="toolbox-row">
               <label for="savehtml-url">URL</label>
               <input
@@ -792,7 +849,7 @@
             </div>
             <div class="toolbox-row toolbox-actions">
               <button id="screenshot-run" class="toolbox-primary" type="button">
-                撮影して編集
+                撮影して保存
               </button>
               <span id="screenshot-status" class="toolbox-status"></span>
             </div>
@@ -1273,84 +1330,6 @@
               </button>
               <button id="unzip-open" type="button">出力先を開く</button>
               <span id="unzip-status" class="toolbox-status"></span>
-            </div>
-          </section>
-
-          <section class="toolbox-tool" data-tool="clipboard" hidden>
-            <h3>クリップボード履歴</h3>
-            <p class="toolbox-note">
-              ローカル保存。LIFO/FIFO/ユニークスタックなどモード選択、自動監視、ピン留め、検索、JSON
-              エクスポート/インポートに対応。
-            </p>
-            <div class="toolbox-row">
-              <label for="clip-mode">モード</label>
-              <select id="clip-mode">
-                <option value="lifo">LIFO (新しいものが上)</option>
-                <option value="fifo">FIFO (古いものが上)</option>
-                <option value="unique">ユニーク (重複除去)</option>
-                <option value="stack">スタック (LIFO + 重複除去)</option>
-              </select>
-              <label for="clip-capacity">上限</label>
-              <input
-                id="clip-capacity"
-                type="number"
-                min="1"
-                max="10000"
-                value="100"
-                style="width: 80px"
-              />
-              <label class="toolbox-inline-check"
-                ><input id="clip-watch" type="checkbox" /> 自動監視 (1s)</label
-              >
-              <label class="toolbox-inline-check"
-                ><input id="clip-no-empty" type="checkbox" checked />
-                空文字を除外</label
-              >
-              <label class="toolbox-inline-check"
-                ><input id="clip-trim" type="checkbox" /> 前後空白を trim</label
-              >
-            </div>
-            <div class="toolbox-row toolbox-actions">
-              <button id="clip-capture" class="toolbox-primary" type="button">
-                現在のクリップボードを取り込む
-              </button>
-              <button id="clip-add-manual" type="button">手動で追加</button>
-              <button id="clip-export" type="button">エクスポート</button>
-              <button id="clip-import" type="button">インポート</button>
-              <input
-                id="clip-import-file"
-                type="file"
-                accept=".json,application/json"
-                hidden
-              />
-              <button id="clip-clear-unpinned" type="button">
-                ピン以外を削除
-              </button>
-              <button id="clip-clear" type="button">すべて削除</button>
-              <span id="clip-status" class="toolbox-status"></span>
-            </div>
-            <div class="toolbox-row">
-              <label for="clip-search">検索</label>
-              <input
-                id="clip-search"
-                type="text"
-                placeholder="フィルタ文字列 / 正規表現 (/.../i)"
-                style="flex: 1"
-              />
-              <span id="clip-count" class="toolbox-status"></span>
-            </div>
-            <div class="toolbox-row" style="align-items: flex-start">
-              <label for="clip-input">手動入力</label>
-              <textarea
-                id="clip-input"
-                class="toolbox-textarea"
-                placeholder="ここに貼り付けると「手動で追加」で履歴にできます"
-                style="flex: 1; height: 80px"
-              ></textarea>
-            </div>
-            <div class="toolbox-row" style="align-items: flex-start">
-              <label>履歴</label>
-              <ul id="clip-list" class="clip-history" style="flex: 1"></ul>
             </div>
           </section>
 
