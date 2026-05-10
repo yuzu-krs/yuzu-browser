@@ -4040,6 +4040,10 @@ struct ScrapeResult {
     content_type: String,
     body: String,
     bytes: usize,
+    /// レスポンスヘッダ (key は小文字化)。技術プロファイラ等で利用。
+    headers: Vec<(String, String)>,
+    /// Set-Cookie の "name" 部分のみを抽出 (cookie 本体や値は捨てる)。
+    cookies: Vec<String>,
 }
 
 #[tauri::command]
@@ -4071,6 +4075,21 @@ fn toolbox_scrape_fetch(
         .map_err(|e| format!("取得失敗: {}", e))?;
     let status = resp.status();
     let content_type = resp.content_type().to_string();
+    // ヘッダと Set-Cookie 名を収集
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut cookies: Vec<String> = Vec::new();
+    for name in resp.headers_names() {
+        if let Some(val) = resp.header(&name) {
+            let key = name.to_ascii_lowercase();
+            if key == "set-cookie" {
+                // "name=value; ..." の name 部分のみ
+                if let Some(eq) = val.find('=') {
+                    cookies.push(val[..eq].trim().to_string());
+                }
+            }
+            headers.push((key, val.to_string()));
+        }
+    }
     let mut reader = resp.into_reader();
     let mut bytes = Vec::new();
     let mut buf = [0u8; 16384];
@@ -4092,6 +4111,8 @@ fn toolbox_scrape_fetch(
         content_type,
         body,
         bytes: len,
+        headers,
+        cookies,
     })
 }
 
@@ -4188,16 +4209,23 @@ fn detect_format(path: &std::path::Path) -> ArchiveFormat {
     }
 }
 
-fn extract_zip(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u64), String> {
+fn extract_zip(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    progress: &dyn Fn(usize, u64, Option<usize>, Option<&str>),
+) -> Result<(usize, u64), String> {
     let file = std::fs::File::open(src).map_err(|e| format!("読込失敗: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("zip 読込失敗: {}", e))?;
+    let total_entries = archive.len();
     let mut count = 0usize;
     let mut total = 0u64;
-    for i in 0..archive.len() {
+    progress(0, 0, Some(total_entries), None);
+    for i in 0..total_entries {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("entry {}: {}", i, e))?;
+        let entry_name = entry.name().to_string();
         let outpath = match entry.enclosed_name() {
             Some(p) => dest.join(p),
             None => continue,
@@ -4213,6 +4241,7 @@ fn extract_zip(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, 
             let n = std::io::copy(&mut entry, &mut out).map_err(|e| format!("copy: {}", e))?;
             total += n;
             count += 1;
+            progress(count, total, Some(total_entries), Some(&entry_name));
         }
     }
     Ok((count, total))
@@ -4221,6 +4250,7 @@ fn extract_zip(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, 
 fn extract_tar_reader<R: std::io::Read>(
     reader: R,
     dest: &std::path::Path,
+    progress: &dyn Fn(usize, u64, Option<usize>, Option<&str>),
 ) -> Result<(usize, u64), String> {
     let mut archive = tar::Archive::new(reader);
     archive.set_preserve_permissions(false);
@@ -4256,6 +4286,7 @@ fn extract_tar_reader<R: std::io::Read>(
             let n = std::io::copy(&mut entry, &mut out).map_err(|e| format!("copy: {}", e))?;
             total += n;
             count += 1;
+            progress(count, total, None, path.to_str());
         }
         // symlink/hardlink などは無視
     }
@@ -4342,7 +4373,11 @@ fn extract_single(
     Ok((1, n, outpath))
 }
 
-fn extract_cab(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u64), String> {
+fn extract_cab(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    progress: &dyn Fn(usize, u64, Option<usize>, Option<&str>),
+) -> Result<(usize, u64), String> {
     let f = std::fs::File::open(src).map_err(|e| format!("読込失敗: {}", e))?;
     let mut cab = cab::Cabinet::new(f).map_err(|e| format!("cab: {}", e))?;
     // 先にファイル名一覧を収集 (借用を避けるため)
@@ -4350,6 +4385,8 @@ fn extract_cab(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, 
         .folder_entries()
         .flat_map(|fo| fo.file_entries().map(|fi| fi.name().to_string()))
         .collect();
+    let total_entries = names.len();
+    progress(0, 0, Some(total_entries), None);
     let mut count = 0usize;
     let mut total = 0u64;
     for name in names {
@@ -4373,11 +4410,16 @@ fn extract_cab(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, 
         let n = std::io::copy(&mut reader, &mut out).map_err(|e| format!("copy: {}", e))?;
         total += n;
         count += 1;
+        progress(count, total, Some(total_entries), Some(&rel));
     }
     Ok((count, total))
 }
 
-fn extract_ar(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u64), String> {
+fn extract_ar(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    progress: &dyn Fn(usize, u64, Option<usize>, Option<&str>),
+) -> Result<(usize, u64), String> {
     let f = std::fs::File::open(src).map_err(|e| format!("読込失敗: {}", e))?;
     let mut archive = ar::Archive::new(std::io::BufReader::new(f));
     let mut count = 0usize;
@@ -4398,6 +4440,7 @@ fn extract_ar(src: &std::path::Path, dest: &std::path::Path) -> Result<(usize, u
         let n = std::io::copy(&mut entry, &mut out).map_err(|e| format!("copy: {}", e))?;
         total += n;
         count += 1;
+        progress(count, total, None, Some(&name));
     }
     Ok((count, total))
 }
@@ -4421,8 +4464,18 @@ fn count_dir(p: &std::path::Path) -> (usize, u64) {
     (c, b)
 }
 
+#[derive(Clone, serde::Serialize)]
+struct ExtractProgressPayload {
+    files: usize,
+    bytes: u64,
+    total_files: Option<usize>,
+    total_bytes: Option<u64>,
+    current_file: Option<String>,
+}
+
 #[tauri::command]
 fn toolbox_extract_archive(
+    app: AppHandle,
     archive_path: String,
     dest_dir: String,
 ) -> Result<ExtractResult, String> {
@@ -4436,43 +4489,82 @@ fn toolbox_extract_archive(
     }
     std::fs::create_dir_all(&dest).map_err(|e| format!("出力先作成失敗: {}", e))?;
 
+    // 進捗イベントを emit するクロージャ。30ms 程度の間隔でスロットルする。
+    let last = std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    let app_clone = app.clone();
+    let progress = move |files: usize,
+                         bytes: u64,
+                         total_files: Option<usize>,
+                         current_file: Option<&str>| {
+        let now = std::time::Instant::now();
+        let force = total_files.map_or(false, |t| files == 0 || files == t);
+        if !force
+            && now.duration_since(last.get()) < std::time::Duration::from_millis(30)
+        {
+            return;
+        }
+        last.set(now);
+        let _ = app_clone.emit(
+            "toolbox-extract-progress",
+            ExtractProgressPayload {
+                files,
+                bytes,
+                total_files,
+                total_bytes: None,
+                current_file: current_file.map(|s| s.to_string()),
+            },
+        );
+    };
+
     let fmt = detect_format(&src);
     let (count, bytes, format) = match fmt {
         ArchiveFormat::Zip => {
-            let (c, b) = extract_zip(&src, &dest)?;
+            let (c, b) = extract_zip(&src, &dest, &progress)?;
             (c, b, "zip")
         }
         ArchiveFormat::Tar => {
-            let (c, b) = extract_tar_reader(buffered_file(&src)?, &dest)?;
+            let (c, b) = extract_tar_reader(buffered_file(&src)?, &dest, &progress)?;
             (c, b, "tar")
         }
         ArchiveFormat::TarGz => {
             let r = flate2::read::GzDecoder::new(buffered_file(&src)?);
-            let (c, b) = extract_tar_reader(r, &dest)?;
+            let (c, b) = extract_tar_reader(r, &dest, &progress)?;
             (c, b, "tar.gz")
         }
         ArchiveFormat::TarBz2 => {
             let r = bzip2_rs::DecoderReader::new(buffered_file(&src)?);
-            let (c, b) = extract_tar_reader(r, &dest)?;
+            let (c, b) = extract_tar_reader(r, &dest, &progress)?;
             (c, b, "tar.bz2")
         }
         ArchiveFormat::TarXz => {
             let v = xz_to_vec(&src)?;
-            let (c, b) = extract_tar_reader(std::io::Cursor::new(v), &dest)?;
+            let (c, b) = extract_tar_reader(std::io::Cursor::new(v), &dest, &progress)?;
             (c, b, "tar.xz")
         }
         ArchiveFormat::TarZst => {
             let r = ruzstd::StreamingDecoder::new(buffered_file(&src)?)
                 .map_err(|e| format!("zstd: {}", e))?;
-            let (c, b) = extract_tar_reader(r, &dest)?;
+            let (c, b) = extract_tar_reader(r, &dest, &progress)?;
             (c, b, "tar.zst")
         }
         ArchiveFormat::TarLz4 => {
             let r = lz4_flex::frame::FrameDecoder::new(buffered_file(&src)?);
-            let (c, b) = extract_tar_reader(r, &dest)?;
+            let (c, b) = extract_tar_reader(r, &dest, &progress)?;
             (c, b, "tar.lz4")
         }
         ArchiveFormat::SevenZ => {
+            // sevenz_rust は per-entry コールバックを公開していないので
+            // 開始/終了のみ送る。
+            let _ = app.emit(
+                "toolbox-extract-progress",
+                ExtractProgressPayload {
+                    files: 0,
+                    bytes: 0,
+                    total_files: None,
+                    total_bytes: None,
+                    current_file: Some("(7z 解凍中…)".to_string()),
+                },
+            );
             let before = count_dir(&dest);
             sevenz_rust::decompress_file(&src, &dest)
                 .map_err(|e| format!("7z: {}", e))?;
@@ -4484,11 +4576,11 @@ fn toolbox_extract_archive(
             )
         }
         ArchiveFormat::Cab => {
-            let (c, b) = extract_cab(&src, &dest)?;
+            let (c, b) = extract_cab(&src, &dest, &progress)?;
             (c, b, "cab")
         }
         ArchiveFormat::Ar => {
-            let (c, b) = extract_ar(&src, &dest)?;
+            let (c, b) = extract_ar(&src, &dest, &progress)?;
             (c, b, "ar")
         }
         ArchiveFormat::Gz | ArchiveFormat::Bz2 | ArchiveFormat::Xz | ArchiveFormat::Zst | ArchiveFormat::Lz4 => {
@@ -4508,6 +4600,18 @@ fn toolbox_extract_archive(
             )
         }
     };
+
+    // 完了イベント
+    let _ = app.emit(
+        "toolbox-extract-progress",
+        ExtractProgressPayload {
+            files: count,
+            bytes,
+            total_files: Some(count),
+            total_bytes: Some(bytes),
+            current_file: None,
+        },
+    );
 
     Ok(ExtractResult {
         files: count,

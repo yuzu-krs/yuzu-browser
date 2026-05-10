@@ -1170,6 +1170,7 @@ async function setupToolbox(): Promise<void> {
   setupClockTool();
   setupTerminalTool();
   setupSshTool();
+  setupCpsTool();
 }
 
 // ===== ファイル形式コンバータ =====
@@ -2207,6 +2208,10 @@ interface ScrapeResult {
   content_type: string;
   body: string;
   bytes: number;
+  /** レスポンスヘッダ (key は小文字化)。Rust 側で常時返却。古い呼び出し元は無視で OK。 */
+  headers?: [string, string][];
+  /** Set-Cookie の name 部分のみ。 */
+  cookies?: string[];
 }
 
 let scrapeLastBody = "";
@@ -2312,6 +2317,21 @@ function setupUnzipTool(): void {
   const run = $id<HTMLButtonElement>("unzip-run");
   const open = $id<HTMLButtonElement>("unzip-open");
   const status = $id<HTMLSpanElement>("unzip-status");
+  const progressRow = document.getElementById(
+    "unzip-progress-row",
+  ) as HTMLDivElement | null;
+  const progressBar = document.getElementById(
+    "unzip-progress-bar",
+  ) as HTMLDivElement | null;
+  const progressLabel = document.getElementById(
+    "unzip-progress-label",
+  ) as HTMLSpanElement | null;
+  const currentRow = document.getElementById(
+    "unzip-current-row",
+  ) as HTMLDivElement | null;
+  const currentFile = document.getElementById(
+    "unzip-current-file",
+  ) as HTMLElement | null;
   if (!src || !dest || !run) return;
 
   pickSrc?.addEventListener("click", async () => {
@@ -2336,22 +2356,75 @@ function setupUnzipTool(): void {
     }
   });
 
+  function showProgress(show: boolean): void {
+    if (progressRow) progressRow.style.display = show ? "flex" : "none";
+    if (currentRow) currentRow.style.display = show ? "flex" : "none";
+    if (!show && progressBar) progressBar.style.width = "0%";
+    if (!show && progressLabel) progressLabel.textContent = "";
+    if (!show && currentFile) currentFile.textContent = "";
+  }
+
+  function updateProgress(p: {
+    files: number;
+    bytes: number;
+    total_files?: number | null;
+    total_bytes?: number | null;
+    current_file?: string | null;
+  }): void {
+    let pct = 0;
+    let label = `${p.files} ファイル / ${(p.bytes / 1024).toFixed(0)} KB`;
+    if (p.total_files && p.total_files > 0) {
+      pct = Math.min(100, (p.files / p.total_files) * 100);
+      label = `${p.files} / ${p.total_files} ファイル (${pct.toFixed(0)}%)`;
+    } else if (p.total_bytes && p.total_bytes > 0) {
+      pct = Math.min(100, (p.bytes / p.total_bytes) * 100);
+      label = `${(p.bytes / 1024).toFixed(0)} / ${(p.total_bytes / 1024).toFixed(0)} KB (${pct.toFixed(0)}%)`;
+    } else {
+      // 不定: バーをアニメーション (0->100% を周期表示)
+      pct = (Date.now() / 30) % 100;
+    }
+    if (progressBar) progressBar.style.width = `${pct}%`;
+    if (progressLabel) progressLabel.textContent = label;
+    if (currentFile && p.current_file) currentFile.textContent = p.current_file;
+  }
+
+  // Rust 側 (toolbox_extract_archive) が emit する進捗イベント。
+  // ペイロード: { files, bytes, total_files?, total_bytes?, current_file? }
+  void listen<{
+    files: number;
+    bytes: number;
+    total_files?: number | null;
+    total_bytes?: number | null;
+    current_file?: string | null;
+  }>("toolbox-extract-progress", (ev) => {
+    if (!progressRow || progressRow.style.display === "none") return;
+    updateProgress(ev.payload);
+  });
+
   run.addEventListener("click", async () => {
     if (!src.value.trim() || !dest.value.trim()) {
-      if (status) status.textContent = "ZIP と出力先を指定してください";
+      if (status) status.textContent = "アーカイブと出力先を指定してください";
       return;
     }
     run.disabled = true;
     if (status) status.textContent = "解凍中…";
+    showProgress(true);
+    updateProgress({ files: 0, bytes: 0 });
     try {
       const r = await invoke<ExtractResult>("toolbox_extract_archive", {
         archivePath: src.value.trim(),
         destDir: dest.value.trim(),
       });
       if (status)
-        status.textContent = `${r.files} ファイル / ${r.bytes} bytes → ${r.dest}`;
+        status.textContent = `完了: ${r.files} ファイル / ${r.bytes.toLocaleString()} bytes → ${r.dest}`;
+      // 完了状態を表示。バーは 100% にしてから少し残す。
+      if (progressBar) progressBar.style.width = "100%";
+      if (progressLabel)
+        progressLabel.textContent = `完了 (${r.files} ファイル, ${(r.bytes / 1024).toFixed(0)} KB)`;
+      window.setTimeout(() => showProgress(false), 1500);
     } catch (e) {
       if (status) status.textContent = `エラー: ${String(e)}`;
+      showProgress(false);
     } finally {
       run.disabled = false;
     }
@@ -4575,7 +4648,7 @@ function setupAIExtras(): void {
   setupAIChat();
   setupAITextOps();
   setupAIMedia();
-  setupAIMultiTranslate();
+  // setupAIMultiTranslate(); // 多言語翻訳は廃止
   setupAIAnki();
 }
 
@@ -5971,198 +6044,883 @@ function buildTranslatePayload(
 }
 
 // ===== 🔬 技術プロファイラ (Wappalyzer 風) =====
+// 検出ソース: HTML 本文・script/link URL・<meta>・レスポンスヘッダ・Cookie 名・
+// JSON-LD・グローバル変数 (現タブ DOM 経由)。
+// Wappalyzer 公式に近づけつつ日本のサービスも厚めにカバー。
 
+interface TechMetaRule {
+  name: string;
+  pattern: RegExp;
+}
+interface TechHeaderRule {
+  name: string; // 小文字
+  pattern: RegExp;
+}
 interface TechSignature {
   name: string;
   category: string;
   icon?: string;
-  // HTML/HEAD 文字列に対する正規表現
+  /** HTML 本文 (先頭 200KB) に対する正規表現。 */
   html?: RegExp[];
-  // <script src="..."> や <link href="..."> の URL に対する正規表現
+  /** <script src> / <link href> / <iframe src> の URL に対する正規表現。 */
   url?: RegExp[];
-  // meta タグ generator の正規表現
-  meta?: { name: string; pattern: RegExp }[];
-  // Content-Type ヘッダなど
+  /** <meta name="..."> の content に対する正規表現。 */
+  meta?: TechMetaRule[];
+  /** レスポンスヘッダ (key 小文字) の値に対する正規表現。 */
+  headers?: TechHeaderRule[];
+  /** Set-Cookie の name に対する正規表現。 */
+  cookies?: RegExp[];
+  /** Content-Type に対する正規表現。 */
   contentType?: RegExp[];
-  // window グローバル変数名 (現在のタブで eval 検出する場合)
+  /** window グローバル変数名 (DOM 経由で取得した場合のみ評価)。 */
   global?: string[];
+  /** 推定バージョンを抽出するための補助正規表現 (キャプチャ 1)。 */
+  version?: RegExp[];
 }
 
 const TECH_SIGNATURES: TechSignature[] = [
+  // ============================================================
   // CMS
+  // ============================================================
   {
     name: "WordPress",
     category: "CMS",
     icon: "📝",
-    html: [/wp-content\//i, /wp-includes\//i],
-    meta: [{ name: "generator", pattern: /WordPress/i }],
+    html: [/wp-content\//i, /wp-includes\//i, /wp-json\//i],
+    meta: [{ name: "generator", pattern: /WordPress\s*([\d.]+)?/i }],
+    headers: [{ name: "x-powered-by", pattern: /WordPress/i }],
+    cookies: [/^wordpress_/i, /^wp-settings-/i],
+    version: [/WordPress\s*([\d.]+)/i],
   },
   {
     name: "Drupal",
     category: "CMS",
     icon: "📝",
-    html: [/sites\/default\/files/i, /Drupal\.settings/i],
-    meta: [{ name: "generator", pattern: /Drupal/i }],
+    html: [/sites\/default\/files/i, /Drupal\.settings/i, /\/drupal\.js/i],
+    meta: [{ name: "generator", pattern: /Drupal\s*([\d.]+)?/i }],
+    headers: [
+      { name: "x-drupal-cache", pattern: /./i },
+      { name: "x-generator", pattern: /Drupal/i },
+    ],
   },
   {
     name: "Joomla",
     category: "CMS",
     icon: "📝",
+    html: [/\/components\/com_/i, /Joomla!/i],
     meta: [{ name: "generator", pattern: /Joomla/i }],
   },
   {
     name: "Ghost",
     category: "CMS",
-    icon: "📝",
-    meta: [{ name: "generator", pattern: /Ghost/i }],
+    icon: "👻",
+    html: [/ghost\.io/i, /content\/themes/i],
+    meta: [{ name: "generator", pattern: /Ghost\s*([\d.]+)?/i }],
   },
+  {
+    name: "MovableType",
+    category: "CMS",
+    icon: "📝",
+    meta: [{ name: "generator", pattern: /Movable Type/i }],
+  },
+  {
+    name: "TYPO3",
+    category: "CMS",
+    icon: "📝",
+    meta: [{ name: "generator", pattern: /TYPO3/i }],
+    html: [/typo3conf\//i, /typo3temp\//i],
+  },
+  {
+    name: "Sitecore",
+    category: "CMS",
+    icon: "📝",
+    cookies: [/^sc_/i, /^SC_ANALYTICS/i],
+  },
+  {
+    name: "Adobe Experience Manager",
+    category: "CMS",
+    icon: "📝",
+    html: [/etc\.clientlibs/i, /\/etc\/designs\//i, /aem-/i],
+  },
+  {
+    name: "HubSpot CMS",
+    category: "CMS",
+    icon: "📝",
+    html: [/hs-scripts\.com|js\.hs-analytics\.net|hs-banner\.com/i],
+  },
+  {
+    name: "Webflow",
+    category: "CMS",
+    icon: "🌊",
+    html: [/webflow\.css|webflow\.js/i],
+    meta: [{ name: "generator", pattern: /Webflow/i }],
+  },
+  {
+    name: "Squarespace",
+    category: "CMS",
+    icon: "🟪",
+    html: [/static1\.squarespace\.com|squarespace-cdn\.com/i],
+  },
+  {
+    name: "Wix",
+    category: "CMS",
+    icon: "🟦",
+    html: [/static\.wixstatic\.com|_wix\b/i],
+    meta: [{ name: "generator", pattern: /Wix/i }],
+  },
+  {
+    name: "Contentful",
+    category: "CMS (Headless)",
+    icon: "📦",
+    html: [/images\.ctfassets\.net|cdn\.contentful\.com/i],
+  },
+  {
+    name: "Strapi",
+    category: "CMS (Headless)",
+    icon: "🛡️",
+    headers: [{ name: "x-powered-by", pattern: /Strapi/i }],
+  },
+  {
+    name: "Sanity",
+    category: "CMS (Headless)",
+    icon: "🌈",
+    html: [/cdn\.sanity\.io/i],
+  },
+
+  // ============================================================
+  // EC / 決済
+  // ============================================================
   {
     name: "Shopify",
-    category: "ECサイト",
+    category: "EC",
     icon: "🛒",
-    html: [/cdn\.shopify\.com/i, /Shopify\.theme/i],
+    html: [/cdn\.shopify\.com|Shopify\.theme|shopify-section/i],
+    headers: [
+      { name: "x-shopid", pattern: /./ },
+      { name: "x-shopify-stage", pattern: /./ },
+    ],
+    cookies: [/^_shopify/i, /^_secure_session_id/i],
   },
   {
-    name: "BASE",
-    category: "ECサイト",
+    name: "WooCommerce",
+    category: "EC",
     icon: "🛒",
-    html: [/thebase\.in/i, /base-cms/i],
+    html: [/woocommerce|wc-ajax/i],
+    cookies: [/^woocommerce_/i, /^wc_/i],
   },
+  {
+    name: "Magento",
+    category: "EC",
+    icon: "🛒",
+    html: [/Mage\.Cookies|skin\/frontend/i],
+    cookies: [/^X-Magento-Vary/i, /^frontend/i],
+  },
+  {
+    name: "BigCommerce",
+    category: "EC",
+    icon: "🛒",
+    headers: [
+      { name: "x-bc-apex", pattern: /./ },
+      { name: "x-magento-cache-control", pattern: /./ },
+    ],
+    html: [/cdn\d+\.bigcommerce\.com/i],
+  },
+  {
+    name: "PrestaShop",
+    category: "EC",
+    icon: "🛒",
+    headers: [{ name: "powered-by", pattern: /PrestaShop/i }],
+    meta: [{ name: "generator", pattern: /PrestaShop/i }],
+  },
+  {
+    name: "Salesforce Commerce Cloud",
+    category: "EC",
+    icon: "🛒",
+    html: [/demandware\.static|demandware\.edgesuite\.net/i],
+  },
+  { name: "BASE", category: "EC", icon: "🛒", html: [/thebase\.in|base-cms/i] },
   {
     name: "STORES",
-    category: "ECサイト",
+    category: "EC",
     icon: "🛒",
-    html: [/stores\.jp/i, /static\.stores\.jp/i],
+    html: [/stores\.jp|static\.stores\.jp/i],
   },
-  // フレームワーク
+  { name: "Stripe", category: "決済", icon: "💳", url: [/js\.stripe\.com/i] },
+  {
+    name: "PayPal",
+    category: "決済",
+    icon: "💳",
+    url: [/paypal\.com\/sdk\/js|paypalobjects\.com/i],
+  },
+  {
+    name: "Square",
+    category: "決済",
+    icon: "💳",
+    url: [/js\.squarecdn\.com|squareup\.com\/payments/i],
+  },
+  {
+    name: "Amazon Pay",
+    category: "決済",
+    icon: "💳",
+    url: [/static-na\.payments-amazon\.com|amazonpay/i],
+  },
+
+  // ============================================================
+  // フレームワーク (フロントエンド)
+  // ============================================================
   {
     name: "Next.js",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/__NEXT_DATA__/i, /_next\/static/i],
+    icon: "▲",
+    html: [/__NEXT_DATA__|_next\/static/i],
     meta: [{ name: "next-head-count", pattern: /./ }],
+    global: ["__NEXT_DATA__", "next"],
   },
   {
     name: "Nuxt.js",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/__NUXT__/i, /_nuxt\//i],
+    icon: "💚",
+    html: [/__NUXT__|_nuxt\//i],
+    global: ["__NUXT__", "$nuxt"],
   },
   {
     name: "Gatsby",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/___gatsby/i, /gatsby-/i],
+    icon: "🟣",
+    html: [/___gatsby|gatsby-/i],
     meta: [{ name: "generator", pattern: /Gatsby/i }],
   },
   {
     name: "Remix",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/__remixContext/i, /__remixManifest/i],
+    icon: "🎵",
+    html: [/__remixContext|__remixManifest/i],
+    global: ["__remixContext"],
   },
   {
     name: "SvelteKit",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/__sveltekit_/i, /\/_app\/immutable\//i],
+    icon: "🟧",
+    html: [/__sveltekit_|\/_app\/immutable\//i],
   },
   {
     name: "Astro",
     category: "フレームワーク",
-    icon: "⚡",
-    html: [/astro-island/i],
+    icon: "🚀",
+    html: [/astro-island|data-astro-/i],
     meta: [{ name: "generator", pattern: /Astro/i }],
+  },
+  {
+    name: "Qwik",
+    category: "フレームワーク",
+    icon: "⚡",
+    html: [/q:base|q:container|q:render/i],
   },
   {
     name: "Hugo",
     category: "静的サイトジェネレータ",
-    icon: "⚡",
+    icon: "📰",
     meta: [{ name: "generator", pattern: /Hugo/i }],
   },
   {
     name: "Jekyll",
     category: "静的サイトジェネレータ",
-    icon: "⚡",
+    icon: "📰",
     meta: [{ name: "generator", pattern: /Jekyll/i }],
   },
-  // JS ライブラリ
+  {
+    name: "Eleventy",
+    category: "静的サイトジェネレータ",
+    icon: "📰",
+    meta: [{ name: "generator", pattern: /Eleventy/i }],
+  },
+  {
+    name: "Docusaurus",
+    category: "静的サイトジェネレータ",
+    icon: "📰",
+    meta: [{ name: "generator", pattern: /Docusaurus/i }],
+  },
+  {
+    name: "VitePress / VuePress",
+    category: "静的サイトジェネレータ",
+    icon: "📰",
+    html: [/vitepress|vuepress/i],
+  },
+  {
+    name: "MkDocs",
+    category: "静的サイトジェネレータ",
+    icon: "📰",
+    meta: [{ name: "generator", pattern: /MkDocs/i }],
+  },
+
+  // ============================================================
+  // フレームワーク (サーバ)
+  // ============================================================
+  {
+    name: "Express",
+    category: "サーバ",
+    icon: "🟩",
+    headers: [{ name: "x-powered-by", pattern: /Express/i }],
+  },
+  {
+    name: "Koa",
+    category: "サーバ",
+    icon: "🟩",
+    headers: [{ name: "x-powered-by", pattern: /Koa/i }],
+  },
+  {
+    name: "Hapi",
+    category: "サーバ",
+    icon: "🟩",
+    headers: [{ name: "server", pattern: /hapi/i }],
+  },
+  {
+    name: "NestJS",
+    category: "サーバ",
+    icon: "🐱",
+    headers: [{ name: "x-powered-by", pattern: /NestJS/i }],
+  },
+  {
+    name: "Fastify",
+    category: "サーバ",
+    icon: "⚡",
+    headers: [{ name: "x-powered-by", pattern: /Fastify/i }],
+  },
+  {
+    name: "PHP",
+    category: "サーバ言語",
+    icon: "🐘",
+    headers: [
+      { name: "x-powered-by", pattern: /PHP\/?([\d.]+)?/i },
+      { name: "set-cookie", pattern: /PHPSESSID/i },
+    ],
+    cookies: [/^PHPSESSID$/i],
+  },
+  {
+    name: "Ruby on Rails",
+    category: "サーバ",
+    icon: "💎",
+    headers: [
+      { name: "x-powered-by", pattern: /Ruby on Rails|Phusion Passenger/i },
+      { name: "server", pattern: /Phusion Passenger/i },
+    ],
+    cookies: [/^_session_id$/i, /^_csrf_token$/i],
+  },
+  {
+    name: "Django",
+    category: "サーバ",
+    icon: "🐍",
+    cookies: [/^csrftoken$/i, /^django_language$/i, /^sessionid$/i],
+  },
+  {
+    name: "Flask",
+    category: "サーバ",
+    icon: "🐍",
+    cookies: [/^session$/i],
+    headers: [{ name: "server", pattern: /Werkzeug|gunicorn/i }],
+  },
+  {
+    name: "FastAPI",
+    category: "サーバ",
+    icon: "🐍",
+    headers: [{ name: "server", pattern: /uvicorn/i }],
+  },
+  {
+    name: "Spring",
+    category: "サーバ",
+    icon: "🌿",
+    cookies: [/^JSESSIONID$/i],
+    headers: [{ name: "x-application-context", pattern: /./ }],
+  },
+  {
+    name: "Laravel",
+    category: "サーバ",
+    icon: "🟥",
+    cookies: [/^laravel_session$/i, /^XSRF-TOKEN$/i],
+  },
+  {
+    name: "Symfony",
+    category: "サーバ",
+    icon: "🎼",
+    cookies: [/^sf_redirect$/i],
+    headers: [{ name: "x-powered-by", pattern: /Symfony/i }],
+  },
+  {
+    name: "ASP.NET",
+    category: "サーバ",
+    icon: "🅰️",
+    headers: [
+      { name: "x-powered-by", pattern: /ASP\.NET/i },
+      { name: "x-aspnet-version", pattern: /./ },
+      { name: "x-aspnetmvc-version", pattern: /./ },
+    ],
+    cookies: [/^ASP\.NET_SessionId$/i],
+  },
+  {
+    name: "ASP.NET Core",
+    category: "サーバ",
+    icon: "🅰️",
+    headers: [{ name: "server", pattern: /Kestrel/i }],
+  },
+  {
+    name: "Java Servlet",
+    category: "サーバ",
+    icon: "☕",
+    cookies: [/^JSESSIONID$/i],
+  },
+  {
+    name: "Node.js",
+    category: "サーバ",
+    icon: "🟢",
+    headers: [{ name: "x-powered-by", pattern: /Express|Next\.js|Node/i }],
+  },
+  {
+    name: "Tomcat",
+    category: "サーバ",
+    icon: "🐈",
+    headers: [{ name: "server", pattern: /Apache-Coyote|Tomcat/i }],
+  },
+
+  // ============================================================
+  // Webサーバ / リバースプロキシ
+  // ============================================================
+  {
+    name: "Nginx",
+    category: "Webサーバ",
+    icon: "🟩",
+    headers: [{ name: "server", pattern: /nginx(?:\/([\d.]+))?/i }],
+    version: [/nginx\/([\d.]+)/i],
+  },
+  {
+    name: "Apache HTTP Server",
+    category: "Webサーバ",
+    icon: "🪶",
+    headers: [{ name: "server", pattern: /Apache(?:\/([\d.]+))?/i }],
+    version: [/Apache\/([\d.]+)/i],
+  },
+  {
+    name: "Microsoft IIS",
+    category: "Webサーバ",
+    icon: "🪟",
+    headers: [{ name: "server", pattern: /Microsoft-IIS(?:\/([\d.]+))?/i }],
+  },
+  {
+    name: "LiteSpeed",
+    category: "Webサーバ",
+    icon: "💨",
+    headers: [{ name: "server", pattern: /LiteSpeed/i }],
+  },
+  {
+    name: "Caddy",
+    category: "Webサーバ",
+    icon: "🟦",
+    headers: [{ name: "server", pattern: /Caddy/i }],
+  },
+  {
+    name: "Envoy",
+    category: "Webサーバ",
+    icon: "🟪",
+    headers: [{ name: "server", pattern: /envoy/i }],
+  },
+  {
+    name: "OpenResty",
+    category: "Webサーバ",
+    icon: "🟩",
+    headers: [{ name: "server", pattern: /openresty/i }],
+  },
+  {
+    name: "Varnish",
+    category: "キャッシュ",
+    icon: "🛡️",
+    headers: [
+      { name: "via", pattern: /varnish/i },
+      { name: "x-varnish", pattern: /./ },
+    ],
+  },
+  {
+    name: "HAProxy",
+    category: "リバースプロキシ",
+    icon: "🟪",
+    headers: [{ name: "server", pattern: /HAProxy/i }],
+  },
+
+  // ============================================================
+  // CDN / インフラ
+  // ============================================================
+  {
+    name: "Cloudflare",
+    category: "CDN",
+    icon: "☁️",
+    html: [/cdnjs\.cloudflare\.com|challenges\.cloudflare\.com/i],
+    headers: [
+      { name: "server", pattern: /cloudflare/i },
+      { name: "cf-ray", pattern: /./ },
+      { name: "cf-cache-status", pattern: /./ },
+    ],
+    cookies: [/^__cf_bm$/i, /^cf_clearance$/i],
+  },
+  {
+    name: "Fastly",
+    category: "CDN",
+    icon: "🌐",
+    headers: [
+      { name: "x-served-by", pattern: /cache-/i },
+      { name: "x-fastly-request-id", pattern: /./ },
+      { name: "via", pattern: /varnish.*fastly/i },
+    ],
+  },
+  {
+    name: "Akamai",
+    category: "CDN",
+    icon: "🌐",
+    headers: [
+      { name: "x-akamai-transformed", pattern: /./ },
+      { name: "akamai-grn", pattern: /./ },
+      { name: "server", pattern: /AkamaiGHost/i },
+    ],
+  },
+  {
+    name: "Amazon CloudFront",
+    category: "CDN",
+    icon: "🌐",
+    headers: [
+      { name: "via", pattern: /CloudFront/i },
+      { name: "x-amz-cf-id", pattern: /./ },
+      { name: "x-amz-cf-pop", pattern: /./ },
+    ],
+  },
+  {
+    name: "Google Cloud CDN",
+    category: "CDN",
+    icon: "🌐",
+    headers: [
+      { name: "via", pattern: /Google Frontend/i },
+      { name: "server", pattern: /gws/i },
+    ],
+  },
+  {
+    name: "Microsoft Azure CDN",
+    category: "CDN",
+    icon: "🌐",
+    headers: [
+      { name: "x-azure-ref", pattern: /./ },
+      { name: "x-msedge-ref", pattern: /./ },
+    ],
+  },
+  {
+    name: "BunnyCDN",
+    category: "CDN",
+    icon: "🐰",
+    headers: [
+      { name: "server", pattern: /BunnyCDN/i },
+      { name: "cdn", pattern: /bunnycdn/i },
+    ],
+  },
+  {
+    name: "KeyCDN",
+    category: "CDN",
+    icon: "🌐",
+    headers: [{ name: "server", pattern: /keycdn/i }],
+  },
+  {
+    name: "Vercel",
+    category: "ホスティング",
+    icon: "▲",
+    headers: [
+      { name: "server", pattern: /Vercel/i },
+      { name: "x-vercel-id", pattern: /./ },
+      { name: "x-vercel-cache", pattern: /./ },
+    ],
+  },
+  {
+    name: "Netlify",
+    category: "ホスティング",
+    icon: "🟦",
+    headers: [
+      { name: "server", pattern: /Netlify/i },
+      { name: "x-nf-request-id", pattern: /./ },
+    ],
+  },
+  {
+    name: "GitHub Pages",
+    category: "ホスティング",
+    icon: "🐙",
+    headers: [
+      { name: "server", pattern: /GitHub\.com/i },
+      { name: "x-github-request-id", pattern: /./ },
+    ],
+  },
+  {
+    name: "Render",
+    category: "ホスティング",
+    icon: "🟪",
+    headers: [{ name: "x-render-origin-server", pattern: /./ }],
+  },
+  {
+    name: "Fly.io",
+    category: "ホスティング",
+    icon: "🪂",
+    headers: [
+      { name: "fly-request-id", pattern: /./ },
+      { name: "server", pattern: /Fly\/?([\w.]+)?/i },
+    ],
+  },
+  {
+    name: "Heroku",
+    category: "ホスティング",
+    icon: "🟪",
+    headers: [
+      { name: "via", pattern: /vegur/i },
+      { name: "x-request-id", pattern: /./ },
+    ],
+  },
+  {
+    name: "jsDelivr",
+    category: "CDN",
+    icon: "📦",
+    url: [/cdn\.jsdelivr\.net/i],
+  },
+  { name: "unpkg", category: "CDN", icon: "📦", url: [/unpkg\.com\//i] },
+  {
+    name: "Google Hosted Libraries",
+    category: "CDN",
+    icon: "📦",
+    url: [/ajax\.googleapis\.com/i],
+  },
+
+  // ============================================================
+  // JS ライブラリ / フレームワーク
+  // ============================================================
   {
     name: "React",
     category: "JSライブラリ",
     icon: "⚛️",
     html: [
-      /data-reactroot/i,
-      /react(\.production)?\.min\.js/i,
-      /__REACT_DEVTOOLS/i,
+      /data-reactroot|data-reactid|__REACT_DEVTOOLS|react(\.production|\.development)?(\.min)?\.js/i,
     ],
+    global: ["React", "ReactDOM"],
   },
   {
     name: "Vue.js",
     category: "JSライブラリ",
     icon: "💚",
     html: [
-      /v-cloak|v-if|v-for/i,
-      /vue(\.runtime)?(\.global)?(\.min)?\.js/i,
-      /data-v-/i,
+      /v-cloak|v-if=|v-for=|vue(?:\.runtime)?(?:\.global)?(?:\.min)?\.js|data-v-[a-z0-9]+/i,
     ],
+    global: ["Vue", "__VUE__"],
   },
   {
     name: "Angular",
     category: "JSライブラリ",
     icon: "🅰️",
-    html: [/ng-(app|controller|repeat|model)/i, /\bangular(\.min)?\.js/i],
+    html: [
+      /ng-version=|ng-(?:app|controller|repeat|model)|\bangular(?:\.min)?\.js/i,
+    ],
+    global: ["ng", "angular"],
   },
   {
     name: "Svelte",
     category: "JSライブラリ",
-    icon: "🔶",
+    icon: "🟧",
     html: [/svelte-[a-z0-9]{4,}/i],
   },
   {
     name: "Preact",
     category: "JSライブラリ",
     icon: "⚛️",
-    html: [/preact(\.min)?\.js/i],
+    html: [/preact(?:\.min)?\.js/i],
+    global: ["preact"],
+  },
+  {
+    name: "SolidJS",
+    category: "JSライブラリ",
+    icon: "🟦",
+    html: [/_solid\b|solid-js/i],
+  },
+  {
+    name: "Lit",
+    category: "JSライブラリ",
+    icon: "🔥",
+    html: [/lit-html|lit-element/i],
   },
   {
     name: "Alpine.js",
     category: "JSライブラリ",
     icon: "🏔️",
-    html: [/x-data=|x-init=|x-show=/i, /alpine(\.min)?\.js/i],
+    html: [/x-data=|x-init=|x-show=|alpine(?:\.min)?\.js/i],
+  },
+  {
+    name: "Stimulus",
+    category: "JSライブラリ",
+    icon: "🎯",
+    html: [/data-controller=|stimulus(?:\.min)?\.js/i],
+  },
+  {
+    name: "HTMX",
+    category: "JSライブラリ",
+    icon: "🔁",
+    html: [/hx-(?:get|post|trigger|target|swap)=|htmx(?:\.min)?\.js/i],
   },
   {
     name: "jQuery",
     category: "JSライブラリ",
     icon: "💲",
-    html: [/jquery(-\d|\.min)?\.js/i],
+    html: [/jquery(?:-\d|\.min)?\.js/i],
+    global: ["jQuery", "$"],
+  },
+  {
+    name: "jQuery UI",
+    category: "JSライブラリ",
+    icon: "💲",
+    html: [/jquery-ui(?:\.min)?\.js/i],
   },
   {
     name: "Lodash",
     category: "JSライブラリ",
-    icon: "🛠️",
-    html: [/lodash(\.min)?\.js/i],
+    icon: "🧰",
+    html: [/lodash(?:\.min)?\.js/i],
+    global: ["_"],
+  },
+  {
+    name: "Underscore.js",
+    category: "JSライブラリ",
+    icon: "🧰",
+    html: [/underscore(?:\.min)?\.js/i],
+  },
+  {
+    name: "Moment.js",
+    category: "JSライブラリ",
+    icon: "⏱",
+    html: [/moment(?:\.min)?\.js/i],
+    global: ["moment"],
+  },
+  {
+    name: "Day.js",
+    category: "JSライブラリ",
+    icon: "⏱",
+    html: [/dayjs(?:\.min)?\.js/i],
   },
   {
     name: "Three.js",
     category: "JSライブラリ",
     icon: "🎮",
-    html: [/three(\.min)?\.js/i],
+    html: [/three(?:\.min)?\.js/i],
+    global: ["THREE"],
   },
   {
     name: "D3.js",
     category: "JSライブラリ",
     icon: "📊",
-    html: [/d3(\.v[1-9])?(\.min)?\.js/i],
+    html: [/d3(?:\.v[1-9])?(?:\.min)?\.js/i],
+    global: ["d3"],
   },
+  {
+    name: "Chart.js",
+    category: "JSライブラリ",
+    icon: "📊",
+    html: [/chart(?:js|\.min)?\.js/i],
+    global: ["Chart"],
+  },
+  {
+    name: "Highcharts",
+    category: "JSライブラリ",
+    icon: "📊",
+    html: [/highcharts(?:\.min)?\.js/i],
+    global: ["Highcharts"],
+  },
+  {
+    name: "ECharts",
+    category: "JSライブラリ",
+    icon: "📊",
+    html: [/echarts(?:\.min)?\.js/i],
+    global: ["echarts"],
+  },
+  {
+    name: "Mapbox GL JS",
+    category: "地図",
+    icon: "🗺",
+    html: [/mapbox-gl(?:\.min)?\.js/i],
+    global: ["mapboxgl"],
+  },
+  {
+    name: "Leaflet",
+    category: "地図",
+    icon: "🗺",
+    html: [/leaflet(?:\.min)?\.js/i],
+    global: ["L"],
+  },
+  {
+    name: "Google Maps",
+    category: "地図",
+    icon: "🗺",
+    url: [/maps\.googleapis\.com\/maps\/api\/js/i],
+  },
+  {
+    name: "OpenLayers",
+    category: "地図",
+    icon: "🗺",
+    html: [/openlayers|ol\.js|ol\.css/i],
+  },
+  {
+    name: "Modernizr",
+    category: "JSライブラリ",
+    icon: "🧪",
+    html: [/modernizr(?:\.min)?\.js/i],
+  },
+  {
+    name: "GSAP",
+    category: "JSライブラリ",
+    icon: "🎬",
+    html: [/gsap(?:\.min)?\.js|TweenMax|TimelineMax/i],
+  },
+  {
+    name: "Anime.js",
+    category: "JSライブラリ",
+    icon: "🎬",
+    html: [/anime(?:\.min)?\.js/i],
+  },
+  {
+    name: "Lottie",
+    category: "JSライブラリ",
+    icon: "🎬",
+    html: [/lottie(?:-web)?(?:\.min)?\.js/i],
+  },
+  {
+    name: "Swiper",
+    category: "JSライブラリ",
+    icon: "🎠",
+    html: [/swiper(?:-bundle)?(?:\.min)?\.(?:js|css)/i],
+  },
+  {
+    name: "Slick",
+    category: "JSライブラリ",
+    icon: "🎠",
+    html: [/slick(?:-carousel)?(?:\.min)?\.(?:js|css)/i],
+  },
+  {
+    name: "Video.js",
+    category: "JSライブラリ",
+    icon: "📺",
+    html: [/video-js(?:\.min)?\.(?:js|css)|videojs/i],
+  },
+  {
+    name: "Plyr",
+    category: "JSライブラリ",
+    icon: "📺",
+    html: [/plyr(?:\.min)?\.(?:js|css)/i],
+  },
+
+  // ============================================================
   // CSS フレームワーク
+  // ============================================================
   {
     name: "Tailwind CSS",
     category: "CSS",
     icon: "🎨",
     html: [
       /(?:class|className)=["'][^"']*\b(?:bg-|text-|flex|grid|p-\d|m-\d|w-\d|h-\d)/i,
-      /tailwind(\.min)?\.css/i,
+      /tailwind(?:\.min)?\.css/i,
+      /\bcdn\.tailwindcss\.com\b/i,
     ],
   },
   {
@@ -6170,68 +6928,201 @@ const TECH_SIGNATURES: TechSignature[] = [
     category: "CSS",
     icon: "🎨",
     html: [
-      /bootstrap(\.min)?\.css/i,
-      /class="[^"]*\b(container|row|col-(?:xs|sm|md|lg|xl)-)/i,
+      /bootstrap(?:\.min)?\.css|class="[^"]*\b(?:container|row|col-(?:xs|sm|md|lg|xl)-)/i,
     ],
   },
-  { name: "Bulma", category: "CSS", icon: "🎨", html: [/bulma(\.min)?\.css/i] },
+  {
+    name: "Bulma",
+    category: "CSS",
+    icon: "🎨",
+    html: [/bulma(?:\.min)?\.css/i],
+  },
   {
     name: "Foundation",
     category: "CSS",
     icon: "🎨",
-    html: [/foundation(\.min)?\.css/i],
+    html: [/foundation(?:\.min)?\.css/i],
   },
   {
-    name: "Material-UI / MUI",
+    name: "Material UI / MUI",
     category: "CSS",
     icon: "🎨",
-    html: [/mui-/i, /material-ui/i],
+    html: [/mui-|material-ui|@mui\//i],
   },
-  // 解析・タグマネ
   {
-    name: "Google Analytics",
+    name: "Chakra UI",
+    category: "CSS",
+    icon: "🎨",
+    html: [/chakra-(?:ui|c\d)/i],
+  },
+  {
+    name: "Ant Design",
+    category: "CSS",
+    icon: "🎨",
+    html: [/ant-design|antd(?:\.min)?\.css|\bant-row\b|\bant-col-/i],
+  },
+  {
+    name: "Element UI / Plus",
+    category: "CSS",
+    icon: "🎨",
+    html: [/element-ui|element-plus|el-button|el-row/i],
+  },
+  {
+    name: "Vuetify",
+    category: "CSS",
+    icon: "🎨",
+    html: [/vuetify(?:\.min)?\.css/i],
+  },
+  {
+    name: "Semantic UI",
+    category: "CSS",
+    icon: "🎨",
+    html: [/semantic(?:-ui)?(?:\.min)?\.css/i],
+  },
+  {
+    name: "UIKit",
+    category: "CSS",
+    icon: "🎨",
+    html: [/uikit(?:\.min)?\.css/i],
+  },
+  {
+    name: "Pure CSS",
+    category: "CSS",
+    icon: "🎨",
+    html: [/pure(?:-min)?\.css/i],
+  },
+  {
+    name: "Bulma",
+    category: "CSS",
+    icon: "🎨",
+    html: [/bulma(?:\.min)?\.css/i],
+  },
+  {
+    name: "Font Awesome",
+    category: "アイコン",
+    icon: "🌟",
+    html: [/font-?awesome|fa-solid|fa-regular|fa-brands/i],
+  },
+  {
+    name: "Material Icons",
+    category: "アイコン",
+    icon: "🌟",
+    html: [/material-icons|fonts\.googleapis\.com\/icon/i],
+  },
+  {
+    name: "Iconify",
+    category: "アイコン",
+    icon: "🌟",
+    html: [/iconify(?:\.min)?\.js|api\.iconify\.design/i],
+  },
+
+  // ============================================================
+  // ビルドツール / バンドラ
+  // ============================================================
+  {
+    name: "Webpack",
+    category: "ビルド",
+    icon: "📦",
+    html: [/webpackJsonp|__webpack_require__|webpack-runtime/i],
+  },
+  {
+    name: "Vite",
+    category: "ビルド",
+    icon: "⚡",
+    html: [/\/@vite\/|@id\/|vite\/dist/i],
+  },
+  { name: "Parcel", category: "ビルド", icon: "📦", html: [/parcelRequire/i] },
+  { name: "esbuild", category: "ビルド", icon: "⚡", html: [/__esbuild_/i] },
+  { name: "Rollup", category: "ビルド", icon: "📦", html: [/__rollup_/i] },
+  {
+    name: "Turbopack",
+    category: "ビルド",
+    icon: "🚀",
+    html: [/__turbopack_/i],
+  },
+
+  // ============================================================
+  // 解析 / タグマネ / 広告 / A-B テスト
+  // ============================================================
+  {
+    name: "Google Analytics (UA)",
     category: "解析",
     icon: "📊",
     html: [
-      /google-analytics\.com\/(ga|analytics)\.js/i,
-      /gtag\(['"]config['"], ?['"]UA-/i,
+      /google-analytics\.com\/(?:ga|analytics)\.js|gtag\(['"]config['"], ?['"]UA-/i,
     ],
   },
   {
     name: "Google Analytics 4",
     category: "解析",
     icon: "📊",
-    html: [/gtag\/js\?id=G-/i, /gtag\(['"]config['"], ?['"]G-/i],
+    url: [/gtag\/js\?id=G-/i],
+    html: [/gtag\(['"]config['"], ?['"]G-/i],
   },
   {
     name: "Google Tag Manager",
     category: "タグ管理",
     icon: "🏷️",
-    html: [/googletagmanager\.com\/gtm\.js/i, /GTM-[A-Z0-9]+/i],
+    url: [/googletagmanager\.com\/gtm\.js/i],
+    html: [/GTM-[A-Z0-9]+/],
   },
   {
     name: "Microsoft Clarity",
     category: "解析",
     icon: "📊",
-    html: [/clarity\.ms\/tag\//i],
+    url: [/clarity\.ms\/tag\//i],
   },
   {
     name: "Hotjar",
     category: "解析",
     icon: "🔥",
-    html: [/static\.hotjar\.com/i, /hjSetting/i],
+    url: [/static\.hotjar\.com/i],
+    html: [/hjSetting/i],
   },
   {
     name: "Mixpanel",
     category: "解析",
     icon: "📊",
-    html: [/cdn\.mixpanel\.com/i, /mixpanel\.init/i],
+    url: [/cdn\.mixpanel\.com/i],
+    html: [/mixpanel\.init/i],
+  },
+  {
+    name: "Amplitude",
+    category: "解析",
+    icon: "📊",
+    url: [/cdn\.amplitude\.com/i],
+    global: ["amplitude"],
+  },
+  {
+    name: "Heap",
+    category: "解析",
+    icon: "📊",
+    url: [/cdn\.heapanalytics\.com/i],
+  },
+  {
+    name: "Segment",
+    category: "解析",
+    icon: "📊",
+    url: [/cdn\.segment\.com/i],
+    global: ["analytics"],
   },
   {
     name: "Plausible",
     category: "解析",
     icon: "📊",
-    html: [/plausible\.io\/js\//i],
+    url: [/plausible\.io\/js\//i],
+  },
+  {
+    name: "Fathom",
+    category: "解析",
+    icon: "📊",
+    url: [/cdn\.usefathom\.com/i],
+  },
+  {
+    name: "Matomo (Piwik)",
+    category: "解析",
+    icon: "📊",
+    html: [/matomo\.js|piwik\.js/i],
   },
   {
     name: "Adobe Analytics",
@@ -6240,52 +7131,142 @@ const TECH_SIGNATURES: TechSignature[] = [
     html: [/s_code\.js|AppMeasurement\.js/i],
   },
   {
+    name: "Adobe Target",
+    category: "A-Bテスト",
+    icon: "🎯",
+    html: [/at\.js|adobedtm\.com/i],
+  },
+  {
+    name: "Optimizely",
+    category: "A-Bテスト",
+    icon: "🧪",
+    url: [/cdn\.optimizely\.com/i],
+  },
+  {
+    name: "VWO",
+    category: "A-Bテスト",
+    icon: "🧪",
+    url: [/dev\.visualwebsiteoptimizer\.com/i],
+  },
+  {
+    name: "Google Optimize",
+    category: "A-Bテスト",
+    icon: "🧪",
+    url: [/googleoptimize\.com\//i],
+  },
+  {
+    name: "New Relic",
+    category: "監視",
+    icon: "🛡️",
+    url: [/js-agent\.newrelic\.com|bam\.nr-data\.net/i],
+  },
+  {
+    name: "Datadog RUM",
+    category: "監視",
+    icon: "🐶",
+    url: [/datadoghq-browser-agent|browser-intake-datadoghq/i],
+  },
+  {
+    name: "Sentry",
+    category: "監視",
+    icon: "🔭",
+    url: [/browser\.sentry-cdn\.com|sentry\.io|@sentry/i],
+  },
+  {
+    name: "LogRocket",
+    category: "監視",
+    icon: "🚀",
+    url: [/cdn\.logrocket\.com/i],
+  },
+  {
+    name: "Bugsnag",
+    category: "監視",
+    icon: "🐛",
+    url: [/d2wy8f7a9ursnm\.cloudfront\.net|bugsnag/i],
+  },
+  {
     name: "Yahoo! JAPAN タグマネージャ",
     category: "タグ管理",
     icon: "🏷️",
-    html: [/s\.yjtag\.jp/i, /YJ_HISTORICAL/i],
+    url: [/s\.yjtag\.jp/i],
+    html: [/YJ_HISTORICAL/],
   },
-  // CDN / インフラ
-  {
-    name: "Cloudflare",
-    category: "CDN",
-    icon: "☁️",
-    html: [/cdnjs\.cloudflare\.com/i, /__cf_bm|cf-ray/i],
-  },
-  {
-    name: "jsDelivr",
-    category: "CDN",
-    icon: "📦",
-    html: [/cdn\.jsdelivr\.net/i],
-  },
-  { name: "unpkg", category: "CDN", icon: "📦", html: [/unpkg\.com\//i] },
-  // フォント
-  {
-    name: "Google Fonts",
-    category: "フォント",
-    icon: "🔤",
-    html: [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i],
-  },
-  {
-    name: "Adobe Fonts",
-    category: "フォント",
-    icon: "🔤",
-    html: [/use\.typekit\.net/i],
-  },
-  // 広告
   {
     name: "Google AdSense",
     category: "広告",
     icon: "💰",
-    html: [/pagead2\.googlesyndication\.com/i, /adsbygoogle/i],
+    url: [/pagead2\.googlesyndication\.com/i],
+    html: [/adsbygoogle/i],
   },
   {
-    name: "Google DFP / Ad Manager",
+    name: "Google Ad Manager (DFP)",
     category: "広告",
     icon: "💰",
-    html: [/securepubads\.g\.doubleclick\.net/i, /googletag\.cmd/i],
+    url: [/securepubads\.g\.doubleclick\.net/i],
+    html: [/googletag\.cmd/i],
   },
-  // 動画埋込
+  {
+    name: "Facebook Pixel",
+    category: "解析",
+    icon: "📊",
+    url: [/connect\.facebook\.net\/[^/]+\/fbevents\.js/i],
+    html: [/fbq\(['"]init['"]/i],
+  },
+  {
+    name: "TikTok Pixel",
+    category: "解析",
+    icon: "🎵",
+    url: [/analytics\.tiktok\.com/i],
+  },
+  {
+    name: "LinkedIn Insight",
+    category: "解析",
+    icon: "💼",
+    url: [/snap\.licdn\.com\/li\.lms-analytics/i],
+  },
+  {
+    name: "Pinterest Tag",
+    category: "解析",
+    icon: "📌",
+    url: [/s\.pinimg\.com\/ct\/core\.js/i],
+  },
+  {
+    name: "X (Twitter) Pixel",
+    category: "解析",
+    icon: "❌",
+    url: [/static\.ads-twitter\.com/i],
+  },
+  {
+    name: "LINE Tag",
+    category: "解析",
+    icon: "💬",
+    url: [/d\.line-scdn\.net\/n\/line_tag/i],
+  },
+  {
+    name: "Yahoo! JAPAN リスティング広告",
+    category: "広告",
+    icon: "🏷️",
+    url: [/s\.yimg\.jp\/images\/listing\/tool\/cv/i],
+  },
+  {
+    name: "Twitter / X Widget",
+    category: "SNS",
+    icon: "❌",
+    url: [/platform\.twitter\.com\/widgets\.js/i],
+    html: [/twitter-tweet/i],
+  },
+  {
+    name: "Facebook SDK",
+    category: "SNS",
+    icon: "📘",
+    url: [/connect\.facebook\.net\/[^/]+\/sdk\.js/i],
+  },
+  {
+    name: "Hatena Bookmark Button",
+    category: "SNS",
+    icon: "🇯🇵",
+    url: [/b\.hatena\.ne\.jp\/js\//i],
+  },
   {
     name: "YouTube Embed",
     category: "メディア",
@@ -6298,42 +7279,249 @@ const TECH_SIGNATURES: TechSignature[] = [
     icon: "📺",
     html: [/<iframe[^>]+player\.vimeo\.com/i],
   },
-  // SNS
+
+  // ============================================================
+  // フォント
+  // ============================================================
   {
-    name: "Twitter / X Widget",
-    category: "SNS",
-    icon: "🐦",
-    html: [/platform\.twitter\.com\/widgets\.js/i, /twitter-tweet/i],
+    name: "Google Fonts",
+    category: "フォント",
+    icon: "🔤",
+    url: [/fonts\.googleapis\.com|fonts\.gstatic\.com/i],
   },
   {
-    name: "Facebook Pixel",
-    category: "解析",
-    icon: "📊",
-    html: [
-      /connect\.facebook\.net\/[^/]+\/fbevents\.js/i,
-      /fbq\(['"]init['"]/i,
+    name: "Adobe Fonts (Typekit)",
+    category: "フォント",
+    icon: "🔤",
+    url: [/use\.typekit\.net/i],
+  },
+  {
+    name: "Fontawesome (CDN)",
+    category: "フォント",
+    icon: "🔤",
+    url: [/use\.fontawesome\.com/i],
+  },
+
+  // ============================================================
+  // セキュリティ / WAF
+  // ============================================================
+  {
+    name: "reCAPTCHA",
+    category: "セキュリティ",
+    icon: "🛡️",
+    url: [/www\.google\.com\/recaptcha|www\.gstatic\.com\/recaptcha/i],
+  },
+  {
+    name: "hCaptcha",
+    category: "セキュリティ",
+    icon: "🛡️",
+    url: [/hcaptcha\.com\/1\/api\.js/i],
+  },
+  {
+    name: "Cloudflare Turnstile",
+    category: "セキュリティ",
+    icon: "🛡️",
+    url: [/challenges\.cloudflare\.com\/turnstile/i],
+  },
+  {
+    name: "Akamai Bot Manager",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [{ name: "x-akam-sw-version", pattern: /./ }],
+    cookies: [/^_abck$/i, /^bm_sz$/i, /^ak_bmsc$/i],
+  },
+  {
+    name: "PerimeterX",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [{ name: "x-px", pattern: /./ }],
+    cookies: [/^_px/i],
+  },
+  {
+    name: "DataDome",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [
+      { name: "x-datadome", pattern: /./ },
+      { name: "server", pattern: /datadome/i },
     ],
   },
-  // 決済
-  { name: "Stripe", category: "決済", icon: "💳", html: [/js\.stripe\.com/i] },
   {
-    name: "PayPal",
-    category: "決済",
-    icon: "💳",
-    html: [/paypal\.com\/sdk\/js/i, /paypalobjects\.com/i],
-  },
-  // 日本系
-  {
-    name: "Hatena Bookmark Button",
-    category: "SNS",
-    icon: "🇯🇵",
-    html: [/b\.hatena\.ne\.jp\/js\//i],
+    name: "Imperva Incapsula",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [
+      { name: "x-iinfo", pattern: /./ },
+      { name: "x-cdn", pattern: /Incapsula/i },
+    ],
+    cookies: [/^visid_incap_/i, /^incap_ses_/i],
   },
   {
-    name: "LINE Tag",
-    category: "解析",
+    name: "AWS WAF",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [{ name: "x-amzn-waf-action", pattern: /./ }],
+    cookies: [/^aws-waf-token$/i],
+  },
+  {
+    name: "Sucuri",
+    category: "セキュリティ",
+    icon: "🛡️",
+    headers: [
+      { name: "server", pattern: /Sucuri\/Cloudproxy/i },
+      { name: "x-sucuri-id", pattern: /./ },
+    ],
+  },
+
+  // ============================================================
+  // CRM / マーケ
+  // ============================================================
+  {
+    name: "HubSpot",
+    category: "マーケ",
+    icon: "🟧",
+    url: [/js\.hs-scripts\.com|js\.hsforms\.net|js\.hubspot\.com/i],
+  },
+  {
+    name: "Marketo",
+    category: "マーケ",
+    icon: "🟪",
+    url: [/munchkin\.marketo\.net/i],
+  },
+  {
+    name: "Pardot / Account Engagement",
+    category: "マーケ",
+    icon: "🟦",
+    url: [/pi\.pardot\.com/i],
+  },
+  {
+    name: "Intercom",
+    category: "サポート",
     icon: "💬",
-    html: [/d\.line-scdn\.net\/n\/line_tag/i],
+    url: [/widget\.intercom\.io/i],
+    global: ["Intercom"],
+  },
+  {
+    name: "Zendesk",
+    category: "サポート",
+    icon: "💬",
+    url: [/static\.zdassets\.com|assets\.zendesk\.com/i],
+  },
+  {
+    name: "Drift",
+    category: "サポート",
+    icon: "💬",
+    url: [/js\.driftt\.com/i],
+  },
+  {
+    name: "Tawk.to",
+    category: "サポート",
+    icon: "💬",
+    url: [/embed\.tawk\.to/i],
+  },
+  {
+    name: "Crisp",
+    category: "サポート",
+    icon: "💬",
+    url: [/client\.crisp\.chat/i],
+  },
+
+  // ============================================================
+  // 決済 / 認証
+  // ============================================================
+  { name: "Auth0", category: "認証", icon: "🔐", url: [/cdn\.auth0\.com/i] },
+  {
+    name: "Firebase Auth",
+    category: "認証",
+    icon: "🔐",
+    url: [/www\.gstatic\.com\/firebasejs|firebase-auth\.js/i],
+  },
+  {
+    name: "Okta",
+    category: "認証",
+    icon: "🔐",
+    url: [/global\.oktacdn\.com/i],
+  },
+  {
+    name: "Clerk",
+    category: "認証",
+    icon: "🔐",
+    url: [/cdn\.clerk\.io|@clerk\//i],
+  },
+
+  // ============================================================
+  // データベース / バックエンド (ヒント)
+  // ============================================================
+  {
+    name: "Firebase",
+    category: "BaaS",
+    icon: "🔥",
+    url: [/firebaseio\.com|gstatic\.com\/firebasejs/i],
+  },
+  { name: "Supabase", category: "BaaS", icon: "🟢", url: [/supabase\.co/i] },
+  {
+    name: "Algolia",
+    category: "検索",
+    icon: "🔎",
+    url: [/cdn\.jsdelivr\.net\/npm\/algoliasearch|algolianet\.com/i],
+  },
+  {
+    name: "Elastic",
+    category: "検索",
+    icon: "🔎",
+    url: [/elastic-app-search/i],
+  },
+
+  // ============================================================
+  // PWA / マニフェスト
+  // ============================================================
+  {
+    name: "Service Worker",
+    category: "PWA",
+    icon: "⚙️",
+    html: [/navigator\.serviceWorker\.register|serviceworker\.js|sw\.js/i],
+  },
+  {
+    name: "Web App Manifest",
+    category: "PWA",
+    icon: "📱",
+    html: [/<link[^>]+rel=["']manifest["']/i],
+  },
+  {
+    name: "Open Graph",
+    category: "メタ",
+    icon: "🏷️",
+    html: [/<meta[^>]+property=["']og:/i],
+  },
+  {
+    name: "Twitter Cards",
+    category: "メタ",
+    icon: "🏷️",
+    html: [/<meta[^>]+name=["']twitter:/i],
+  },
+  {
+    name: "JSON-LD (schema.org)",
+    category: "メタ",
+    icon: "🏷️",
+    html: [/<script[^>]+type=["']application\/ld\+json["']/i],
+  },
+  {
+    name: "AMP",
+    category: "メタ",
+    icon: "⚡",
+    html: [/<html[^>]+\b(?:amp|⚡)\b/i],
+  },
+  {
+    name: "HTTP/2",
+    category: "プロトコル",
+    icon: "🌐",
+    headers: [{ name: ":status", pattern: /./ }],
+  },
+  {
+    name: "HTTP/3 (QUIC)",
+    category: "プロトコル",
+    icon: "🌐",
+    headers: [{ name: "alt-svc", pattern: /h3=|h3-/i }],
   },
 ];
 
@@ -6342,25 +7530,81 @@ interface DetectedTech {
   category: string;
   icon?: string;
   matches: string[];
+  version?: string;
 }
 
-function detectTechFromHtml(html: string, contentType: string): DetectedTech[] {
+/** HTML から <script src> / <link href> / <iframe src> の URL を抜き出す。 */
+function extractAssetUrls(html: string): string[] {
+  const urls: string[] = [];
+  const re =
+    /(?:<script[^>]+src|<link[^>]+href|<iframe[^>]+src)\s*=\s*["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    urls.push(m[1]);
+    if (urls.length > 1000) break;
+  }
+  return urls;
+}
+
+/**
+ * HTML / Content-Type / レスポンスヘッダ / Cookie / グローバル変数 をもとに
+ * 検出された技術スタック一覧を返す。Wappalyzer 風だが日本サービスや
+ * セキュリティ系・サーバ系まで広めにカバー。
+ */
+function detectTechFromHtml(
+  html: string,
+  contentType: string,
+  headers: [string, string][] = [],
+  cookies: string[] = [],
+  globals: string[] = [],
+): DetectedTech[] {
   const out: DetectedTech[] = [];
-  const head = html.slice(0, 200000); // 先頭 200KB のみ走査
+  const head = html.slice(0, 200000);
+  const assetUrls = extractAssetUrls(head);
+  const headerJoined = headers.map(([k, v]) => `${k}: ${v}`).join("\n");
+  const cookieSet = new Set(cookies.map((c) => c.toLowerCase()));
+  const globalSet = new Set(globals);
+
   for (const sig of TECH_SIGNATURES) {
     const reasons: string[] = [];
+    let version: string | undefined;
+
+    const tryVersion = (src: string): void => {
+      if (version || !sig.version) return;
+      for (const re of sig.version) {
+        const m = src.match(re);
+        if (m && m[1]) {
+          version = m[1];
+          return;
+        }
+      }
+    };
+
     if (sig.html) {
       for (const re of sig.html) {
-        if (re.test(head)) {
-          reasons.push(`HTML: ${re.source.slice(0, 40)}`);
+        const m = head.match(re);
+        if (m) {
+          reasons.push(`HTML: ${truncate(re.source)}`);
+          tryVersion(m[0]);
           break;
+        }
+      }
+    }
+    if (sig.url && assetUrls.length > 0) {
+      outer: for (const re of sig.url) {
+        for (const u of assetUrls) {
+          if (re.test(u)) {
+            reasons.push(`URL: ${truncate(u)}`);
+            tryVersion(u);
+            break outer;
+          }
         }
       }
     }
     if (sig.contentType && contentType) {
       for (const re of sig.contentType) {
         if (re.test(contentType)) {
-          reasons.push(`Content-Type: ${re.source}`);
+          reasons.push(`Content-Type: ${truncate(re.source)}`);
           break;
         }
       }
@@ -6373,21 +7617,84 @@ function detectTechFromHtml(html: string, contentType: string): DetectedTech[] {
         );
         const found = head.match(re);
         if (found && m.pattern.test(found[1])) {
-          reasons.push(`<meta ${m.name}="${found[1].slice(0, 40)}">`);
+          reasons.push(`<meta ${m.name}="${truncate(found[1])}">`);
+          tryVersion(found[1]);
           break;
         }
       }
     }
+    if (sig.headers && headers.length > 0) {
+      for (const h of sig.headers) {
+        const v = headers.find(([k]) => k === h.name)?.[1];
+        if (v && h.pattern.test(v)) {
+          reasons.push(`Header ${h.name}: ${truncate(v)}`);
+          tryVersion(v);
+          break;
+        }
+      }
+    }
+    if (sig.cookies && cookieSet.size > 0) {
+      for (const re of sig.cookies) {
+        for (const c of cookieSet) {
+          if (re.test(c)) {
+            reasons.push(`Cookie: ${c}`);
+            break;
+          }
+        }
+        if (
+          reasons.length > 0 &&
+          reasons[reasons.length - 1].startsWith("Cookie:")
+        )
+          break;
+      }
+    }
+    if (sig.global && globalSet.size > 0) {
+      for (const g of sig.global) {
+        if (globalSet.has(g)) {
+          reasons.push(`window.${g}`);
+          break;
+        }
+      }
+    }
+
+    // version が他で取得できなければ headers/HTML 全体から再走査
+    if (!version && sig.version) {
+      for (const re of sig.version) {
+        const m = headerJoined.match(re) || head.match(re);
+        if (m && m[1]) {
+          version = m[1];
+          break;
+        }
+      }
+    }
+
     if (reasons.length > 0) {
       out.push({
         name: sig.name,
         category: sig.category,
         icon: sig.icon,
         matches: reasons,
+        version,
       });
     }
   }
-  return out;
+  // 重複検出 (同名) を排除して reasons をマージ
+  const merged = new Map<string, DetectedTech>();
+  for (const d of out) {
+    const exist = merged.get(d.name);
+    if (exist) {
+      for (const r of d.matches)
+        if (!exist.matches.includes(r)) exist.matches.push(r);
+      if (!exist.version && d.version) exist.version = d.version;
+    } else {
+      merged.set(d.name, d);
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function truncate(s: string, n = 60): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
 function setupTechProfileTool(): void {
@@ -6419,6 +7726,12 @@ function setupTechProfileTool(): void {
       let status = 200;
       let bytes = 0;
       let displayUrl = url;
+      let headers: [string, string][] = [];
+      let cookies: string[] = [];
+      const globals: string[] = [];
+      let usedDom = false;
+      // アクティブタブの DOM (描画後の HTML) をまず取得して
+      // クライアントサイドフレームワークの検出精度を上げる。
       if (useActiveDom) {
         try {
           const got = await invoke<{ html: string; url: string }>(
@@ -6427,25 +7740,45 @@ function setupTechProfileTool(): void {
           body = got.html;
           displayUrl = got.url || url;
           bytes = body.length;
-        } catch (e) {
+          usedDom = true;
+        } catch {
           // フォールバックでサーバ取得
-          if (statusEl)
-            statusEl.textContent = `DOM取得失敗 (${String(e)})、サーバから取得中…`;
         }
       }
-      if (!body) {
+      // 同じ URL に対して toolbox_scrape_fetch を呼んでヘッダ/Cookie も取得する。
+      // (DOM 取得済みでも、HTTP ヘッダや Set-Cookie の解析が極めて重要なので
+      //  並列に server fetch も行う。失敗してもサイレントに DOM 検出のみ続行。)
+      try {
         const r = await invoke<ScrapeResult>("toolbox_scrape_fetch", {
-          url,
+          url: url || displayUrl,
           userAgent: null,
         });
-        body = r.body;
+        if (!body) {
+          body = r.body;
+          displayUrl = url || displayUrl;
+        }
         contentType = r.content_type;
         status = r.status;
-        bytes = r.bytes;
+        bytes = bytes || r.bytes;
+        headers = r.headers || [];
+        cookies = r.cookies || [];
+      } catch (e) {
+        if (!body) {
+          if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
+          return;
+        }
       }
-      const detected = detectTechFromHtml(body, contentType);
+      // 既知のフレームワーク用グローバル変数の取得は未対応 (将来 view_eval を実装したら埋める)。
+      const detected = detectTechFromHtml(
+        body,
+        contentType,
+        headers,
+        cookies,
+        globals,
+      );
+      const sourceLabel = usedDom ? `DOM+HTTP ${status}` : `HTTP ${status}`;
       if (statusEl)
-        statusEl.textContent = `${detected.length} 件検出 (${useActiveDom && status === 200 && contentType === "text/html" ? "DOM" : `HTTP ${status}`}, ${bytes.toLocaleString()} bytes)`;
+        statusEl.textContent = `${detected.length} 件検出 (${sourceLabel}, ${bytes.toLocaleString()} bytes, ヘッダ ${headers.length}, Cookie ${cookies.length})`;
       renderTechResult(displayUrl, detected);
     } catch (e) {
       if (statusEl) statusEl.textContent = `エラー: ${String(e)}`;
@@ -6464,22 +7797,72 @@ function setupTechProfileTool(): void {
       if (!groups.has(t.category)) groups.set(t.category, []);
       groups.get(t.category)!.push(t);
     }
+    // よく見るカテゴリを上に持ってくる。
+    const order = [
+      "CMS",
+      "EC",
+      "決済",
+      "フレームワーク",
+      "JSライブラリ",
+      "CSS",
+      "アイコン",
+      "サーバ",
+      "サーバ言語",
+      "Webサーバ",
+      "ホスティング",
+      "CDN",
+      "キャッシュ",
+      "リバースプロキシ",
+      "ビルド",
+      "解析",
+      "タグ管理",
+      "A-Bテスト",
+      "監視",
+      "広告",
+      "SNS",
+      "メディア",
+      "地図",
+      "フォント",
+      "セキュリティ",
+      "認証",
+      "BaaS",
+      "検索",
+      "PWA",
+      "メタ",
+      "プロトコル",
+      "サポート",
+      "マーケ",
+      "静的サイトジェネレータ",
+      "CMS (Headless)",
+    ];
+    const sortedCats = Array.from(groups.keys()).sort((a, b) => {
+      const ia = order.indexOf(a);
+      const ib = order.indexOf(b);
+      if (ia < 0 && ib < 0) return a.localeCompare(b);
+      if (ia < 0) return 1;
+      if (ib < 0) return -1;
+      return ia - ib;
+    });
     const html: string[] = [];
     html.push(
       `<div class="toolbox-note">対象: <code>${escapeHtml(url)}</code></div>`,
     );
-    for (const [cat, items] of groups) {
+    for (const cat of sortedCats) {
+      const items = groups.get(cat)!;
       html.push(
-        `<div style="border:1px solid #ccc;border-radius:6px;padding:8px;background:#fafafa">`,
+        `<div class="tech-card" style="border:1px solid var(--border, rgba(255,255,255,0.15));border-radius:6px;padding:8px;background:rgba(255,255,255,0.04);color:inherit">`,
       );
       html.push(
-        `<div style="font-weight:bold;margin-bottom:4px">${escapeHtml(cat)} <span style="color:#666;font-weight:normal">(${items.length})</span></div>`,
+        `<div style="font-weight:bold;margin-bottom:6px;color:inherit">${escapeHtml(cat)} <span style="opacity:0.7;font-weight:normal">(${items.length})</span></div>`,
       );
       html.push(`<div style="display:flex;flex-wrap:wrap;gap:6px">`);
       for (const t of items) {
         const tip = t.matches.join(" / ").replace(/"/g, "&quot;");
+        const ver = t.version
+          ? ` <span style="opacity:0.7">${escapeHtml(t.version)}</span>`
+          : "";
         html.push(
-          `<span title="${tip}" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#fff;border:1px solid #ccc;border-radius:14px;font-size:12px">${t.icon || "🔧"} ${escapeHtml(t.name)}</span>`,
+          `<span title="${tip}" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:14px;font-size:12px;color:inherit">${t.icon || "🔧"} ${escapeHtml(t.name)}${ver}</span>`,
         );
       }
       html.push(`</div></div>`);
@@ -13112,6 +14495,244 @@ function setupTodoTool(): void {
     importFile.value = "";
   });
   render();
+}
+
+// ===== 🖱️ CPS テスト (Clicks Per Second) =====
+function setupCpsTool(): void {
+  const target = document.getElementById("cps-target") as HTMLDivElement | null;
+  if (!target) return;
+  const big = document.getElementById("cps-big") as HTMLDivElement | null;
+  const sub = document.getElementById("cps-sub") as HTMLDivElement | null;
+  const timerEl = document.getElementById("cps-timer") as HTMLDivElement | null;
+  const countEl = document.getElementById("cps-count") as HTMLDivElement | null;
+  const rateEl = document.getElementById("cps-rate") as HTMLDivElement | null;
+  const peakEl = document.getElementById("cps-peak") as HTMLDivElement | null;
+  const bestEl = document.getElementById("cps-best") as HTMLDivElement | null;
+  const statusEl = document.getElementById(
+    "cps-status",
+  ) as HTMLSpanElement | null;
+  const resetBtn = document.getElementById(
+    "cps-reset",
+  ) as HTMLButtonElement | null;
+  const clearBestBtn = document.getElementById(
+    "cps-clear-best",
+  ) as HTMLButtonElement | null;
+  const timeBtns =
+    document.querySelectorAll<HTMLButtonElement>(".cps-time-btn");
+  const modeBtns =
+    document.querySelectorAll<HTMLButtonElement>(".cps-mode-btn");
+
+  let durationSec = 5;
+  let acceptKey = false; // モード: クリック+スペース ならスペースもカウント
+  let running = false;
+  let finished = false; // 終了後にクリックエリアから再スタートしないフラグ
+  let startTs = 0;
+  let count = 0;
+  let timerId: number | null = null;
+  let clickTimes: number[] = []; // 1秒窓ピーク用
+  const BEST_KEY = "yuzu-cps-best-v1";
+
+  function loadBest(): Record<string, number> {
+    try {
+      const raw = localStorage.getItem(BEST_KEY);
+      if (!raw) return {};
+      const o = JSON.parse(raw);
+      return o && typeof o === "object" ? o : {};
+    } catch {
+      return {};
+    }
+  }
+  function saveBest(b: Record<string, number>): void {
+    try {
+      localStorage.setItem(BEST_KEY, JSON.stringify(b));
+    } catch {
+      /* ignore */
+    }
+  }
+  function refreshBestDisplay(): void {
+    if (!bestEl) return;
+    const b = loadBest();
+    const cur = b[String(durationSec)];
+    bestEl.textContent = cur
+      ? `${cur.toFixed(2)} (${durationSec}秒)`
+      : `― (${durationSec}秒)`;
+  }
+
+  function setActive(
+    btns: NodeListOf<HTMLButtonElement>,
+    key: string,
+    val: string,
+  ): void {
+    btns.forEach((b) => {
+      const cur = b.dataset[key as keyof DOMStringMap];
+      const on = cur === val;
+      b.style.background = on ? "rgba(76, 175, 80, 0.4)" : "";
+      b.style.fontWeight = on ? "bold" : "";
+    });
+  }
+
+  timeBtns.forEach((b) => {
+    if (b.dataset.default === "1") {
+      durationSec = parseInt(b.dataset.sec || "5", 10);
+    }
+    b.addEventListener("click", () => {
+      if (running) return;
+      durationSec = parseInt(b.dataset.sec || "5", 10);
+      setActive(timeBtns, "sec", String(durationSec));
+      reset();
+      refreshBestDisplay();
+    });
+  });
+  modeBtns.forEach((b) => {
+    if (b.dataset.default === "1") {
+      acceptKey = b.dataset.mode === "any";
+    }
+    b.addEventListener("click", () => {
+      if (running) return;
+      acceptKey = b.dataset.mode === "any";
+      setActive(modeBtns, "mode", b.dataset.mode || "click");
+      if (sub)
+        sub.textContent = acceptKey
+          ? "ここをクリック または スペースキーで開始"
+          : "ここをクリックして開始";
+    });
+  });
+  setActive(timeBtns, "sec", String(durationSec));
+  setActive(modeBtns, "mode", acceptKey ? "any" : "click");
+
+  function reset(): void {
+    if (timerId !== null) {
+      window.clearInterval(timerId);
+      timerId = null;
+    }
+    running = false;
+    startTs = 0;
+    count = 0;
+    clickTimes = [];
+    if (countEl) countEl.textContent = "0";
+    if (rateEl) rateEl.textContent = "0.00";
+    if (peakEl) peakEl.textContent = "0.00";
+    if (timerEl) timerEl.textContent = `残り ${durationSec.toFixed(2)} 秒`;
+    if (big) big.textContent = "CLICK";
+    if (sub)
+      sub.textContent = acceptKey
+        ? "ここをクリック または スペースキーで開始"
+        : "ここをクリックして開始";
+    finished = false;
+    if (statusEl) statusEl.textContent = "";
+    target.style.background =
+      "linear-gradient(135deg, rgba(33, 150, 243, 0.15), rgba(76, 175, 80, 0.15))";
+  }
+
+  function tick(): void {
+    if (!running) return;
+    const now = performance.now();
+    const elapsed = (now - startTs) / 1000;
+    const remain = Math.max(0, durationSec - elapsed);
+    if (timerEl) timerEl.textContent = `残り ${remain.toFixed(2)} 秒`;
+    if (rateEl && elapsed > 0)
+      rateEl.textContent = (count / elapsed).toFixed(2);
+    // 1 秒窓のピーク CPS を計算
+    const cutoff = now - 1000;
+    while (clickTimes.length > 0 && clickTimes[0] < cutoff) clickTimes.shift();
+    const peak = clickTimes.length;
+    if (peakEl) {
+      const prev = parseFloat(peakEl.textContent || "0");
+      if (peak > prev) peakEl.textContent = peak.toFixed(2);
+    }
+    if (remain <= 0) finish();
+  }
+
+  function finish(): void {
+    running = false;
+    if (timerId !== null) {
+      window.clearInterval(timerId);
+      timerId = null;
+    }
+    const elapsed = durationSec;
+    const cps = count / elapsed;
+    if (rateEl) rateEl.textContent = cps.toFixed(2);
+    if (timerEl) timerEl.textContent = `終了 (${elapsed.toFixed(0)}秒)`;
+    finished = true;
+    if (big) big.textContent = `${cps.toFixed(2)} CPS`;
+    if (sub)
+      sub.textContent = `${count} 回 / ${elapsed}秒 — 「リセット」でもう一度`;
+    target.style.background =
+      "linear-gradient(135deg, rgba(255, 152, 0, 0.18), rgba(244, 67, 54, 0.18))";
+    const best = loadBest();
+    const key = String(durationSec);
+    if (!best[key] || cps > best[key]) {
+      best[key] = cps;
+      saveBest(best);
+      if (statusEl) statusEl.textContent = `🏆 新記録! (${cps.toFixed(2)} CPS)`;
+    } else {
+      if (statusEl)
+        statusEl.textContent = `ベスト: ${best[key].toFixed(2)} CPS`;
+    }
+    refreshBestDisplay();
+  }
+
+  function start(): void {
+    running = true;
+    startTs = performance.now();
+    count = 1; // この呼び出し自体を 1 クリックとして数える
+    clickTimes = [startTs];
+    if (countEl) countEl.textContent = "1";
+    if (rateEl) rateEl.textContent = "0.00";
+    if (peakEl) peakEl.textContent = "0.00";
+    if (sub) sub.textContent = "全力でクリック!";
+    if (statusEl) statusEl.textContent = "";
+    target.style.background =
+      "linear-gradient(135deg, rgba(76, 175, 80, 0.25), rgba(33, 150, 243, 0.25))";
+    timerId = window.setInterval(tick, 50);
+  }
+
+  function click(): void {
+    if (!running) {
+      if (finished) return; // 終了後はクリックエリアから再スタートしない
+      start();
+      return;
+    }
+    count += 1;
+    clickTimes.push(performance.now());
+    if (countEl) countEl.textContent = String(count);
+    // 視覚フィードバック
+    if (big) big.textContent = String(count);
+    target.style.background =
+      "linear-gradient(135deg, rgba(76, 175, 80, 0.35), rgba(33, 150, 243, 0.35))";
+    window.setTimeout(() => {
+      if (running) {
+        target.style.background =
+          "linear-gradient(135deg, rgba(76, 175, 80, 0.25), rgba(33, 150, 243, 0.25))";
+      }
+    }, 30);
+  }
+
+  target.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    target.focus();
+    click();
+  });
+  target.addEventListener("keydown", (e) => {
+    if (!acceptKey) return;
+    if (e.code === "Space" || e.key === " ") {
+      e.preventDefault();
+      click();
+    }
+  });
+  resetBtn?.addEventListener("click", () => {
+    reset();
+  });
+  clearBestBtn?.addEventListener("click", () => {
+    if (!confirm("ベスト記録を全てクリアしますか?")) return;
+    saveBest({});
+    refreshBestDisplay();
+    if (statusEl) statusEl.textContent = "ベスト記録をクリアしました";
+  });
+
+  reset();
+  refreshBestDisplay();
 }
 
 // ===== クロック =====

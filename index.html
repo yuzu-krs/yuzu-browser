@@ -334,8 +334,8 @@
             <span>画像スタジオ</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="unzip">
-            <span class="toolbox-nav-icon">🗄</span>
-            <span>ZIP 解凍</span>
+            <span class="toolbox-nav-icon">�</span>
+            <span>アーカイブ解凍</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="filemeta">
             <span class="toolbox-nav-icon">📄</span>
@@ -432,6 +432,10 @@
           <button type="button" class="toolbox-nav-item" data-tool="minigame">
             <span class="toolbox-nav-icon">🎮</span>
             <span>ミニゲーム</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="cps">
+            <span class="toolbox-nav-icon">🖱️</span>
+            <span>CPS テスト</span>
           </button>
         </nav>
         <div class="toolbox-content" id="toolbox-content">
@@ -1324,8 +1328,59 @@
               <button id="unzip-run" class="toolbox-primary" type="button">
                 解凍
               </button>
+              <button id="unzip-cancel" type="button" disabled>
+                キャンセル
+              </button>
               <button id="unzip-open" type="button">出力先を開く</button>
               <span id="unzip-status" class="toolbox-status"></span>
+            </div>
+            <div
+              id="unzip-progress-row"
+              class="toolbox-row"
+              style="display: none; align-items: center; gap: 8px"
+            >
+              <label style="min-width: 60px">進捗</label>
+              <div
+                style="
+                  flex: 1;
+                  height: 12px;
+                  background: rgba(255, 255, 255, 0.08);
+                  border: 1px solid rgba(255, 255, 255, 0.2);
+                  border-radius: 6px;
+                  overflow: hidden;
+                "
+              >
+                <div
+                  id="unzip-progress-bar"
+                  style="
+                    width: 0%;
+                    height: 100%;
+                    background: linear-gradient(90deg, #4caf50, #2196f3);
+                    transition: width 0.1s linear;
+                  "
+                ></div>
+              </div>
+              <span
+                id="unzip-progress-label"
+                class="toolbox-status"
+                style="min-width: 220px; text-align: right"
+              ></span>
+            </div>
+            <div
+              class="toolbox-row"
+              style="align-items: flex-start; display: none"
+              id="unzip-current-row"
+            >
+              <label style="min-width: 60px">処理中</label>
+              <code
+                id="unzip-current-file"
+                style="
+                  flex: 1;
+                  font-size: 11px;
+                  opacity: 0.85;
+                  word-break: break-all;
+                "
+              ></code>
             </div>
           </section>
 
@@ -1564,6 +1619,158 @@
                 ></pre>
               </div>
             </details>
+          </section>
+          <section class="toolbox-tool" data-tool="cps" hidden>
+            <h3>🖱️ CPS テスト (クリック/秒)</h3>
+            <p class="toolbox-note">
+              指定時間内に何回クリックできるかを計測します。マウス連射の速さや
+              ゲーミングデバイスのチェックに。スペースキーでもクリック扱い。
+            </p>
+            <div class="toolbox-row" style="gap: 8px; flex-wrap: wrap">
+              <label>計測時間</label>
+              <button type="button" class="cps-time-btn" data-sec="1">
+                1秒
+              </button>
+              <button
+                type="button"
+                class="cps-time-btn"
+                data-sec="5"
+                data-default="1"
+              >
+                5秒
+              </button>
+              <button type="button" class="cps-time-btn" data-sec="10">
+                10秒
+              </button>
+              <button type="button" class="cps-time-btn" data-sec="15">
+                15秒
+              </button>
+              <button type="button" class="cps-time-btn" data-sec="30">
+                30秒
+              </button>
+              <button type="button" class="cps-time-btn" data-sec="60">
+                60秒
+              </button>
+              <span style="opacity: 0.7">| モード:</span>
+              <button
+                type="button"
+                class="cps-mode-btn"
+                data-mode="click"
+                data-default="1"
+              >
+                クリックのみ
+              </button>
+              <button type="button" class="cps-mode-btn" data-mode="any">
+                クリック+スペース
+              </button>
+            </div>
+            <div
+              id="cps-target"
+              tabindex="0"
+              style="
+                margin-top: 12px;
+                min-height: 220px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 12px;
+                background: linear-gradient(
+                  135deg,
+                  rgba(33, 150, 243, 0.15),
+                  rgba(76, 175, 80, 0.15)
+                );
+                border: 2px dashed rgba(255, 255, 255, 0.3);
+                border-radius: 12px;
+                cursor: pointer;
+                user-select: none;
+                transition: background 0.05s;
+                color: inherit;
+                outline: none;
+              "
+            >
+              <div
+                id="cps-big"
+                style="font-size: 56px; font-weight: bold; line-height: 1"
+              >
+                CLICK
+              </div>
+              <div id="cps-sub" style="font-size: 13px; opacity: 0.85">
+                ここをクリックして開始
+              </div>
+              <div
+                id="cps-timer"
+                style="
+                  font-size: 14px;
+                  opacity: 0.9;
+                  font-variant-numeric: tabular-nums;
+                "
+              ></div>
+            </div>
+            <div
+              class="toolbox-row"
+              style="gap: 16px; flex-wrap: wrap; margin-top: 8px"
+            >
+              <div>
+                <div style="opacity: 0.7; font-size: 11px">クリック数</div>
+                <div
+                  id="cps-count"
+                  style="
+                    font-size: 22px;
+                    font-weight: bold;
+                    font-variant-numeric: tabular-nums;
+                  "
+                >
+                  0
+                </div>
+              </div>
+              <div>
+                <div style="opacity: 0.7; font-size: 11px">CPS (回/秒)</div>
+                <div
+                  id="cps-rate"
+                  style="
+                    font-size: 22px;
+                    font-weight: bold;
+                    font-variant-numeric: tabular-nums;
+                  "
+                >
+                  0.00
+                </div>
+              </div>
+              <div>
+                <div style="opacity: 0.7; font-size: 11px">最大CPS (1秒窓)</div>
+                <div
+                  id="cps-peak"
+                  style="
+                    font-size: 22px;
+                    font-weight: bold;
+                    font-variant-numeric: tabular-nums;
+                  "
+                >
+                  0.00
+                </div>
+              </div>
+              <div>
+                <div style="opacity: 0.7; font-size: 11px">ベスト記録</div>
+                <div
+                  id="cps-best"
+                  style="
+                    font-size: 22px;
+                    font-weight: bold;
+                    font-variant-numeric: tabular-nums;
+                  "
+                >
+                  ―
+                </div>
+              </div>
+            </div>
+            <div class="toolbox-row toolbox-actions" style="margin-top: 8px">
+              <button id="cps-reset" type="button">リセット</button>
+              <button id="cps-clear-best" type="button">
+                ベスト記録をクリア
+              </button>
+              <span id="cps-status" class="toolbox-status"></span>
+            </div>
           </section>
           <section class="toolbox-tool" data-tool="minigame" hidden>
             <h3>🎮 ミニゲーム</h3>
@@ -1884,39 +2091,7 @@
             </details>
 
             <details class="toolbox-row">
-              <summary>🌍 多言語翻訳 (新しいタブで開く)</summary>
-              <div class="toolbox-row" style="margin-top: 6px; flex-wrap: wrap">
-                <label for="ai-mt-lang">言語</label>
-                <select id="ai-mt-lang">
-                  <option value="日本語">日本語</option>
-                  <option value="英語">英語 (English)</option>
-                  <option value="中国語(簡体)">中国語 (簡体)</option>
-                  <option value="中国語(繁体)">中国語 (繁体)</option>
-                  <option value="韓国語">韓国語</option>
-                  <option value="フランス語">フランス語</option>
-                  <option value="ドイツ語">ドイツ語</option>
-                  <option value="スペイン語">スペイン語</option>
-                  <option value="イタリア語">イタリア語</option>
-                  <option value="ポルトガル語">ポルトガル語</option>
-                  <option value="ロシア語">ロシア語</option>
-                  <option value="アラビア語">アラビア語</option>
-                  <option value="ヒンディー語">ヒンディー語</option>
-                  <option value="タイ語">タイ語</option>
-                  <option value="ベトナム語">ベトナム語</option>
-                  <option value="インドネシア語">インドネシア語</option>
-                </select>
-                <label
-                  ><input id="ai-mt-parallel" type="checkbox" checked />
-                  原文と並列表示</label
-                >
-                <button type="button" id="ai-mt-go" class="toolbox-primary">
-                  🌍 別タブで翻訳表示
-                </button>
-              </div>
-            </details>
-
-            <details class="toolbox-row">
-              <summary>🎴 Anki 学習カード生成 (CSV)</summary>
+              <summary>Anki 学習カード生成 (CSV)</summary>
               <div class="toolbox-row" style="margin-top: 6px">
                 <label>枚数</label>
                 <input
@@ -2158,7 +2333,9 @@ document.title = '✨ ' + document.title;"
               >
             </p>
 
-            <details open>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🔍 偵察 / 情報収集</div>
+
+<details open>
               <summary>🌐 ポートスキャナ (nmap 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
@@ -2214,8 +2391,242 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+<details>
+              <summary>🌍 DNS / IP 情報 (DoH)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="dns-host"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <select id="dns-type">
+                    <option>A</option>
+                    <option>AAAA</option>
+                    <option>MX</option>
+                    <option>TXT</option>
+                    <option>NS</option>
+                    <option>CNAME</option>
+                    <option>ANY</option>
+                  </select>
+                  <button type="button" id="dns-run" class="toolbox-primary">
+                    クエリ
+                  </button>
+                </div>
+                <pre
+                  id="dns-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 240px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>
+                🔎 共通機微ファイルチェッカー (robots/sitemap/.git/.env など)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sf-base"
+                    type="text"
+                    placeholder="ベースURL (例: https://target.com)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="sf-run" class="toolbox-primary">
+                    チェック
+                  </button>
+                </div>
+                <pre
+                  id="sf-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🌳 サブドメイン列挙 (crt.sh)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="subd-domain"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="subd-run" class="toolbox-primary">
+                    検索
+                  </button>
+                  <span id="subd-status" class="toolbox-status"></span>
+                </div>
+                <pre
+                  id="subd-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 360px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>📜 Wayback Machine URL 列挙</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="wb-domain"
+                    type="text"
+                    placeholder="example.com"
+                    style="flex: 1"
+                  />
+                  <label style="display: flex; align-items: center; gap: 4px"
+                    >上限<input
+                      id="wb-limit"
+                      type="number"
+                      value="500"
+                      min="10"
+                      max="5000"
+                      style="width: 6em"
+                  /></label>
+                  <button type="button" id="wb-run" class="toolbox-primary">
+                    取得
+                  </button>
+                  <span id="wb-status" class="toolbox-status"></span>
+                </div>
+                <pre
+                  id="wb-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 360px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🐛 CVE 検索 (NVD)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="cve-id"
+                    type="text"
+                    placeholder="CVE-2024-12345 or キーワード (例: apache log4j)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="cve-run" class="toolbox-primary">
+                    検索
+                  </button>
+                </div>
+                <div
+                  id="cve-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+<details>
+              <summary>🤖 robots.txt / sitemap.xml / .well-known 取得</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="rob-url"
+                    type="text"
+                    placeholder="https://example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="rob-run" class="toolbox-primary">
+                    取得
+                  </button>
+                </div>
+                <pre
+                  id="rob-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>
+                🌀 OSINT クイック検索 (Shodan / Censys / FOFA / VT 等)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="osi-q"
+                    type="text"
+                    placeholder="ドメイン / IP / ハッシュ / メール"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="osi-run" class="toolbox-primary">
+                    リンク生成
+                  </button>
+                </div>
+                <div id="osi-out" style="margin-top: 8px"></div>
+              </div>
+            </details>
+<details>
+              <summary>🧭 .git / .svn / .DS_Store 露出チェック</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gex-url"
+                    type="text"
+                    placeholder="https://example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gex-run" class="toolbox-primary">
+                    スキャン
+                  </button>
+                </div>
+                <pre
+                  id="gex-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🌐 HTTP / Web テスト</div>
 
-            <details>
+<details>
               <summary>📡 HTTP リクエスト (curl / Burp Repeater 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2319,8 +2730,7 @@ document.title = '✨ ' + document.title;"
                 </details>
               </div>
             </details>
-
-            <details>
+<details>
               <summary>📁 ディレクトリ探索 (gobuster / dirb 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
@@ -2398,8 +2808,292 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+<details>
+              <summary>🛡️ HTTP セキュリティヘッダ解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="shdr-url"
+                    type="text"
+                    placeholder="https://target.example.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="shdr-run" class="toolbox-primary">
+                    解析
+                  </button>
+                </div>
+                <div
+                  id="shdr-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+<details>
+              <summary>
+                🚦 HTTP メソッド スキャナ (OPTIONS / PUT / DELETE / TRACE)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hms-url"
+                    type="text"
+                    placeholder="http://target/path"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hms-run" class="toolbox-primary">
+                    スキャン
+                  </button>
+                </div>
+                <pre
+                  id="hms-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🌐 CORS ミスコンフィグ テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="cors-url"
+                    type="text"
+                    placeholder="https://api.target.com/endpoint"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="cors-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="cors-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>↪️ オープンリダイレクト テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="orr-url"
+                    type="text"
+                    placeholder="http://target/redirect?url=FUZZ ( FUZZ がペイロード位置 )"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="orr-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="orr-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 140px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>📝 HTML フォーム抽出</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="fext-url"
+                    type="text"
+                    placeholder="https://target/login"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="fext-run" class="toolbox-primary">
+                    抽出
+                  </button>
+                </div>
+                <pre
+                  id="fext-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 160px;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>📡 GraphQL イントロスペクション</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gql-url"
+                    type="text"
+                    placeholder="https://example.com/graphql"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="gql-auth"
+                    type="text"
+                    placeholder="Authorization (任意)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gql-run" class="toolbox-primary">
+                    取得
+                  </button>
+                </div>
+                <pre
+                  id="gql-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🪞 Host Header インジェクション テスター</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hh-url"
+                    type="text"
+                    placeholder="https://victim.example/"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="hh-attacker"
+                    type="text"
+                    placeholder="攻撃者ホスト (例: evil.com)"
+                    value="evil.com"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hh-run" class="toolbox-primary">
+                    テスト
+                  </button>
+                </div>
+                <pre
+                  id="hh-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🌀 レスポンス Diff (Blind 系判定用)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="rdiff-a"
+                    type="text"
+                    placeholder="URL A (正常)"
+                    style="flex: 1"
+                  />
+                  <input
+                    id="rdiff-b"
+                    type="text"
+                    placeholder="URL B (payload入り)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="rdiff-run" class="toolbox-primary">
+                    比較
+                  </button>
+                </div>
+                <pre
+                  id="rdiff-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>📑 .htaccess / web.config / nginx スニペット</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="cfg-type">
+                    <option value="ht-upload">
+                      .htaccess: アップロード経由 PHP 実行
+                    </option>
+                    <option value="ht-deny">.htaccess: アクセス拒否</option>
+                    <option value="ht-rewrite">.htaccess: URL リライト</option>
+                    <option value="wc-handler">
+                      web.config: ASPX ハンドラ追加
+                    </option>
+                    <option value="wc-deny">web.config: 拡張子拒否</option>
+                    <option value="ng-proxy">nginx: SSRF 検証 location</option>
+                    <option value="ng-alias">
+                      nginx: alias traversal pitfall
+                    </option>
+                  </select>
+                </div>
+                <pre
+                  id="cfg-out"
+                  style="
+                    white-space: pre;
+                    overflow: auto;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                  "
+                ></pre>
+              </div>
+            </details>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">💥 注入 / 脆弱性テスト</div>
 
-            <details>
+<details>
               <summary>💉 SQLi テスター (sqlmap-lite)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2446,8 +3140,217 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+<details>
+              <summary>🍪 Cookie 解析 / フラグチェッカー</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="ckie-input"
+                  class="toolbox-textarea"
+                  rows="4"
+                  placeholder="Set-Cookie ヘッダまたは Cookie 文字列を貼り付け (複数行可)"
+                ></textarea>
+                <button
+                  type="button"
+                  id="ckie-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  解析
+                </button>
+                <div
+                  id="ckie-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+<details>
+              <summary>🔑 シークレット / API キー検出</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="secr-input"
+                  class="toolbox-textarea"
+                  rows="6"
+                  placeholder="ソースコードや JS ファイルなどを貼り付け"
+                ></textarea>
+                <button
+                  type="button"
+                  id="secr-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  スキャン
+                </button>
+                <pre
+                  id="secr-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 120px;
+                    max-height: 280px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>
+                💣 ペイロード ライブラリ (XSS / SQLi / LFI / SSRF / CMDi / SSTI
+                / CRLF)
+              </summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <select id="pay-cat">
+                    <option value="xss">XSS</option>
+                    <option value="sqli">SQL Injection</option>
+                    <option value="lfi">LFI / Path Traversal</option>
+                    <option value="ssrf">SSRF</option>
+                    <option value="cmdi">Command Injection</option>
+                    <option value="ssti">SSTI (Template Injection)</option>
+                    <option value="crlf">CRLF Injection</option>
+                    <option value="xxe">XXE</option>
+                    <option value="nosql">NoSQL Injection</option>
+                  </select>
+                  <input
+                    id="pay-filter"
+                    type="text"
+                    placeholder="フィルタ (キーワード)"
+                    style="flex: 1"
+                  />
+                </div>
+                <pre
+                  id="pay-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 200px;
+                    max-height: 420px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🔓 JWT シークレット ブルートフォース (HS256)</summary>
+              <div style="padding: 8px">
+                <textarea
+                  id="jwtb-input"
+                  class="toolbox-textarea"
+                  rows="2"
+                  placeholder="HS256 JWT を貼り付け"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 4px">
+                  <select id="jwtb-wordlist">
+                    <option value="default">デフォルト (約 50 語)</option>
+                    <option value="seclists-jwt">
+                      SecLists jwt.secrets.list (約 100 語) ※初回 DL
+                    </option>
+                    <option value="seclists-10k">
+                      SecLists 10-million-top-10000 (約 10000 語) ※初回 DL
+                    </option>
+                    <option value="seclists-rockyou-1k">
+                      rockyou Top 1k ※初回 DL
+                    </option>
+                    <option value="seclists-rockyou-100k">
+                      rockyou Top 100k (やや時間かかる) ※初回 DL
+                    </option>
+                    <option value="custom">カスタム (下記)</option>
+                  </select>
+                </div>
+                <textarea
+                  id="jwtb-words"
+                  class="toolbox-textarea"
+                  rows="4"
+                  placeholder="カスタム選択時のみ使用 (1 行 1 語)"
+                  style="margin-top: 4px"
+                ></textarea>
+                <button
+                  type="button"
+                  id="jwtb-run"
+                  class="toolbox-primary"
+                  style="margin-top: 4px"
+                >
+                  ブルートフォース
+                </button>
+                <div
+                  id="jwtb-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+<details>
+              <summary>📦 JS SourceMap 検出 / 解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="sm-url"
+                    type="text"
+                    placeholder="https://example.com/app.js"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="sm-run" class="toolbox-primary">
+                    解析
+                  </button>
+                </div>
+                <pre
+                  id="sm-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 360px;
+                    overflow: auto;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🦴 Magic Bytes / ファイル種別判定</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px; align-items: center">
+                  <input type="file" id="mb-file" />
+                  <span style="color: #888; font-size: 11px"
+                    >または hex を貼り付け ↓</span
+                  >
+                </div>
+                <textarea
+                  id="mb-hex"
+                  class="toolbox-textarea"
+                  rows="2"
+                  placeholder="89 50 4E 47 0D 0A 1A 0A ..."
+                  style="margin-top: 6px"
+                ></textarea>
+                <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
+                  <button type="button" id="mb-run" class="toolbox-primary">
+                    判定
+                  </button>
+                </div>
+                <pre
+                  id="mb-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🔑 認証 / クレデンシャル</div>
 
-            <details>
+<details>
               <summary>🔓 ハッシュ識別 (hashid 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2464,8 +3367,7 @@ document.title = '✨ ' + document.title;"
                 <div id="hi-out" style="margin-top: 6px; font-size: 13px"></div>
               </div>
             </details>
-
-            <details>
+<details>
               <summary>🔑 ハッシュ生成 (MD5/SHA1/SHA256/SHA512)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -2495,88 +3397,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>
-                🔐 エンコード / デコード (base64 / URL / HTML / hex)
-              </summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <select id="enc-mode">
-                    <option value="b64e">Base64 エンコード</option>
-                    <option value="b64d">Base64 デコード</option>
-                    <option value="urle">URL エンコード</option>
-                    <option value="urld">URL デコード</option>
-                    <option value="htme">HTML エンティティ エンコード</option>
-                    <option value="htmd">HTML エンティティ デコード</option>
-                    <option value="hexe">Hex エンコード</option>
-                    <option value="hexd">Hex デコード</option>
-                    <option value="rot13">ROT13</option>
-                  </select>
-                  <button type="button" id="enc-run" class="toolbox-primary">
-                    変換
-                  </button>
-                </div>
-                <textarea
-                  id="enc-input"
-                  class="toolbox-textarea"
-                  rows="4"
-                  style="margin-top: 4px"
-                  placeholder="入力"
-                ></textarea>
-                <textarea
-                  id="enc-output"
-                  class="toolbox-textarea"
-                  rows="4"
-                  style="margin-top: 4px"
-                  placeholder="出力"
-                  readonly
-                ></textarea>
-              </div>
-            </details>
-
-            <details>
-              <summary>🐚 リバースシェル ジェネレータ</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
-                  <label
-                    >LHOST<input
-                      id="rs-host"
-                      type="text"
-                      value="10.10.14.1"
-                      style="width: 10em"
-                  /></label>
-                  <label
-                    >LPORT<input
-                      id="rs-port"
-                      type="number"
-                      value="4444"
-                      style="width: 6em"
-                  /></label>
-                  <label
-                    >シェル<select id="rs-shell">
-                      <option>/bin/bash</option>
-                      <option>/bin/sh</option>
-                      <option>cmd.exe</option>
-                      <option>powershell.exe</option>
-                    </select></label
-                  >
-                </div>
-                <pre
-                  id="rs-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 200px;
-                    max-height: 400px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 4px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
+<details>
               <summary>🎫 JWT デコーダ</summary>
               <div style="padding: 8px">
                 <textarea
@@ -2628,462 +3449,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>🌍 DNS / IP 情報 (DoH)</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="dns-host"
-                    type="text"
-                    placeholder="example.com"
-                    style="flex: 1"
-                  />
-                  <select id="dns-type">
-                    <option>A</option>
-                    <option>AAAA</option>
-                    <option>MX</option>
-                    <option>TXT</option>
-                    <option>NS</option>
-                    <option>CNAME</option>
-                    <option>ANY</option>
-                  </select>
-                  <button type="button" id="dns-run" class="toolbox-primary">
-                    クエリ
-                  </button>
-                </div>
-                <pre
-                  id="dns-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 120px;
-                    max-height: 240px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 4px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>
-                🔎 共通機微ファイルチェッカー (robots/sitemap/.git/.env など)
-              </summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="sf-base"
-                    type="text"
-                    placeholder="ベースURL (例: https://target.com)"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="sf-run" class="toolbox-primary">
-                    チェック
-                  </button>
-                </div>
-                <pre
-                  id="sf-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 160px;
-                    max-height: 320px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 4px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>📚 THM チートシート (覚えておきたいコマンド)</summary>
-              <div style="padding: 8px; font-size: 12px">
-                <pre
-                  id="thm-cheat"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    max-height: 400px;
-                    overflow: auto;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🧮 CIDR / サブネット計算機</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="sn-input"
-                    type="text"
-                    placeholder="例: 10.10.10.0/24 または 192.168.1.5/27"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="sn-run" class="toolbox-primary">
-                    計算
-                  </button>
-                </div>
-                <pre
-                  id="sn-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 140px;
-                    max-height: 280px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🛡️ HTTP セキュリティヘッダ解析</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="shdr-url"
-                    type="text"
-                    placeholder="https://target.example.com"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="shdr-run" class="toolbox-primary">
-                    解析
-                  </button>
-                </div>
-                <div
-                  id="shdr-out"
-                  style="margin-top: 6px; font-size: 12px"
-                ></div>
-              </div>
-            </details>
-
-            <details>
-              <summary>
-                🚦 HTTP メソッド スキャナ (OPTIONS / PUT / DELETE / TRACE)
-              </summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="hms-url"
-                    type="text"
-                    placeholder="http://target/path"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="hms-run" class="toolbox-primary">
-                    スキャン
-                  </button>
-                </div>
-                <pre
-                  id="hms-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 140px;
-                    max-height: 280px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🌐 CORS ミスコンフィグ テスター</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="cors-url"
-                    type="text"
-                    placeholder="https://api.target.com/endpoint"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="cors-run" class="toolbox-primary">
-                    テスト
-                  </button>
-                </div>
-                <pre
-                  id="cors-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 140px;
-                    max-height: 280px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>↪️ オープンリダイレクト テスター</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="orr-url"
-                    type="text"
-                    placeholder="http://target/redirect?url=FUZZ ( FUZZ がペイロード位置 )"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="orr-run" class="toolbox-primary">
-                    テスト
-                  </button>
-                </div>
-                <pre
-                  id="orr-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 140px;
-                    max-height: 280px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>📝 HTML フォーム抽出</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="fext-url"
-                    type="text"
-                    placeholder="https://target/login"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="fext-run" class="toolbox-primary">
-                    抽出
-                  </button>
-                </div>
-                <pre
-                  id="fext-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 160px;
-                    max-height: 320px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🍪 Cookie 解析 / フラグチェッカー</summary>
-              <div style="padding: 8px">
-                <textarea
-                  id="ckie-input"
-                  class="toolbox-textarea"
-                  rows="4"
-                  placeholder="Set-Cookie ヘッダまたは Cookie 文字列を貼り付け (複数行可)"
-                ></textarea>
-                <button
-                  type="button"
-                  id="ckie-run"
-                  class="toolbox-primary"
-                  style="margin-top: 4px"
-                >
-                  解析
-                </button>
-                <div
-                  id="ckie-out"
-                  style="margin-top: 6px; font-size: 12px"
-                ></div>
-              </div>
-            </details>
-
-            <details>
-              <summary>🔑 シークレット / API キー検出</summary>
-              <div style="padding: 8px">
-                <textarea
-                  id="secr-input"
-                  class="toolbox-textarea"
-                  rows="6"
-                  placeholder="ソースコードや JS ファイルなどを貼り付け"
-                ></textarea>
-                <button
-                  type="button"
-                  id="secr-run"
-                  class="toolbox-primary"
-                  style="margin-top: 4px"
-                >
-                  スキャン
-                </button>
-                <pre
-                  id="secr-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 120px;
-                    max-height: 280px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🌳 サブドメイン列挙 (crt.sh)</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="subd-domain"
-                    type="text"
-                    placeholder="example.com"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="subd-run" class="toolbox-primary">
-                    検索
-                  </button>
-                  <span id="subd-status" class="toolbox-status"></span>
-                </div>
-                <pre
-                  id="subd-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 160px;
-                    max-height: 360px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>📜 Wayback Machine URL 列挙</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="wb-domain"
-                    type="text"
-                    placeholder="example.com"
-                    style="flex: 1"
-                  />
-                  <label style="display: flex; align-items: center; gap: 4px"
-                    >上限<input
-                      id="wb-limit"
-                      type="number"
-                      value="500"
-                      min="10"
-                      max="5000"
-                      style="width: 6em"
-                  /></label>
-                  <button type="button" id="wb-run" class="toolbox-primary">
-                    取得
-                  </button>
-                  <span id="wb-status" class="toolbox-status"></span>
-                </div>
-                <pre
-                  id="wb-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 160px;
-                    max-height: 360px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🐛 CVE 検索 (NVD)</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="cve-id"
-                    type="text"
-                    placeholder="CVE-2024-12345 or キーワード (例: apache log4j)"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="cve-run" class="toolbox-primary">
-                    検索
-                  </button>
-                </div>
-                <div
-                  id="cve-out"
-                  style="margin-top: 6px; font-size: 12px"
-                ></div>
-              </div>
-            </details>
-
-            <details>
-              <summary>
-                💣 ペイロード ライブラリ (XSS / SQLi / LFI / SSRF / CMDi / SSTI
-                / CRLF)
-              </summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <select id="pay-cat">
-                    <option value="xss">XSS</option>
-                    <option value="sqli">SQL Injection</option>
-                    <option value="lfi">LFI / Path Traversal</option>
-                    <option value="ssrf">SSRF</option>
-                    <option value="cmdi">Command Injection</option>
-                    <option value="ssti">SSTI (Template Injection)</option>
-                    <option value="crlf">CRLF Injection</option>
-                    <option value="xxe">XXE</option>
-                    <option value="nosql">NoSQL Injection</option>
-                  </select>
-                  <input
-                    id="pay-filter"
-                    type="text"
-                    placeholder="フィルタ (キーワード)"
-                    style="flex: 1"
-                  />
-                </div>
-                <pre
-                  id="pay-out"
-                  class="toolbox-textarea"
-                  style="
-                    min-height: 200px;
-                    max-height: 420px;
-                    overflow: auto;
-                    font-size: 11px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🐧 GTFOBins / 🪟 LOLBAS クイック検索</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="gtfo-bin"
-                    type="text"
-                    placeholder="バイナリ名 (例: tar / find / certutil)"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="gtfo-run" class="toolbox-primary">
-                    開く
-                  </button>
-                </div>
-                <div
-                  id="gtfo-out"
-                  style="margin-top: 6px; font-size: 12px"
-                ></div>
-              </div>
-            </details>
-
-            <details>
+<details>
               <summary>👤 ユーザー名 順列ジェネレータ</summary>
               <div style="padding: 8px">
                 <div
@@ -3118,8 +3484,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
+<details>
               <summary>📖 ワードリスト変異 (年/記号/leet)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3168,57 +3533,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>🔓 JWT シークレット ブルートフォース (HS256)</summary>
-              <div style="padding: 8px">
-                <textarea
-                  id="jwtb-input"
-                  class="toolbox-textarea"
-                  rows="2"
-                  placeholder="HS256 JWT を貼り付け"
-                ></textarea>
-                <div class="toolbox-row" style="gap: 6px; margin-top: 4px">
-                  <select id="jwtb-wordlist">
-                    <option value="default">デフォルト (約 50 語)</option>
-                    <option value="seclists-jwt">
-                      SecLists jwt.secrets.list (約 100 語) ※初回 DL
-                    </option>
-                    <option value="seclists-10k">
-                      SecLists 10-million-top-10000 (約 10000 語) ※初回 DL
-                    </option>
-                    <option value="seclists-rockyou-1k">
-                      rockyou Top 1k ※初回 DL
-                    </option>
-                    <option value="seclists-rockyou-100k">
-                      rockyou Top 100k (やや時間かかる) ※初回 DL
-                    </option>
-                    <option value="custom">カスタム (下記)</option>
-                  </select>
-                </div>
-                <textarea
-                  id="jwtb-words"
-                  class="toolbox-textarea"
-                  rows="4"
-                  placeholder="カスタム選択時のみ使用 (1 行 1 語)"
-                  style="margin-top: 4px"
-                ></textarea>
-                <button
-                  type="button"
-                  id="jwtb-run"
-                  class="toolbox-primary"
-                  style="margin-top: 4px"
-                >
-                  ブルートフォース
-                </button>
-                <div
-                  id="jwtb-out"
-                  style="margin-top: 6px; font-size: 12px"
-                ></div>
-              </div>
-            </details>
-
-            <details>
+<details>
               <summary>🔐 NTLM ハッシュ生成器</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3239,8 +3554,180 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+<details>
+              <summary>🧪 HIBP 漏洩パスワード チェック (k-anonymity)</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hibp-pw"
+                    type="password"
+                    placeholder="チェックするパスワード"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="hibp-run" class="toolbox-primary">
+                    チェック
+                  </button>
+                </div>
+                <p class="toolbox-note" style="margin: 6px 0">
+                  SHA-1 の先頭 5 文字のみ送信 (k-anonymity)。haveibeenpwned API
+                  利用。
+                </p>
+                <pre
+                  id="hibp-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🚪 デフォルト認証情報 データベース</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="dc-filter"
+                    type="text"
+                    placeholder="製品名でフィルタ (例: tomcat, router, jenkins)"
+                    style="flex: 1"
+                  />
+                </div>
+                <pre
+                  id="dc-out"
+                  style="
+                    white-space: pre;
+                    overflow: auto;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    max-height: 420px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🧰 hashcat / john コマンドビルダー</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="hc-hash"
+                    type="text"
+                    placeholder="ハッシュ (1 行)"
+                    style="flex: 1"
+                  />
+                  <select id="hc-mode">
+                    <option value="auto">自動判定</option>
+                    <option value="0">MD5 (0)</option>
+                    <option value="100">SHA1 (100)</option>
+                    <option value="1400">SHA256 (1400)</option>
+                    <option value="1700">SHA512 (1700)</option>
+                    <option value="1000">NTLM (1000)</option>
+                    <option value="3000">LM (3000)</option>
+                    <option value="500">md5crypt $1$ (500)</option>
+                    <option value="1800">sha512crypt $6$ (1800)</option>
+                    <option value="7400">sha256crypt $5$ (7400)</option>
+                    <option value="3200">bcrypt $2*$ (3200)</option>
+                    <option value="22000">
+                      WPA-PBKDF2-PMKID+EAPOL (22000)
+                    </option>
+                    <option value="16500">JWT (HS256) (16500)</option>
+                    <option value="13100">Kerberos 5 TGS-REP (13100)</option>
+                    <option value="18200">Kerberos 5 AS-REP (18200)</option>
+                    <option value="5500">NetNTLMv1 (5500)</option>
+                    <option value="5600">NetNTLMv2 (5600)</option>
+                  </select>
+                </div>
+                <pre
+                  id="hc-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🚀 エクスプロイト / 後続</div>
 
-            <details>
+<details>
+              <summary>🐚 リバースシェル ジェネレータ</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
+                  <label
+                    >LHOST<input
+                      id="rs-host"
+                      type="text"
+                      value="10.10.14.1"
+                      style="width: 10em"
+                  /></label>
+                  <label
+                    >LPORT<input
+                      id="rs-port"
+                      type="number"
+                      value="4444"
+                      style="width: 6em"
+                  /></label>
+                  <label
+                    >シェル<select id="rs-shell">
+                      <option>/bin/bash</option>
+                      <option>/bin/sh</option>
+                      <option>cmd.exe</option>
+                      <option>powershell.exe</option>
+                    </select></label
+                  >
+                </div>
+                <pre
+                  id="rs-out"
+                  class="toolbox-textarea"
+                  style="
+                    min-height: 200px;
+                    max-height: 400px;
+                    overflow: auto;
+                    font-size: 11px;
+                    margin-top: 4px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🐧 GTFOBins / 🪟 LOLBAS クイック検索</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="gtfo-bin"
+                    type="text"
+                    placeholder="バイナリ名 (例: tar / find / certutil)"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="gtfo-run" class="toolbox-primary">
+                    開く
+                  </button>
+                </div>
+                <div
+                  id="gtfo-out"
+                  style="margin-top: 6px; font-size: 12px"
+                ></div>
+              </div>
+            </details>
+<details>
               <summary>💥 msfvenom テンプレート</summary>
               <div style="padding: 8px">
                 <div
@@ -3302,8 +3789,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
+<details>
               <summary>🪜 特権昇格 チェックリスト (Linux / Windows)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3330,73 +3816,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>🧬 UUID / GUID 解析</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="uuid-input"
-                    type="text"
-                    placeholder="例: 550e8400-e29b-41d4-a716-446655440000"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="uuid-run" class="toolbox-primary">
-                    解析
-                  </button>
-                  <button type="button" id="uuid-gen" class="toolbox-secondary">
-                    v4 生成
-                  </button>
-                </div>
-                <pre
-                  id="uuid-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🔢 IP 難読化 / バリエーション生成</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="ipo-input"
-                    type="text"
-                    placeholder="例: 127.0.0.1"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="ipo-run" class="toolbox-primary">
-                    変換
-                  </button>
-                </div>
-                <pre
-                  id="ipo-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
+<details>
               <summary>🐚 Web シェル スニペット</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3434,8 +3854,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
+<details>
               <summary>
                 🧨 Cyclic パターン (msf-pattern_create / offset)
               </summary>
@@ -3481,115 +3900,157 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
+            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🛠️ ユーティリティ</div>
 
-            <details>
-              <summary>🤖 robots.txt / sitemap.xml / .well-known 取得</summary>
+<details>
+              <summary>
+                🔐 エンコード / デコード (base64 / URL / HTML / hex)
+              </summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="rob-url"
-                    type="text"
-                    placeholder="https://example.com"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="rob-run" class="toolbox-primary">
-                    取得
+                  <select id="enc-mode">
+                    <option value="b64e">Base64 エンコード</option>
+                    <option value="b64d">Base64 デコード</option>
+                    <option value="urle">URL エンコード</option>
+                    <option value="urld">URL デコード</option>
+                    <option value="htme">HTML エンティティ エンコード</option>
+                    <option value="htmd">HTML エンティティ デコード</option>
+                    <option value="hexe">Hex エンコード</option>
+                    <option value="hexd">Hex デコード</option>
+                    <option value="rot13">ROT13</option>
+                  </select>
+                  <button type="button" id="enc-run" class="toolbox-primary">
+                    変換
                   </button>
                 </div>
+                <textarea
+                  id="enc-input"
+                  class="toolbox-textarea"
+                  rows="4"
+                  style="margin-top: 4px"
+                  placeholder="入力"
+                ></textarea>
+                <textarea
+                  id="enc-output"
+                  class="toolbox-textarea"
+                  rows="4"
+                  style="margin-top: 4px"
+                  placeholder="出力"
+                  readonly
+                ></textarea>
+              </div>
+            </details>
+<details>
+              <summary>📚 THM チートシート (覚えておきたいコマンド)</summary>
+              <div style="padding: 8px; font-size: 12px">
                 <pre
-                  id="rob-out"
+                  id="thm-cheat"
                   style="
                     white-space: pre-wrap;
                     font-family: ui-monospace, monospace;
                     font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 420px;
+                    max-height: 400px;
                     overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🧪 HIBP 漏洩パスワード チェック (k-anonymity)</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="hibp-pw"
-                    type="password"
-                    placeholder="チェックするパスワード"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="hibp-run" class="toolbox-primary">
-                    チェック
-                  </button>
-                </div>
-                <p class="toolbox-note" style="margin: 6px 0">
-                  SHA-1 の先頭 5 文字のみ送信 (k-anonymity)。haveibeenpwned API
-                  利用。
-                </p>
-                <pre
-                  id="hibp-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
                     background: #1f2330;
                     color: #e6e8ee;
                     padding: 8px;
                     border: 1px solid #444;
                     border-radius: 4px;
-                    margin-top: 6px;
                   "
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>📡 GraphQL イントロスペクション</summary>
+<details>
+              <summary>🧮 CIDR / サブネット計算機</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
                   <input
-                    id="gql-url"
+                    id="sn-input"
                     type="text"
-                    placeholder="https://example.com/graphql"
+                    placeholder="例: 10.10.10.0/24 または 192.168.1.5/27"
                     style="flex: 1"
                   />
-                  <input
-                    id="gql-auth"
-                    type="text"
-                    placeholder="Authorization (任意)"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="gql-run" class="toolbox-primary">
-                    取得
+                  <button type="button" id="sn-run" class="toolbox-primary">
+                    計算
                   </button>
                 </div>
                 <pre
-                  id="gql-out"
+                  id="sn-out"
+                  class="toolbox-textarea"
                   style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 420px;
+                    min-height: 140px;
+                    max-height: 280px;
                     overflow: auto;
+                    font-size: 11px;
+                    margin-top: 6px;
                   "
                 ></pre>
               </div>
             </details>
-
-            <details>
+<details>
+              <summary>🧬 UUID / GUID 解析</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="uuid-input"
+                    type="text"
+                    placeholder="例: 550e8400-e29b-41d4-a716-446655440000"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="uuid-run" class="toolbox-primary">
+                    解析
+                  </button>
+                  <button type="button" id="uuid-gen" class="toolbox-secondary">
+                    v4 生成
+                  </button>
+                </div>
+                <pre
+                  id="uuid-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
+              <summary>🔢 IP 難読化 / バリエーション生成</summary>
+              <div style="padding: 8px">
+                <div class="toolbox-row" style="gap: 6px">
+                  <input
+                    id="ipo-input"
+                    type="text"
+                    placeholder="例: 127.0.0.1"
+                    style="flex: 1"
+                  />
+                  <button type="button" id="ipo-run" class="toolbox-primary">
+                    変換
+                  </button>
+                </div>
+                <pre
+                  id="ipo-out"
+                  style="
+                    white-space: pre-wrap;
+                    font-family: ui-monospace, monospace;
+                    font-size: 11px;
+                    background: #1f2330;
+                    color: #e6e8ee;
+                    padding: 8px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                  "
+                ></pre>
+              </div>
+            </details>
+<details>
               <summary>🧮 Shannon エントロピー / 文字列統計</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3619,251 +4080,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-
-            <details>
-              <summary>🚪 デフォルト認証情報 データベース</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="dc-filter"
-                    type="text"
-                    placeholder="製品名でフィルタ (例: tomcat, router, jenkins)"
-                    style="flex: 1"
-                  />
-                </div>
-                <pre
-                  id="dc-out"
-                  style="
-                    white-space: pre;
-                    overflow: auto;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 420px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>
-                🌀 OSINT クイック検索 (Shodan / Censys / FOFA / VT 等)
-              </summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="osi-q"
-                    type="text"
-                    placeholder="ドメイン / IP / ハッシュ / メール"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="osi-run" class="toolbox-primary">
-                    リンク生成
-                  </button>
-                </div>
-                <div id="osi-out" style="margin-top: 8px"></div>
-              </div>
-            </details>
-
-            <details>
-              <summary>🧰 hashcat / john コマンドビルダー</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="hc-hash"
-                    type="text"
-                    placeholder="ハッシュ (1 行)"
-                    style="flex: 1"
-                  />
-                  <select id="hc-mode">
-                    <option value="auto">自動判定</option>
-                    <option value="0">MD5 (0)</option>
-                    <option value="100">SHA1 (100)</option>
-                    <option value="1400">SHA256 (1400)</option>
-                    <option value="1700">SHA512 (1700)</option>
-                    <option value="1000">NTLM (1000)</option>
-                    <option value="3000">LM (3000)</option>
-                    <option value="500">md5crypt $1$ (500)</option>
-                    <option value="1800">sha512crypt $6$ (1800)</option>
-                    <option value="7400">sha256crypt $5$ (7400)</option>
-                    <option value="3200">bcrypt $2*$ (3200)</option>
-                    <option value="22000">
-                      WPA-PBKDF2-PMKID+EAPOL (22000)
-                    </option>
-                    <option value="16500">JWT (HS256) (16500)</option>
-                    <option value="13100">Kerberos 5 TGS-REP (13100)</option>
-                    <option value="18200">Kerberos 5 AS-REP (18200)</option>
-                    <option value="5500">NetNTLMv1 (5500)</option>
-                    <option value="5600">NetNTLMv2 (5600)</option>
-                  </select>
-                </div>
-                <pre
-                  id="hc-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🪞 Host Header インジェクション テスター</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="hh-url"
-                    type="text"
-                    placeholder="https://victim.example/"
-                    style="flex: 1"
-                  />
-                  <input
-                    id="hh-attacker"
-                    type="text"
-                    placeholder="攻撃者ホスト (例: evil.com)"
-                    value="evil.com"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="hh-run" class="toolbox-primary">
-                    テスト
-                  </button>
-                </div>
-                <pre
-                  id="hh-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 360px;
-                    overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🧭 .git / .svn / .DS_Store 露出チェック</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="gex-url"
-                    type="text"
-                    placeholder="https://example.com"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="gex-run" class="toolbox-primary">
-                    スキャン
-                  </button>
-                </div>
-                <pre
-                  id="gex-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 360px;
-                    overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>📦 JS SourceMap 検出 / 解析</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="sm-url"
-                    type="text"
-                    placeholder="https://example.com/app.js"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="sm-run" class="toolbox-primary">
-                    解析
-                  </button>
-                </div>
-                <pre
-                  id="sm-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 360px;
-                    overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🦴 Magic Bytes / ファイル種別判定</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px; align-items: center">
-                  <input type="file" id="mb-file" />
-                  <span style="color: #888; font-size: 11px"
-                    >または hex を貼り付け ↓</span
-                  >
-                </div>
-                <textarea
-                  id="mb-hex"
-                  class="toolbox-textarea"
-                  rows="2"
-                  placeholder="89 50 4E 47 0D 0A 1A 0A ..."
-                  style="margin-top: 6px"
-                ></textarea>
-                <div class="toolbox-row" style="gap: 6px; margin-top: 6px">
-                  <button type="button" id="mb-run" class="toolbox-primary">
-                    判定
-                  </button>
-                </div>
-                <pre
-                  id="mb-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
+<details>
               <summary>🚩 フラグ / トークン抽出 (CTF)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3898,84 +4115,6 @@ document.title = '✨ ' + document.title;"
                     margin-top: 6px;
                     max-height: 280px;
                     overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>🌀 レスポンス Diff (Blind 系判定用)</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <input
-                    id="rdiff-a"
-                    type="text"
-                    placeholder="URL A (正常)"
-                    style="flex: 1"
-                  />
-                  <input
-                    id="rdiff-b"
-                    type="text"
-                    placeholder="URL B (payload入り)"
-                    style="flex: 1"
-                  />
-                  <button type="button" id="rdiff-run" class="toolbox-primary">
-                    比較
-                  </button>
-                </div>
-                <pre
-                  id="rdiff-out"
-                  style="
-                    white-space: pre-wrap;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 360px;
-                    overflow: auto;
-                  "
-                ></pre>
-              </div>
-            </details>
-
-            <details>
-              <summary>📑 .htaccess / web.config / nginx スニペット</summary>
-              <div style="padding: 8px">
-                <div class="toolbox-row" style="gap: 6px">
-                  <select id="cfg-type">
-                    <option value="ht-upload">
-                      .htaccess: アップロード経由 PHP 実行
-                    </option>
-                    <option value="ht-deny">.htaccess: アクセス拒否</option>
-                    <option value="ht-rewrite">.htaccess: URL リライト</option>
-                    <option value="wc-handler">
-                      web.config: ASPX ハンドラ追加
-                    </option>
-                    <option value="wc-deny">web.config: 拡張子拒否</option>
-                    <option value="ng-proxy">nginx: SSRF 検証 location</option>
-                    <option value="ng-alias">
-                      nginx: alias traversal pitfall
-                    </option>
-                  </select>
-                </div>
-                <pre
-                  id="cfg-out"
-                  style="
-                    white-space: pre;
-                    overflow: auto;
-                    font-family: ui-monospace, monospace;
-                    font-size: 11px;
-                    background: #1f2330;
-                    color: #e6e8ee;
-                    padding: 8px;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    margin-top: 6px;
-                    max-height: 360px;
                   "
                 ></pre>
               </div>
