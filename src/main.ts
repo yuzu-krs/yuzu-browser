@@ -906,18 +906,41 @@ async function setupToolbox(): Promise<void> {
 
   // ===== ツールの並び替え (D&D) =====
   // localStorage に並び順を保存して再起動後も維持する。
-  // カテゴリ見出し (.toolbox-nav-heading) は固定位置のまま、
-  // ツール項目だけを並び替える。
+  // カテゴリ見出し (.toolbox-nav-cat) は固定位置のまま、
+  // ツール項目だけを「同一カテゴリ内で」並び替える。
+  // (旧バージョンではフラット保存しており、復元時にカテゴリ境界を超えて
+  //  全項目が末尾カテゴリに集約されてしまう不具合があった。v4 で修正。)
   const navParent = document.getElementById("toolbox-nav");
-  const TOOL_ORDER_KEY = "yuzu-toolbox-order-v3";
+  const TOOL_ORDER_KEY = "yuzu-toolbox-order-v4";
+  // 旧キーが残っていると混乱の元なので掃除する。
+  try {
+    localStorage.removeItem("yuzu-toolbox-order-v3");
+    localStorage.removeItem("yuzu-toolbox-order-v2");
+    localStorage.removeItem("yuzu-toolbox-order");
+  } catch {
+    /* noop */
+  }
+  // 指定ツールボタンが属するカテゴリ見出し要素を返す (なければ null)。
+  const categoryOf = (el: Element): HTMLElement | null => {
+    let n: Element | null = el.previousElementSibling;
+    while (n) {
+      if (n.classList.contains("toolbox-nav-cat")) return n as HTMLElement;
+      n = n.previousElementSibling;
+    }
+    return null;
+  };
+  // カテゴリ毎の現在の並び順を { カテゴリ見出し文字列: [tool, ...] } で保存。
   const persistToolOrder = (): void => {
     if (!navParent) return;
-    const order: string[] = [];
+    const order: Record<string, string[]> = {};
     navParent
       .querySelectorAll<HTMLButtonElement>(".toolbox-nav-item")
       .forEach((b) => {
         const t = b.dataset.tool;
-        if (t) order.push(t);
+        if (!t) return;
+        const cat = categoryOf(b)?.textContent?.trim() || "";
+        if (!order[cat]) order[cat] = [];
+        order[cat].push(t);
       });
     try {
       localStorage.setItem(TOOL_ORDER_KEY, JSON.stringify(order));
@@ -925,27 +948,46 @@ async function setupToolbox(): Promise<void> {
       /* noop */
     }
   };
-  // 起動直後に保存済みの順序を反映する。
+  // 起動直後に保存済みの順序を反映する (カテゴリ内のみ)。
   if (navParent) {
     try {
       const raw = localStorage.getItem(TOOL_ORDER_KEY);
       if (raw) {
         const saved = JSON.parse(raw) as unknown;
-        if (Array.isArray(saved)) {
-          // 並び替え済みリストの順に末尾へ移動 (見出しは触らない)。
-          const map = new Map<string, HTMLElement>();
-          navParent
-            .querySelectorAll<HTMLButtonElement>(".toolbox-nav-item")
-            .forEach((b) => {
-              const t = b.dataset.tool;
+        if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+          // カテゴリごとに、現在その配下にあるツール要素を順に並び替える。
+          const cats =
+            navParent.querySelectorAll<HTMLElement>(".toolbox-nav-cat");
+          cats.forEach((catEl) => {
+            const catKey = catEl.textContent?.trim() || "";
+            const want = (saved as Record<string, unknown>)[catKey];
+            if (!Array.isArray(want)) return;
+            // このカテゴリに属する現行ツール要素を集める。
+            const items: HTMLElement[] = [];
+            let n: Element | null = catEl.nextElementSibling;
+            while (n && !n.classList.contains("toolbox-nav-cat")) {
+              if (n.classList.contains("toolbox-nav-item"))
+                items.push(n as HTMLElement);
+              n = n.nextElementSibling;
+            }
+            const map = new Map<string, HTMLElement>();
+            items.forEach((b) => {
+              const t = (b as HTMLButtonElement).dataset.tool;
               if (t) map.set(t, b);
             });
-          for (const t of saved) {
-            if (typeof t !== "string") continue;
-            const el = map.get(t);
-            if (el) navParent.appendChild(el);
-          }
-          // 保存に含まれなかった新規ツールは元のまま末尾に残る。
+            // 次のカテゴリ見出し (= 末端マーカー) を anchor として、
+            // 保存順に insertBefore していく。
+            let anchor: Element | null = catEl.nextElementSibling;
+            while (anchor && !anchor.classList.contains("toolbox-nav-cat")) {
+              anchor = anchor.nextElementSibling;
+            }
+            for (const t of want) {
+              if (typeof t !== "string") continue;
+              const el = map.get(t);
+              if (el) navParent.insertBefore(el, anchor);
+            }
+            // 保存に含まれない新規ツールは元位置 (anchor 直前) に残る。
+          });
         }
       }
     } catch {
@@ -972,6 +1014,13 @@ async function setupToolbox(): Promise<void> {
       if (!dt) return;
       // 自分自身のツール D&D かどうかは types で判別。
       if (!Array.from(dt.types || []).includes("text/x-yuzu-tool")) return;
+      // カテゴリを跨ぐ並び替えは禁止 (見た目のジャンル分けを保つため)。
+      // dragover では dataTransfer.getData が空になる場合があるので、
+      // 「ドラッグ中の要素」を navParent から探して比較する。
+      const dragging = navParent?.querySelector(
+        ".toolbox-nav-item.dragging",
+      ) as HTMLElement | null;
+      if (dragging && categoryOf(dragging) !== categoryOf(btn)) return;
       e.preventDefault();
       dt.dropEffect = "move";
       btn.classList.add("drag-over");
@@ -988,8 +1037,10 @@ async function setupToolbox(): Promise<void> {
       e.preventDefault();
       const srcEl = navParent.querySelector(
         `.toolbox-nav-item[data-tool="${src}"]`,
-      );
+      ) as HTMLElement | null;
       if (!srcEl || srcEl === btn) return;
+      // 別カテゴリへの drop は無視。
+      if (categoryOf(srcEl) !== categoryOf(btn)) return;
       const r = btn.getBoundingClientRect();
       const dropEv = e as DragEvent;
       const before = dropEv.clientY < r.top + r.height / 2;
@@ -1112,7 +1163,7 @@ async function setupToolbox(): Promise<void> {
   setupOGPTool();
   setupPentestTool();
   setupImageStudioTool();
-  setupVideoStudioTool();
+  // setupVideoStudioTool(); // 動画スタジオは廃止
   setupSpeedtestTool();
   setupCharCountTool();
   setupTodoTool();
@@ -7442,8 +7493,7 @@ function setupDirBusterSub(): void {
           });
           done++;
           // ソフト 404 と同じサイズの 200 は偽陽性として除外。
-          const isSoft404 =
-            r.status === 200 && baselineSizes.has(r.bytes);
+          const isSoft404 = r.status === 200 && baselineSizes.has(r.bytes);
           if (!excludeSet.has(r.status) && !isSoft404) {
             found++;
             outEl!.textContent += `[${r.status}] ${url}  (${r.bytes}B)\n`;
@@ -8228,8 +8278,7 @@ function setupSensitiveFilesSub(): void {
           timeoutMs: 5000,
           followRedirects: false,
         });
-        const isSoft404 =
-          r.status === 200 && baselineSizes.has(r.bytes);
+        const isSoft404 = r.status === 200 && baselineSizes.has(r.bytes);
         const interesting =
           !isSoft404 &&
           (r.status === 200 || r.status === 401 || r.status === 403);
