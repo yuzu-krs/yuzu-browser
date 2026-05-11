@@ -334,7 +334,7 @@
             <span>画像スタジオ</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="unzip">
-            <span class="toolbox-nav-icon">�</span>
+            <span class="toolbox-nav-icon">📦</span>
             <span>アーカイブ解凍</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="filemeta">
@@ -1399,7 +1399,6 @@
                 style="flex: 1"
               />
               <button id="fm-pick" type="button">参照…</button>
-              <button id="fm-reload" type="button">再読込</button>
             </div>
             <div class="toolbox-row">
               <label>サイズ</label>
@@ -1544,15 +1543,38 @@
                   style="flex: 1; height: 100px"
                 ></textarea>
               </div>
-              <div class="toolbox-row">
+              <div class="toolbox-row" style="align-items: flex-start">
                 <label>アルバムアート</label>
-                <pre
-                  id="id3-art-info"
-                  class="toolbox-output"
-                  style="flex: 1"
-                ></pre>
-                <button id="id3-art-change" type="button">画像を選択…</button>
-                <button id="id3-art-remove" type="button">削除</button>
+                <div
+                  style="
+                    flex: 1;
+                    display: flex;
+                    gap: 8px;
+                    align-items: flex-start;
+                  "
+                >
+                  <img
+                    id="id3-art-preview"
+                    alt="album art"
+                    style="
+                      width: 128px;
+                      height: 128px;
+                      object-fit: contain;
+                      background: #1c1c1c;
+                      border: 1px solid #444;
+                      border-radius: 4px;
+                      display: none;
+                    "
+                  />
+                  <pre
+                    id="id3-art-info"
+                    class="toolbox-output"
+                    style="flex: 1; margin: 0"
+                  ></pre>
+                </div>
+                <button id="id3-art-tagmp3" type="button">
+                  tagmp3.net で編集
+                </button>
               </div>
               <div class="toolbox-row toolbox-actions">
                 <button id="id3-save" class="toolbox-primary" type="button">
@@ -2333,9 +2355,22 @@ document.title = '✨ ' + document.title;"
               >
             </p>
 
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🔍 偵察 / 情報収集</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              🔍 偵察 / 情報収集
+            </div>
 
-<details open>
+            <details open>
               <summary>🌐 ポートスキャナ (nmap 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
@@ -2391,7 +2426,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🌍 DNS / IP 情報 (DoH)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2427,7 +2462,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>
                 🔎 共通機微ファイルチェッカー (robots/sitemap/.git/.env など)
               </summary>
@@ -2456,7 +2491,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🌳 サブドメイン列挙 (crt.sh)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2484,7 +2519,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>📜 Wayback Machine URL 列挙</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2521,7 +2556,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🐛 CVE 検索 (NVD)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2541,7 +2576,7 @@ document.title = '✨ ' + document.title;"
                 ></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>🤖 robots.txt / sitemap.xml / .well-known 取得</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2573,7 +2608,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>
                 🌀 OSINT クイック検索 (Shodan / Censys / FOFA / VT 等)
               </summary>
@@ -2592,7 +2627,7 @@ document.title = '✨ ' + document.title;"
                 <div id="osi-out" style="margin-top: 8px"></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧭 .git / .svn / .DS_Store 露出チェック</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2624,9 +2659,22 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🌐 HTTP / Web テスト</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              🌐 HTTP / Web テスト
+            </div>
 
-<details>
+            <details>
               <summary>📡 HTTP リクエスト (curl / Burp Repeater 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2730,7 +2778,7 @@ document.title = '✨ ' + document.title;"
                 </details>
               </div>
             </details>
-<details>
+            <details>
               <summary>📁 ディレクトリ探索 (gobuster / dirb 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
@@ -2808,7 +2856,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🛡️ HTTP セキュリティヘッダ解析</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2828,7 +2876,7 @@ document.title = '✨ ' + document.title;"
                 ></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>
                 🚦 HTTP メソッド スキャナ (OPTIONS / PUT / DELETE / TRACE)
               </summary>
@@ -2857,7 +2905,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🌐 CORS ミスコンフィグ テスター</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2884,7 +2932,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>↪️ オープンリダイレクト テスター</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2911,7 +2959,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>📝 HTML フォーム抽出</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2938,7 +2986,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>📡 GraphQL イントロスペクション</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -2976,7 +3024,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🪞 Host Header インジェクション テスター</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3015,7 +3063,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🌀 レスポンス Diff (Blind 系判定用)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3053,7 +3101,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>📑 .htaccess / web.config / nginx スニペット</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3091,9 +3139,22 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">💥 注入 / 脆弱性テスト</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              💥 注入 / 脆弱性テスト
+            </div>
 
-<details>
+            <details>
               <summary>💉 SQLi テスター (sqlmap-lite)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3140,7 +3201,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🍪 Cookie 解析 / フラグチェッカー</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3163,7 +3224,7 @@ document.title = '✨ ' + document.title;"
                 ></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>🔑 シークレット / API キー検出</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3193,7 +3254,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>
                 💣 ペイロード ライブラリ (XSS / SQLi / LFI / SSRF / CMDi / SSTI
                 / CRLF)
@@ -3231,7 +3292,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🔓 JWT シークレット ブルートフォース (HS256)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3279,7 +3340,7 @@ document.title = '✨ ' + document.title;"
                 ></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>📦 JS SourceMap 検出 / 解析</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3311,7 +3372,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🦴 Magic Bytes / ファイル種別判定</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px; align-items: center">
@@ -3348,9 +3409,22 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🔑 認証 / クレデンシャル</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              🔑 認証 / クレデンシャル
+            </div>
 
-<details>
+            <details>
               <summary>🔓 ハッシュ識別 (hashid 風)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3367,7 +3441,7 @@ document.title = '✨ ' + document.title;"
                 <div id="hi-out" style="margin-top: 6px; font-size: 13px"></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>🔑 ハッシュ生成 (MD5/SHA1/SHA256/SHA512)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3397,7 +3471,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🎫 JWT デコーダ</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3449,7 +3523,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>👤 ユーザー名 順列ジェネレータ</summary>
               <div style="padding: 8px">
                 <div
@@ -3484,7 +3558,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>📖 ワードリスト変異 (年/記号/leet)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -3533,7 +3607,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🔐 NTLM ハッシュ生成器</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3554,7 +3628,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧪 HIBP 漏洩パスワード チェック (k-anonymity)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3588,7 +3662,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🚪 デフォルト認証情報 データベース</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3617,7 +3691,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧰 hashcat / john コマンドビルダー</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3665,9 +3739,22 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🚀 エクスプロイト / 後続</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              🚀 エクスプロイト / 後続
+            </div>
 
-<details>
+            <details>
               <summary>🐚 リバースシェル ジェネレータ</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px; flex-wrap: wrap">
@@ -3707,7 +3794,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🐧 GTFOBins / 🪟 LOLBAS クイック検索</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3727,7 +3814,7 @@ document.title = '✨ ' + document.title;"
                 ></div>
               </div>
             </details>
-<details>
+            <details>
               <summary>💥 msfvenom テンプレート</summary>
               <div style="padding: 8px">
                 <div
@@ -3789,7 +3876,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🪜 特権昇格 チェックリスト (Linux / Windows)</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3816,7 +3903,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🐚 Web シェル スニペット</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3854,7 +3941,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>
                 🧨 Cyclic パターン (msf-pattern_create / offset)
               </summary>
@@ -3900,9 +3987,22 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-            <div style="margin: 14px 0 4px; padding: 4px 10px; background: rgba(79,195,247,0.07); border-left: 3px solid #4fc3f7; font-size: 12px; font-weight: bold; color: #4fc3f7; letter-spacing: .5px;">🛠️ ユーティリティ</div>
+            <div
+              style="
+                margin: 14px 0 4px;
+                padding: 4px 10px;
+                background: rgba(79, 195, 247, 0.07);
+                border-left: 3px solid #4fc3f7;
+                font-size: 12px;
+                font-weight: bold;
+                color: #4fc3f7;
+                letter-spacing: 0.5px;
+              "
+            >
+              🛠️ ユーティリティ
+            </div>
 
-<details>
+            <details>
               <summary>
                 🔐 エンコード / デコード (base64 / URL / HTML / hex)
               </summary>
@@ -3940,7 +4040,7 @@ document.title = '✨ ' + document.title;"
                 ></textarea>
               </div>
             </details>
-<details>
+            <details>
               <summary>📚 THM チートシート (覚えておきたいコマンド)</summary>
               <div style="padding: 8px; font-size: 12px">
                 <pre
@@ -3960,7 +4060,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧮 CIDR / サブネット計算機</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -3987,7 +4087,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧬 UUID / GUID 解析</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -4020,7 +4120,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🔢 IP 難読化 / バリエーション生成</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="gap: 6px">
@@ -4050,7 +4150,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🧮 Shannon エントロピー / 文字列統計</summary>
               <div style="padding: 8px">
                 <textarea
@@ -4080,7 +4180,7 @@ document.title = '✨ ' + document.title;"
                 ></pre>
               </div>
             </details>
-<details>
+            <details>
               <summary>🚩 フラグ / トークン抽出 (CTF)</summary>
               <div style="padding: 8px">
                 <textarea
@@ -4514,244 +4614,13 @@ document.title = '✨ ' + document.title;"
           <section class="toolbox-tool" data-tool="imgstudio" hidden>
             <h3>🎨 画像スタジオ</h3>
             <p class="toolbox-note">
-              画像のリサイズ・クロップ・回転・反転・フィルタ・透かし追加・形式変換
-              (PNG/JPEG/WebP) をブラウザ内で完結。EXIF
+              画像のクロップ・ファビコン生成・パレット抽出・ダミー生成・SVG→PNG変換・ピクセル化をブラウザ内で完結。EXIF
               は出力時に自動削除されます。
             </p>
 
-            <details open>
-              <summary>
-                ① 画像エディタ (リサイズ / フィルタ / 透かし / 形式変換)
-              </summary>
-              <div style="padding: 8px">
-                <input type="file" id="imgstd-file" accept="image/*" />
-                <div
-                  class="toolbox-row"
-                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
-                >
-                  <label style="font-size: 12px"
-                    >幅
-                    <input
-                      type="number"
-                      id="imgstd-w"
-                      min="1"
-                      max="8000"
-                      style="width: 80px"
-                    />
-                  </label>
-                  <label style="font-size: 12px"
-                    >高さ
-                    <input
-                      type="number"
-                      id="imgstd-h"
-                      min="1"
-                      max="8000"
-                      style="width: 80px"
-                    />
-                  </label>
-                  <label style="font-size: 12px">
-                    <input type="checkbox" id="imgstd-keep" checked />
-                    縦横比保持
-                  </label>
-                  <label style="font-size: 12px"
-                    >回転
-                    <select id="imgstd-rot">
-                      <option value="0">0°</option>
-                      <option value="90">90°</option>
-                      <option value="180">180°</option>
-                      <option value="270">270°</option>
-                    </select>
-                  </label>
-                  <label style="font-size: 12px"
-                    ><input type="checkbox" id="imgstd-flipH" /> 左右反転</label
-                  >
-                  <label style="font-size: 12px"
-                    ><input type="checkbox" id="imgstd-flipV" /> 上下反転</label
-                  >
-                </div>
-                <div
-                  class="toolbox-row"
-                  style="margin-top: 6px; flex-wrap: wrap; gap: 10px"
-                >
-                  <label style="font-size: 12px"
-                    >明るさ
-                    <input
-                      type="range"
-                      id="imgstd-bright"
-                      min="0"
-                      max="200"
-                      value="100"
-                      style="width: 90px"
-                    />
-                    <span id="imgstd-bright-v">100</span>%
-                  </label>
-                  <label style="font-size: 12px"
-                    >コントラスト
-                    <input
-                      type="range"
-                      id="imgstd-contrast"
-                      min="0"
-                      max="200"
-                      value="100"
-                      style="width: 90px"
-                    />
-                    <span id="imgstd-contrast-v">100</span>%
-                  </label>
-                  <label style="font-size: 12px"
-                    >彩度
-                    <input
-                      type="range"
-                      id="imgstd-sat"
-                      min="0"
-                      max="200"
-                      value="100"
-                      style="width: 90px"
-                    />
-                    <span id="imgstd-sat-v">100</span>%
-                  </label>
-                  <label style="font-size: 12px"
-                    >色相
-                    <input
-                      type="range"
-                      id="imgstd-hue"
-                      min="0"
-                      max="360"
-                      value="0"
-                      style="width: 90px"
-                    />
-                    <span id="imgstd-hue-v">0</span>°
-                  </label>
-                  <label style="font-size: 12px"
-                    >ぼかし
-                    <input
-                      type="range"
-                      id="imgstd-blur"
-                      min="0"
-                      max="20"
-                      value="0"
-                      style="width: 70px"
-                    />
-                    <span id="imgstd-blur-v">0</span>px
-                  </label>
-                  <label style="font-size: 12px">
-                    <select id="imgstd-fx">
-                      <option value="none">フィルタなし</option>
-                      <option value="grayscale">グレースケール</option>
-                      <option value="sepia">セピア</option>
-                      <option value="invert">色反転</option>
-                    </select>
-                  </label>
-                </div>
-                <div
-                  class="toolbox-row"
-                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
-                >
-                  <label style="font-size: 12px"
-                    >透かしテキスト
-                    <input
-                      type="text"
-                      id="imgstd-wm"
-                      placeholder="© Your Name"
-                      style="width: 160px"
-                    />
-                  </label>
-                  <label style="font-size: 12px"
-                    >位置
-                    <select id="imgstd-wm-pos">
-                      <option value="br">右下</option>
-                      <option value="bl">左下</option>
-                      <option value="tr">右上</option>
-                      <option value="tl">左上</option>
-                      <option value="center">中央</option>
-                    </select>
-                  </label>
-                  <label style="font-size: 12px"
-                    >サイズ
-                    <input
-                      type="number"
-                      id="imgstd-wm-size"
-                      value="24"
-                      min="6"
-                      max="200"
-                      style="width: 60px"
-                    />
-                  </label>
-                  <label style="font-size: 12px"
-                    >色
-                    <input type="color" id="imgstd-wm-color" value="#ffffff" />
-                  </label>
-                  <label style="font-size: 12px"
-                    >不透明度
-                    <input
-                      type="range"
-                      id="imgstd-wm-op"
-                      min="0"
-                      max="100"
-                      value="80"
-                      style="width: 80px"
-                    />
-                  </label>
-                </div>
-                <div
-                  class="toolbox-row"
-                  style="margin-top: 6px; flex-wrap: wrap; gap: 6px"
-                >
-                  <label style="font-size: 12px"
-                    >出力形式
-                    <select id="imgstd-fmt">
-                      <option value="image/png">PNG</option>
-                      <option value="image/jpeg">JPEG</option>
-                      <option value="image/webp" selected>WebP</option>
-                    </select>
-                  </label>
-                  <label style="font-size: 12px"
-                    >品質
-                    <input
-                      type="range"
-                      id="imgstd-q"
-                      min="1"
-                      max="100"
-                      value="92"
-                      style="width: 100px"
-                    />
-                    <span id="imgstd-q-v">92</span>
-                  </label>
-                  <button
-                    type="button"
-                    class="toolbox-primary"
-                    id="imgstd-apply"
-                  >
-                    プレビュー更新
-                  </button>
-                  <button
-                    type="button"
-                    class="toolbox-primary"
-                    id="imgstd-download"
-                  >
-                    ダウンロード
-                  </button>
-                </div>
-                <div
-                  id="imgstd-status"
-                  class="toolbox-status"
-                  style="margin-top: 6px"
-                ></div>
-                <canvas
-                  id="imgstd-canvas"
-                  style="
-                    margin-top: 8px;
-                    max-width: 100%;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    background: #1f1f1f;
-                  "
-                ></canvas>
-              </div>
-            </details>
-
             <details>
               <summary>
-                ② アスペクト比クロップ (1:1 / 4:5 / 9:16 / 16:9 など)
+                ① アスペクト比クロップ (1:1 / 4:5 / 9:16 / 16:9 など)
               </summary>
               <div style="padding: 8px">
                 <input type="file" id="imgstd-crop-file" accept="image/*" />
@@ -4814,7 +4683,7 @@ document.title = '✨ ' + document.title;"
             </details>
 
             <details>
-              <summary>③ ファビコン一括生成 (16/32/48/64/128/256)</summary>
+              <summary>② ファビコン一括生成 (16/32/48/64/128/256)</summary>
               <div style="padding: 8px">
                 <input type="file" id="imgstd-fav-file" accept="image/*" />
                 <button
@@ -4838,7 +4707,7 @@ document.title = '✨ ' + document.title;"
             </details>
 
             <details>
-              <summary>④ カラーパレット抽出 (代表色 N 個)</summary>
+              <summary>③ カラーパレット抽出 (代表色 N 個)</summary>
               <div style="padding: 8px">
                 <input type="file" id="imgstd-pal-file" accept="image/*" />
                 <label style="font-size: 12px; margin-left: 8px"
@@ -4865,7 +4734,7 @@ document.title = '✨ ' + document.title;"
             </details>
 
             <details>
-              <summary>⑤ ダミー画像 / プレースホルダ生成</summary>
+              <summary>④ ダミー画像 / プレースホルダ生成</summary>
               <div style="padding: 8px">
                 <div class="toolbox-row" style="flex-wrap: wrap; gap: 6px">
                   <label style="font-size: 12px"
@@ -4935,7 +4804,7 @@ document.title = '✨ ' + document.title;"
             </details>
 
             <details>
-              <summary>⑥ SVG → PNG 変換</summary>
+              <summary>⑤ SVG → PNG 変換</summary>
               <div style="padding: 8px">
                 <textarea
                   id="imgstd-svg-in"
@@ -4989,7 +4858,7 @@ document.title = '✨ ' + document.title;"
             </details>
 
             <details>
-              <summary>⑦ ピクセル化 / モザイク</summary>
+              <summary>⑥ ピクセル化 / モザイク</summary>
               <div style="padding: 8px">
                 <input type="file" id="imgstd-mos-file" accept="image/*" />
                 <label style="font-size: 12px; margin-left: 8px"

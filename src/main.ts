@@ -2467,7 +2467,6 @@ function localInputToUnix(v: string): number | null {
 function setupFileMetaTool(): void {
   const path = $id<HTMLInputElement>("fm-path");
   const pick = $id<HTMLButtonElement>("fm-pick");
-  const reload = $id<HTMLButtonElement>("fm-reload");
   const sizeEl = $id<HTMLPreElement>("fm-size");
   const mtimeEl = $id<HTMLInputElement>("fm-mtime");
   const atimeEl = $id<HTMLInputElement>("fm-atime");
@@ -2511,7 +2510,18 @@ function setupFileMetaTool(): void {
       if (status) status.textContent = `エラー: ${String(e)}`;
     }
   });
-  reload?.addEventListener("click", () => void load());
+  // パス変更で自動読込 (貼り付け/手入力も含む)
+  let pathDebounce: number | null = null;
+  const scheduleLoad = (): void => {
+    if (pathDebounce != null) window.clearTimeout(pathDebounce);
+    pathDebounce = window.setTimeout(() => {
+      pathDebounce = null;
+      void load();
+    }, 250);
+  };
+  path.addEventListener("input", scheduleLoad);
+  path.addEventListener("change", () => void load());
+  path.addEventListener("blur", () => void load());
 
   setBtn?.addEventListener("click", async () => {
     if (!path.value.trim()) return;
@@ -2616,7 +2626,9 @@ function setupAudioTagsTool(): void {
   const clearBtn = $id<HTMLButtonElement>("id3-clear-all");
   const artChange = $id<HTMLButtonElement>("id3-art-change");
   const artRemove = $id<HTMLButtonElement>("id3-art-remove");
+  const artTagmp3 = $id<HTMLButtonElement>("id3-art-tagmp3");
   const artInfo = $id<HTMLPreElement>("id3-art-info");
+  const artPreview = $id<HTMLImageElement>("id3-art-preview");
   if (!pathEl || !saveBtn) return;
 
   const fields: Record<string, string> = {
@@ -2669,6 +2681,10 @@ function setupAudioTagsTool(): void {
       if (el) el.value = "";
     });
     if (artInfo) artInfo.textContent = "(なし)";
+    if (artPreview) {
+      artPreview.removeAttribute("src");
+      artPreview.style.display = "none";
+    }
   };
 
   const fillForm = (d: AudioTagData): void => {
@@ -2725,6 +2741,32 @@ function setupAudioTagsTool(): void {
     return out;
   };
 
+  const loadPicture = async (p: string, hasPic: boolean): Promise<void> => {
+    if (!artPreview) return;
+    if (!hasPic) {
+      artPreview.removeAttribute("src");
+      artPreview.style.display = "none";
+      return;
+    }
+    try {
+      const pic = await invoke<{
+        dataUrl: string;
+        mime: string;
+        size: number;
+      } | null>("toolbox_get_audio_picture", { path: p });
+      if (pic && pic.dataUrl) {
+        artPreview.src = pic.dataUrl;
+        artPreview.style.display = "";
+      } else {
+        artPreview.removeAttribute("src");
+        artPreview.style.display = "none";
+      }
+    } catch {
+      artPreview.removeAttribute("src");
+      artPreview.style.display = "none";
+    }
+  };
+
   const load = async (): Promise<void> => {
     const p = pathEl.value.trim();
     if (!p) return;
@@ -2737,6 +2779,7 @@ function setupAudioTagsTool(): void {
         path: p,
       });
       fillForm(d);
+      await loadPicture(p, !!d.hasPicture);
     } catch (e) {
       clearForm();
       if (status) status.textContent = `音声タグ読込失敗: ${String(e)}`;
@@ -2744,16 +2787,20 @@ function setupAudioTagsTool(): void {
   };
 
   // fm-path が変わったら自動読込 (input/change/blur)
+  let audioDebounce: number | null = null;
+  pathEl.addEventListener("input", () => {
+    if (audioDebounce != null) window.clearTimeout(audioDebounce);
+    audioDebounce = window.setTimeout(() => {
+      audioDebounce = null;
+      void load();
+    }, 250);
+  });
   pathEl.addEventListener("change", () => void load());
   pathEl.addEventListener("blur", () => void load());
-  // ピック後にも反応するよう、再読込ボタンにもフック
+  // ピック後にも反応するよう、参照ボタンにもフック
   $id<HTMLButtonElement>("fm-pick")?.addEventListener("click", () => {
     setTimeout(() => void load(), 100);
   });
-  $id<HTMLButtonElement>("fm-reload")?.addEventListener(
-    "click",
-    () => void load(),
-  );
 
   saveBtn.addEventListener("click", async () => {
     const p = pathEl.value.trim();
@@ -2793,36 +2840,20 @@ function setupAudioTagsTool(): void {
     }
   });
 
-  artChange?.addEventListener("click", async () => {
-    const p = pathEl.value.trim();
-    if (!p || !isAudio(p)) return;
+  // tagmp3.net をブラウザの新規タブで開く。アルバムアート埋め込みは
+  // Windows Explorer のサムネイルキャッシュ周りで挙動が安定しないため、
+  // 専用 Web サービスに誘導する。
+  artTagmp3?.addEventListener("click", () => {
     try {
-      const chosen = await invoke<string | null>("toolbox_pick_file", {
-        initial: null,
-      });
-      if (!chosen) return;
-      await invoke("toolbox_set_audio_picture", {
-        audioPath: p,
-        imagePath: chosen,
-      });
-      if (status) status.textContent = "アルバムアートを設定しました";
-      await load();
-    } catch (e) {
-      if (status) status.textContent = `アート設定失敗: ${String(e)}`;
+      window.open("https://tagmp3.net/", "_blank", "noopener,noreferrer");
+    } catch {
+      /* noop */
     }
   });
 
-  artRemove?.addEventListener("click", async () => {
-    const p = pathEl.value.trim();
-    if (!p || !isAudio(p)) return;
-    try {
-      await invoke("toolbox_remove_audio_picture", { path: p });
-      if (status) status.textContent = "アルバムアートを削除しました";
-      await load();
-    } catch (e) {
-      if (status) status.textContent = `アート削除失敗: ${String(e)}`;
-    }
-  });
+  // 旧ボタン (画像選択 / 削除) は HTML から消えているが、参照だけ残しておく
+  void artChange;
+  void artRemove;
 }
 
 interface GenericField {
@@ -2845,7 +2876,6 @@ function setupGenericMetaTool(): void {
   const saveBtn = $id<HTMLButtonElement>("generic-save");
   const status = $id<HTMLSpanElement>("generic-status");
   const infoEl = $id<HTMLPreElement>("generic-info");
-  const reload = $id<HTMLButtonElement>("fm-reload");
   const pick = $id<HTMLButtonElement>("fm-pick");
   if (!pathEl || !fieldsEl) return;
   let currentEditable = false;
@@ -2910,9 +2940,6 @@ function setupGenericMetaTool(): void {
     void load();
   });
   pathEl.addEventListener("blur", () => {
-    void load();
-  });
-  reload?.addEventListener("click", () => {
     void load();
   });
   pick?.addEventListener("click", () => {
@@ -7523,6 +7550,73 @@ const TECH_SIGNATURES: TechSignature[] = [
     icon: "🌐",
     headers: [{ name: "alt-svc", pattern: /h3=|h3-/i }],
   },
+  // ===== 追加: YouTube / Polymer / Redux / Hammer.js / XRegExp / Closure / Priority Hints / Google Fonts =====
+  {
+    name: "YouTube",
+    category: "ビデオプレーヤー",
+    icon: "📺",
+    html: [/<ytd-app|ytcfg\.set\(|ytInitialPlayerResponse|ytInitialData/i],
+    url: [/s\.ytimg\.com|youtube\.com\/s\/player|youtube\.com\/youtubei\//i],
+  },
+  {
+    name: "Polymer",
+    category: "JSフレームワーク",
+    icon: "🔬",
+    html: [/<dom-module|Polymer\(\{|Polymer\.Element|<paper-|<iron-|<ytd-app/i],
+    global: ["Polymer"],
+    version: [/Polymer\.version\s*[:=]\s*['"]([\d.]+)['"]/],
+  },
+  {
+    name: "Redux",
+    category: "JSフレームワーク",
+    icon: "🟪",
+    html: [/__REDUX_DEVTOOLS_EXTENSION__|createStore\(|combineReducers\(/i],
+    global: ["__REDUX_DEVTOOLS_EXTENSION__"],
+  },
+  {
+    name: "Hammer.js",
+    category: "JSライブラリ",
+    icon: "🔨",
+    html: [/Hammer\.VERSION|new Hammer\(/i],
+    url: [/hammer(?:\.min)?\.js/i],
+    version: [/Hammer\.VERSION\s*=\s*['"]([\d.]+)['"]/],
+  },
+  {
+    name: "XRegExp",
+    category: "JSライブラリ",
+    icon: "🔣",
+    html: [/XRegExp\.version|XRegExp\(/i],
+    version: [/XRegExp\.version\s*=\s*['"]([\d.]+)['"]/],
+  },
+  {
+    name: "Closure Library",
+    category: "JSライブラリ",
+    icon: "🔒",
+    html: [/goog\.provide\(|goog\.require\(|goog\.module\(/i],
+    global: ["goog"],
+  },
+  {
+    name: "Priority Hints",
+    category: "パフォーマンス",
+    icon: "⚡",
+    html: [
+      /<(?:link|img|script|iframe)[^>]+fetchpriority\s*=\s*["'](?:high|low|auto)/i,
+    ],
+  },
+  {
+    name: "Google Font API",
+    category: "フォント",
+    icon: "🔤",
+    html: [/fonts\.googleapis\.com|fonts\.gstatic\.com/i],
+    url: [/fonts\.googleapis\.com|fonts\.gstatic\.com/i],
+  },
+  {
+    name: "Trusted Types",
+    category: "セキュリティ",
+    icon: "🛡️",
+    html: [/trustedTypes\.createPolicy|require-trusted-types-for/i],
+    headers: [{ name: "content-security-policy", pattern: /trusted-types/i }],
+  },
 ];
 
 interface DetectedTech {
@@ -7559,7 +7653,10 @@ function detectTechFromHtml(
   globals: string[] = [],
 ): DetectedTech[] {
   const out: DetectedTech[] = [];
-  const head = html.slice(0, 200000);
+  // YouTube などの SPA はレンダリング後 DOM が 1MB を超えることがあるため
+  // 200KB の頭部だけを見ると <script src> や ytcfg などの判定に必要なテキストが
+  // ハッシュ化された下部に追いやられて漏れる。広めに 1.5MB 取得する。
+  const head = html.slice(0, 1500000);
   const assetUrls = extractAssetUrls(head);
   const headerJoined = headers.map(([k, v]) => `${k}: ${v}`).join("\n");
   const cookieSet = new Set(cookies.map((c) => c.toLowerCase()));
@@ -12659,7 +12756,6 @@ async function runSpeedtestOnce(statusEl: HTMLElement | null): Promise<void> {
 // 🎨 画像スタジオ
 // ========================================================================
 function setupImageStudioTool(): void {
-  setupImgStdEditor();
   setupImgStdCrop();
   setupImgStdFavicon();
   setupImgStdPalette();
@@ -12682,6 +12778,56 @@ function loadImageFromFile(f: File): Promise<HTMLImageElement> {
     };
     img.src = url;
   });
+}
+
+async function buildIco(canvases: HTMLCanvasElement[]): Promise<Blob> {
+  const pngs = await Promise.all(
+    canvases.map(
+      (c) =>
+        new Promise<ArrayBuffer>((res, rej) =>
+          c.toBlob((b) => {
+            if (!b) return rej(new Error("toBlob failed"));
+            b.arrayBuffer().then(res).catch(rej);
+          }, "image/png"),
+        ),
+    ),
+  );
+  const count = pngs.length;
+  const headerSize = 6 + count * 16;
+  const totalSize = headerSize + pngs.reduce((s, p) => s + p.byteLength, 0);
+  const buf = new ArrayBuffer(totalSize);
+  const view = new DataView(buf);
+  view.setUint16(0, 0, true);
+  view.setUint16(2, 1, true);
+  view.setUint16(4, count, true);
+  let offset = headerSize;
+  for (let i = 0; i < count; i++) {
+    const c = canvases[i];
+    const png = pngs[i];
+    const entry = 6 + i * 16;
+    view.setUint8(entry + 0, c.width >= 256 ? 0 : c.width);
+    view.setUint8(entry + 1, c.height >= 256 ? 0 : c.height);
+    view.setUint8(entry + 2, 0);
+    view.setUint8(entry + 3, 0);
+    view.setUint16(entry + 4, 1, true);
+    view.setUint16(entry + 6, 32, true);
+    view.setUint32(entry + 8, png.byteLength, true);
+    view.setUint32(entry + 12, offset, true);
+    new Uint8Array(buf, offset, png.byteLength).set(new Uint8Array(png));
+    offset += png.byteLength;
+  }
+  return new Blob([buf], { type: "image/x-icon" });
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function downloadCanvas(
@@ -12754,16 +12900,8 @@ function setupImgStdEditor(): void {
   const wmOpEl = document.getElementById(
     "imgstd-wm-op",
   ) as HTMLInputElement | null;
-  const fmtEl = document.getElementById(
-    "imgstd-fmt",
-  ) as HTMLSelectElement | null;
-  const qEl = document.getElementById("imgstd-q") as HTMLInputElement | null;
-  const qVEl = document.getElementById("imgstd-q-v");
   const applyBtn = document.getElementById(
     "imgstd-apply",
-  ) as HTMLButtonElement | null;
-  const dlBtn = document.getElementById(
-    "imgstd-download",
   ) as HTMLButtonElement | null;
   const statusEl = document.getElementById("imgstd-status");
   const canvas = document.getElementById(
@@ -12786,7 +12924,6 @@ function setupImgStdEditor(): void {
       const v = document.getElementById(id);
       if (el && v) v.textContent = el.value;
     }
-    if (qEl && qVEl) qVEl.textContent = qEl.value;
   };
 
   const render = (): void => {
@@ -12871,7 +13008,7 @@ function setupImgStdEditor(): void {
     }
   });
 
-  [brightEl, contrastEl, satEl, hueEl, blurEl, qEl].forEach((el) =>
+  [brightEl, contrastEl, satEl, hueEl, blurEl].forEach((el) =>
     el?.addEventListener("input", updateRangeLabels),
   );
   [
@@ -12901,14 +13038,6 @@ function setupImgStdEditor(): void {
   applyBtn?.addEventListener("click", () => {
     updateRangeLabels();
     render();
-  });
-  dlBtn?.addEventListener("click", () => {
-    if (!srcImg) return;
-    const fmt = fmtEl?.value || "image/png";
-    const q = parseInt(qEl?.value || "92", 10) / 100;
-    const ext =
-      fmt === "image/png" ? "png" : fmt === "image/jpeg" ? "jpg" : "webp";
-    downloadCanvas(canvas, fmt, q, `image.${ext}`);
   });
   updateRangeLabels();
 }
@@ -13034,6 +13163,7 @@ function setupImgStdFavicon(): void {
       return;
     }
     outEl.innerHTML = "";
+    const canvases: HTMLCanvasElement[] = [];
     for (const s of sizes) {
       const c = document.createElement("canvas");
       c.width = s;
@@ -13042,6 +13172,7 @@ function setupImgStdFavicon(): void {
       if (!ctx) continue;
       ctx.imageSmoothingQuality = "high";
       ctx.drawImage(img, 0, 0, s, s);
+      canvases.push(c);
       const wrap = document.createElement("div");
       wrap.style.cssText =
         "display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;opacity:0.85";
@@ -13053,12 +13184,26 @@ function setupImgStdFavicon(): void {
       btn.type = "button";
       btn.className = "toolbox-secondary";
       btn.textContent = "DL";
-      btn.addEventListener("click", () =>
-        downloadCanvas(c, "image/png", 1, `favicon-${s}.png`),
-      );
+      btn.addEventListener("click", () => {
+        void buildIco([c]).then((blob) =>
+          downloadBlob(blob, `favicon-${s}.ico`),
+        );
+      });
       wrap.appendChild(btn);
       outEl.appendChild(wrap);
     }
+    // 全サイズまとめて ICO
+    const allBtn = document.createElement("button");
+    allBtn.type = "button";
+    allBtn.className = "toolbox-primary";
+    allBtn.textContent = "全サイズ ICO でDL";
+    allBtn.style.cssText = "margin-top:8px;width:100%";
+    allBtn.addEventListener("click", () => {
+      void buildIco(canvases).then((blob) =>
+        downloadBlob(blob, "favicon.ico"),
+      );
+    });
+    outEl.appendChild(allBtn);
   });
 }
 
@@ -13187,6 +13332,14 @@ function setupImgStdPlaceholder(): void {
     ctx.fillText(txt, w / 2, h / 2);
   };
   runBtn.addEventListener("click", render);
+  const syncText = (): void => {
+    if (!tEl || !wEl || !hEl) return;
+    const w = Math.max(1, parseInt(wEl.value || "1280", 10));
+    const h = Math.max(1, parseInt(hEl.value || "720", 10));
+    tEl.value = `${w}×${h}`;
+  };
+  wEl?.addEventListener("input", () => { syncText(); });
+  hEl?.addEventListener("input", () => { syncText(); });
   dlBtn?.addEventListener("click", () =>
     downloadCanvas(
       canvas,

@@ -4063,13 +4063,25 @@ fn toolbox_scrape_fetch(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
+            // 一般的な Chrome の UA を装う。yuzu-browser/0.1 を直接送ると
+            // YouTube などのサイトで古いブラウザ扱いされ、軽量版や同意ページに
+            // リダイレクトされて技術スタックが正しく検出できないため。
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) yuzu-browser/0.1"
+             (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
                 .to_string()
         });
     let resp = ureq::get(&url)
         .set("User-Agent", &ua)
-        .set("Accept", "text/html,*/*;q=0.8")
+        .set(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .set("Accept-Language", "ja,en-US;q=0.7,en;q=0.3")
+        .set("Sec-Fetch-Dest", "document")
+        .set("Sec-Fetch-Mode", "navigate")
+        .set("Sec-Fetch-Site", "none")
+        .set("Sec-Fetch-User", "?1")
+        .set("Upgrade-Insecure-Requests", "1")
         .timeout(std::time::Duration::from_secs(20))
         .call()
         .map_err(|e| format!("取得失敗: {}", e))?;
@@ -4474,7 +4486,20 @@ struct ExtractProgressPayload {
 }
 
 #[tauri::command]
-fn toolbox_extract_archive(
+async fn toolbox_extract_archive(
+    app: AppHandle,
+    archive_path: String,
+    dest_dir: String,
+) -> Result<ExtractResult, String> {
+    // UI スレッドをブロックしないように blocking pool で実行する
+    tauri::async_runtime::spawn_blocking(move || {
+        toolbox_extract_archive_blocking(app, archive_path, dest_dir)
+    })
+    .await
+    .map_err(|e| format!("非同期タスク失敗: {}", e))?
+}
+
+fn toolbox_extract_archive_blocking(
     app: AppHandle,
     archive_path: String,
     dest_dir: String,
@@ -4489,7 +4514,7 @@ fn toolbox_extract_archive(
     }
     std::fs::create_dir_all(&dest).map_err(|e| format!("出力先作成失敗: {}", e))?;
 
-    // 進捗イベントを emit するクロージャ。30ms 程度の間隔でスロットルする。
+    // 進捗イベントを emit するクロージャ。50ms 程度の間隔でスロットルする。
     let last = std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
     let app_clone = app.clone();
     let progress = move |files: usize,
@@ -4499,7 +4524,7 @@ fn toolbox_extract_archive(
         let now = std::time::Instant::now();
         let force = total_files.map_or(false, |t| files == 0 || files == t);
         if !force
-            && now.duration_since(last.get()) < std::time::Duration::from_millis(30)
+            && now.duration_since(last.get()) < std::time::Duration::from_millis(50)
         {
             return;
         }
@@ -4553,27 +4578,8 @@ fn toolbox_extract_archive(
             (c, b, "tar.lz4")
         }
         ArchiveFormat::SevenZ => {
-            // sevenz_rust は per-entry コールバックを公開していないので
-            // 開始/終了のみ送る。
-            let _ = app.emit(
-                "toolbox-extract-progress",
-                ExtractProgressPayload {
-                    files: 0,
-                    bytes: 0,
-                    total_files: None,
-                    total_bytes: None,
-                    current_file: Some("(7z 解凍中…)".to_string()),
-                },
-            );
-            let before = count_dir(&dest);
-            sevenz_rust::decompress_file(&src, &dest)
-                .map_err(|e| format!("7z: {}", e))?;
-            let after = count_dir(&dest);
-            (
-                after.0.saturating_sub(before.0),
-                after.1.saturating_sub(before.1),
-                "7z",
-            )
+            let (c, b) = extract_7z(&src, &dest, &progress)?;
+            (c, b, "7z")
         }
         ArchiveFormat::Cab => {
             let (c, b) = extract_cab(&src, &dest, &progress)?;
@@ -4619,6 +4625,79 @@ fn toolbox_extract_archive(
         dest: dest.to_string_lossy().to_string(),
         format: format.to_string(),
     })
+}
+
+/// 7z 展開。sevenz_rust2 でファイル全体を展開する。
+/// 解凍中はバックグラウンドスレッドで dest ディレクトリを定期ポーリングし、進捗を通知する。
+fn extract_7z(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    progress: &dyn Fn(usize, u64, Option<usize>, Option<&str>),
+) -> Result<(usize, u64), String> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    progress(0, 0, None, Some("(7z 解凍中…)"));
+    let before = count_dir(dest);
+    let stop = Arc::new(AtomicBool::new(false));
+    let cur_count = Arc::new(AtomicUsize::new(0));
+    let cur_bytes = Arc::new(AtomicU64::new(0));
+    let stop_t = stop.clone();
+    let cur_count_t = cur_count.clone();
+    let cur_bytes_t = cur_bytes.clone();
+    let dest_t = dest.to_path_buf();
+    let before_count = before.0;
+    let before_bytes = before.1;
+    // dest を 600ms 毎にポーリングして bytes/count を共有変数に書き込む
+    let poll_handle = std::thread::spawn(move || {
+        while !stop_t.load(Ordering::Relaxed) {
+            let (c, b) = count_dir(&dest_t);
+            cur_count_t.store(c.saturating_sub(before_count), Ordering::Relaxed);
+            cur_bytes_t.store(b.saturating_sub(before_bytes), Ordering::Relaxed);
+            // sleep を細切れにして停止に反応しやすくする
+            for _ in 0..6 {
+                if stop_t.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    });
+    // メインスレッドでも 700ms 間隔で progress を発火させる別スレッド
+    let stop_e = stop.clone();
+    let cur_count_e = cur_count.clone();
+    let cur_bytes_e = cur_bytes.clone();
+    // progress クロージャはスレッド間で動かせないため、emit はメイン側でループ…
+    // → decompress_file はブロッキングなので、別スレッドで decompress を回し、メインは emit を担当する。
+    let src_owned = src.to_path_buf();
+    let dest_owned = dest.to_path_buf();
+    let work = std::thread::spawn(move || -> Result<(), String> {
+        sevenz_rust2::decompress_file(&src_owned, &dest_owned).map_err(|e| format!("7z: {}", e))
+    });
+    let mut last_emit_count = 0usize;
+    let mut last_emit_bytes = 0u64;
+    while !work.is_finished() {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let c = cur_count_e.load(Ordering::Relaxed);
+        let b = cur_bytes_e.load(Ordering::Relaxed);
+        if c != last_emit_count || b != last_emit_bytes {
+            progress(c, b, None, Some("(7z 解凍中…)"));
+            last_emit_count = c;
+            last_emit_bytes = b;
+        } else {
+            // 変化が無くても heartbeat で死活を伝える
+            progress(c, b, None, Some("(7z 解凍中…)"));
+        }
+        let _ = stop_e.clone(); // keep alive
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = poll_handle.join();
+    let result = work.join().map_err(|_| "7z: thread panic".to_string())?;
+    result?;
+    let after = count_dir(dest);
+    let count = after.0.saturating_sub(before.0);
+    let bytes = after.1.saturating_sub(before.1);
+    progress(count, bytes, Some(count), None);
+    Ok((count, bytes))
 }
 
 #[tauri::command]
@@ -5001,6 +5080,13 @@ fn audio_get_str(tag: &lofty::tag::Tag, key: &lofty::tag::ItemKey) -> Option<Str
     tag.get_string(key).map(|s| s.to_string())
 }
 
+fn mime_to_string(m: Option<&lofty::picture::MimeType>) -> String {
+    match m {
+        Some(mt) => mt.to_string(),
+        None => "application/octet-stream".to_string(),
+    }
+}
+
 #[tauri::command]
 fn toolbox_get_audio_tags(path: String) -> Result<AudioTagData, String> {
     use lofty::file::{AudioFile, TaggedFileExt};
@@ -5047,7 +5133,7 @@ fn toolbox_get_audio_tags(path: String) -> Result<AudioTagData, String> {
         data.lyrics = audio_get_str(tag, &ItemKey::Lyrics);
         if let Some(pic) = tag.pictures().first() {
             data.has_picture = true;
-            data.picture_mime = Some(format!("{:?}", pic.mime_type()));
+            data.picture_mime = Some(mime_to_string(pic.mime_type()));
             data.picture_size = Some(pic.data().len());
         }
     }
@@ -5069,9 +5155,37 @@ fn audio_set_or_remove(
     }
 }
 
+/// Tag/ピクチャ保存後に Windows Explorer のサムネイルキャッシュを失効させるため
+/// ファイルの mtime を now に上書きしてシェルハンドラに再抽出を促す。
+fn touch_mtime(p: &std::path::Path) {
+    let ft = filetime::FileTime::from_system_time(std::time::SystemTime::now());
+    let _ = filetime::set_file_mtime(p, ft);
+}
+
+/// 既定の書き込みオプション。lofty 0.22 では `use_id3v23(true)` を MP3 に強制すると
+/// 既存タグに含まれる UTF-16 文字列 (日本語タイトル等) が再読み込み時に壊れる
+/// 既知の不具合があったため、v2.4 のままにしている。Windows Explorer も
+/// ID3v2.4 + JPEG カバーは正常に扱えるので問題はない。
+fn write_options_for(_p: &std::path::Path) -> lofty::config::WriteOptions {
+    lofty::config::WriteOptions::default()
+}
+
+/// 画像バイトを JPEG に再エンコードする。Windows Explorer の MP3 サムネイルシェルハンドラは
+/// PNG カバーを表示しないため、一律に JPEG に揃えておくと互換性が高い。
+fn reencode_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| format!("画像デコード失敗: {}", e))?;
+    // RGBA だと JPEG エンコーダがエラーを出すため RGB に落とす
+    let rgb = img.to_rgb8();
+    let mut out = std::io::Cursor::new(Vec::<u8>::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
+        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("JPEG エンコード失敗: {}", e))?;
+    Ok(out.into_inner())
+}
+
 #[tauri::command]
 fn toolbox_save_audio_tags(path: String, data: AudioTagData) -> Result<(), String> {
-    use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
     use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
     let p = std::path::PathBuf::from(path.trim());
@@ -5166,14 +5280,14 @@ fn toolbox_save_audio_tags(path: String, data: AudioTagData) -> Result<(), Strin
     audio_set_or_remove(tag, ItemKey::AudioFileUrl, &data.url);
     audio_set_or_remove(tag, ItemKey::Lyrics, &data.lyrics);
 
-    tag.save_to_path(&p, WriteOptions::default())
+    tag.save_to_path(&p, write_options_for(&p))
         .map_err(|e| format!("書込失敗: {}", e))?;
+    touch_mtime(&p);
     Ok(())
 }
 
 #[tauri::command]
 fn toolbox_clear_audio_tags(path: String) -> Result<(), String> {
-    use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
     use lofty::tag::TagExt;
     let p = std::path::PathBuf::from(path.trim());
@@ -5186,31 +5300,44 @@ fn toolbox_clear_audio_tags(path: String) -> Result<(), String> {
     let primary_type = tagged.primary_tag_type();
     let empty = lofty::tag::Tag::new(primary_type);
     empty
-        .save_to_path(&p, WriteOptions::default())
+        .save_to_path(&p, write_options_for(&p))
         .map_err(|e| format!("書込失敗: {}", e))?;
+    touch_mtime(&p);
     Ok(())
 }
 
 #[tauri::command]
 fn toolbox_set_audio_picture(audio_path: String, image_path: String) -> Result<(), String> {
-    use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
     use lofty::picture::{MimeType, Picture, PictureType};
     use lofty::tag::{Tag, TagExt};
     let p = std::path::PathBuf::from(audio_path.trim());
     let img_path = std::path::PathBuf::from(image_path.trim());
-    let bytes = std::fs::read(&img_path).map_err(|e| format!("画像読込失敗: {}", e))?;
+    let raw_bytes = std::fs::read(&img_path).map_err(|e| format!("画像読込失敗: {}", e))?;
+
+    // Windows Explorer の MP3 サムネイルシェルハンドラは JPEG のみ確実に表示されるため
+    // クロスフォーマット互換を優先して PNG/GIF/BMP/TIFF/WebP も全て JPEG に再エンコードして埋め込む。
     let ext = img_path
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase());
-    let mime = match ext.as_deref() {
-        Some("jpg") | Some("jpeg") => MimeType::Jpeg,
-        Some("png") => MimeType::Png,
-        Some("gif") => MimeType::Gif,
-        Some("bmp") => MimeType::Bmp,
-        Some("tiff") | Some("tif") => MimeType::Tiff,
-        _ => MimeType::Jpeg,
+    let is_mp3 = matches!(
+        p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("mp3") | Some("mp2") | Some("mpga")
+    );
+    let (bytes, mime) = if is_mp3 && !matches!(ext.as_deref(), Some("jpg") | Some("jpeg")) {
+        // MP3 は JPEG に揃える
+        (reencode_to_jpeg(&raw_bytes)?, MimeType::Jpeg)
+    } else {
+        let m = match ext.as_deref() {
+            Some("jpg") | Some("jpeg") => MimeType::Jpeg,
+            Some("png") => MimeType::Png,
+            Some("gif") => MimeType::Gif,
+            Some("bmp") => MimeType::Bmp,
+            Some("tiff") | Some("tif") => MimeType::Tiff,
+            _ => MimeType::Jpeg,
+        };
+        (raw_bytes, m)
     };
     let pic = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, bytes);
     let mut tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
@@ -5226,14 +5353,46 @@ fn toolbox_set_audio_picture(audio_path: String, image_path: String) -> Result<(
         let _ = tag.remove_picture(0);
     }
     tag.push_picture(pic);
-    tag.save_to_path(&p, WriteOptions::default())
+    tag.save_to_path(&p, write_options_for(&p))
         .map_err(|e| format!("書込失敗: {}", e))?;
+    touch_mtime(&p);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioPicture {
+    data_url: String,
+    mime: String,
+    size: usize,
+}
+
+#[tauri::command]
+fn toolbox_get_audio_picture(path: String) -> Result<Option<AudioPicture>, String> {
+    use base64::Engine;
+    use lofty::file::TaggedFileExt;
+    let p = std::path::PathBuf::from(path.trim());
+    let tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+    let pic = match tag.pictures().first() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let mime = mime_to_string(pic.mime_type());
+    let bytes = pic.data();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(AudioPicture {
+        data_url: format!("data:{};base64,{}", mime, b64),
+        mime,
+        size: bytes.len(),
+    }))
 }
 
 #[tauri::command]
 fn toolbox_remove_audio_picture(path: String) -> Result<(), String> {
-    use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
     use lofty::tag::TagExt;
     let p = std::path::PathBuf::from(path.trim());
@@ -5242,8 +5401,9 @@ fn toolbox_remove_audio_picture(path: String) -> Result<(), String> {
         while !tag.pictures().is_empty() {
             let _ = tag.remove_picture(0);
         }
-        tag.save_to_path(&p, WriteOptions::default())
+        tag.save_to_path(&p, write_options_for(&p))
             .map_err(|e| format!("書込失敗: {}", e))?;
+        touch_mtime(&p);
     }
     Ok(())
 }
@@ -6184,6 +6344,7 @@ pub fn run() {
             toolbox_save_audio_tags,
             toolbox_clear_audio_tags,
             toolbox_set_audio_picture,
+            toolbox_get_audio_picture,
             toolbox_remove_audio_picture,
             toolbox_get_generic_meta,
             toolbox_save_generic_meta,
