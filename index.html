@@ -315,14 +315,6 @@
             <span class="toolbox-nav-icon">🏷️</span>
             <span>OGP チェッカー</span>
           </button>
-          <button
-            type="button"
-            class="toolbox-nav-item"
-            data-tool="techprofile"
-          >
-            <span class="toolbox-nav-icon">🔬</span>
-            <span>技術プロファイラ</span>
-          </button>
 
           <div class="toolbox-nav-cat">🎞️ メディア / ファイル</div>
           <button type="button" class="toolbox-nav-item" data-tool="converter">
@@ -1385,10 +1377,13 @@
           </section>
 
           <section class="toolbox-tool" data-tool="filemeta" hidden>
-            <h3>ファイルメタデータ編集 / 偽装</h3>
+            <h3>
+              ファイルメタデータ編集
+              <span id="fm-type-badge" class="fm-type-badge" hidden></span>
+            </h3>
             <p class="toolbox-note">
-              ファイルの作成/更新時刻変更、PNG/JPEG の埋め込みメタデータ (EXIF /
-              tEXt 他) の除去ができます。
+              タイムスタンプ変更、音声タグ編集、画像 EXIF 除去、PNG
+              テキストチャンク、PDF/Office/EPUB などの汎用メタデータ編集に対応。
             </p>
             <div class="toolbox-row">
               <label for="fm-path">ファイル</label>
@@ -1397,168 +1392,194 @@
                 type="text"
                 spellcheck="false"
                 style="flex: 1"
+                placeholder="ドラッグ＆ドロップ または 参照…"
               />
               <button id="fm-pick" type="button">参照…</button>
             </div>
             <div class="toolbox-row">
-              <label>サイズ</label>
-              <pre id="fm-size" class="toolbox-output" style="flex: 1"></pre>
-            </div>
-            <div class="toolbox-row">
-              <label for="fm-mtime">更新時刻</label>
-              <input id="fm-mtime" type="datetime-local" step="1" />
-              <label for="fm-atime">アクセス時刻</label>
-              <input id="fm-atime" type="datetime-local" step="1" />
-              <button id="fm-set-times" class="toolbox-primary" type="button">
-                書き込む
-              </button>
-            </div>
-            <div class="toolbox-row toolbox-actions">
-              <button id="fm-strip" type="button">
-                画像の埋め込みメタを除去して保存
-              </button>
+              <pre
+                id="fm-size"
+                class="toolbox-output"
+                style="flex: 1; font-size: 11px; opacity: 0.8"
+              ></pre>
               <span id="fm-status" class="toolbox-status"></span>
             </div>
-            <div class="toolbox-row" style="align-items: flex-start">
-              <label>画像メタ</label>
-              <pre
-                id="fm-image"
-                class="toolbox-output"
-                style="flex: 1; max-height: 240px; overflow: auto"
-              ></pre>
+
+            <div class="fm-tabs" role="tablist">
+              <button class="fm-tab active" type="button" data-fm-tab="time">
+                ⏱ タイムスタンプ
+              </button>
+              <button class="fm-tab" type="button" data-fm-tab="audio">
+                🎵 音声タグ
+              </button>
+              <button class="fm-tab" type="button" data-fm-tab="image">
+                🖼 画像メタ
+              </button>
+              <button class="fm-tab" type="button" data-fm-tab="pngtext">
+                🏷 PNG tEXt
+              </button>
+              <button class="fm-tab" type="button" data-fm-tab="generic">
+                📄 汎用メタ
+              </button>
             </div>
 
-            <details id="fm-id3-panel" class="toolbox-subpanel" open>
-              <summary>
-                <strong
-                  >音声タグ (MP3 / WAV / FLAC / OGG / Opus / M4A / AAC / AIFF /
-                  APE)</strong
+            <!-- タイムスタンプ -->
+            <div class="fm-panel" data-fm-panel="time">
+              <div class="toolbox-row" style="flex-wrap: wrap; gap: 12px">
+                <label for="fm-mtime" style="min-width: 80px">更新時刻</label>
+                <input id="fm-mtime" type="datetime-local" step="1" />
+                <label for="fm-atime" style="min-width: 100px"
+                  >アクセス時刻</label
                 >
-              </summary>
+                <input id="fm-atime" type="datetime-local" step="1" />
+              </div>
+              <div class="toolbox-row toolbox-actions">
+                <button id="fm-set-times" class="toolbox-primary" type="button">
+                  タイムスタンプを書き込む
+                </button>
+              </div>
+            </div>
+
+            <!-- 音声タグ -->
+            <div class="fm-panel" data-fm-panel="audio" hidden>
               <p class="toolbox-note">
-                音声ファイルを選択すると自動で読み込みます。空で「書き込む」とそのフィールドは削除されます。各コンテナに適したタグ
-                (ID3v2 / Vorbis Comment / MP4 atom / RIFF INFO / APE)
-                に自動マッピングされます。
+                対応: MP3 / WAV / FLAC / OGG / Opus / M4A / AAC / AIFF / APE。
+                空欄で書き込むとそのフィールドは削除されます。
               </p>
-              <div class="toolbox-grid-2col">
-                <div>
-                  <label>Title</label><input id="id3-title" type="text" />
+              <details open class="toolbox-subpanel">
+                <summary><strong>基本</strong></summary>
+                <div class="toolbox-grid-2col">
+                  <div>
+                    <label>Title</label><input id="id3-title" type="text" />
+                  </div>
+                  <div>
+                    <label>Artist</label><input id="id3-artist" type="text" />
+                  </div>
+                  <div>
+                    <label>Album</label><input id="id3-album" type="text" />
+                  </div>
+                  <div>
+                    <label>Album Artist</label
+                    ><input id="id3-album-artist" type="text" />
+                  </div>
+                  <div>
+                    <label>Year</label><input id="id3-year" type="number" />
+                  </div>
+                  <div>
+                    <label>Genre</label><input id="id3-genre" type="text" />
+                  </div>
+                  <div>
+                    <label>Track #</label><input id="id3-track" type="number" />
+                  </div>
+                  <div>
+                    <label>Total Tracks</label
+                    ><input id="id3-total-tracks" type="number" />
+                  </div>
+                  <div>
+                    <label>Disc #</label><input id="id3-disc" type="number" />
+                  </div>
+                  <div>
+                    <label>Total Discs</label
+                    ><input id="id3-total-discs" type="number" />
+                  </div>
                 </div>
-                <div>
-                  <label>Artist</label><input id="id3-artist" type="text" />
-                </div>
-                <div>
-                  <label>Album</label><input id="id3-album" type="text" />
-                </div>
-                <div>
-                  <label>Album Artist</label
-                  ><input id="id3-album-artist" type="text" />
-                </div>
-                <div>
-                  <label>Year</label><input id="id3-year" type="number" />
-                </div>
-                <div>
-                  <label>Genre</label><input id="id3-genre" type="text" />
-                </div>
-                <div>
-                  <label>Composer</label><input id="id3-composer" type="text" />
-                </div>
-                <div>
-                  <label>Publisher</label
-                  ><input id="id3-publisher" type="text" />
-                </div>
-                <div>
-                  <label>Track #</label><input id="id3-track" type="number" />
-                </div>
-                <div>
-                  <label>Total Tracks</label
-                  ><input id="id3-total-tracks" type="number" />
-                </div>
-                <div>
-                  <label>Disc #</label><input id="id3-disc" type="number" />
-                </div>
-                <div>
-                  <label>Total Discs</label
-                  ><input id="id3-total-discs" type="number" />
-                </div>
-                <div>
-                  <label>BPM</label><input id="id3-bpm" type="number" />
-                </div>
-                <div><label>Key</label><input id="id3-key" type="text" /></div>
-                <div>
-                  <label>Language (3 char)</label
-                  ><input id="id3-lang" type="text" maxlength="3" />
-                </div>
-                <div>
-                  <label>ISRC</label><input id="id3-isrc" type="text" />
-                </div>
-                <div>
-                  <label>Encoded By</label
-                  ><input id="id3-encoded-by" type="text" />
-                </div>
-                <div>
-                  <label>Encoder Settings</label
-                  ><input id="id3-encoder-settings" type="text" />
-                </div>
-                <div>
-                  <label>Copyright</label
-                  ><input id="id3-copyright" type="text" />
-                </div>
-                <div>
-                  <label>Grouping</label><input id="id3-grouping" type="text" />
-                </div>
-                <div>
-                  <label>Subtitle</label><input id="id3-subtitle" type="text" />
-                </div>
-                <div>
-                  <label>Conductor</label
-                  ><input id="id3-conductor" type="text" />
-                </div>
-                <div>
-                  <label>Remixer</label><input id="id3-remixer" type="text" />
-                </div>
-                <div>
-                  <label>Original Artist</label
-                  ><input id="id3-orig-artist" type="text" />
-                </div>
-                <div>
-                  <label>Original Album</label
-                  ><input id="id3-orig-album" type="text" />
-                </div>
-                <div><label>URL</label><input id="id3-url" type="text" /></div>
-              </div>
-              <div class="toolbox-row" style="align-items: flex-start">
-                <label for="id3-comment">Comment</label>
-                <textarea
-                  id="id3-comment"
-                  class="toolbox-textarea"
-                  style="flex: 1; height: 60px"
-                ></textarea>
-              </div>
-              <div class="toolbox-row" style="align-items: flex-start">
-                <label for="id3-lyrics">Lyrics</label>
-                <textarea
-                  id="id3-lyrics"
-                  class="toolbox-textarea"
-                  style="flex: 1; height: 100px"
-                ></textarea>
-              </div>
-              <div class="toolbox-row" style="align-items: flex-start">
-                <label>アルバムアート</label>
                 <div
-                  style="
-                    flex: 1;
-                    display: flex;
-                    gap: 8px;
-                    align-items: flex-start;
-                  "
+                  class="toolbox-row"
+                  style="align-items: flex-start; margin-top: 8px"
                 >
+                  <label for="id3-comment" style="min-width: 80px"
+                    >Comment</label
+                  >
+                  <textarea
+                    id="id3-comment"
+                    class="toolbox-textarea"
+                    style="flex: 1; height: 50px"
+                  ></textarea>
+                </div>
+                <div class="toolbox-row" style="align-items: flex-start">
+                  <label for="id3-lyrics" style="min-width: 80px">Lyrics</label>
+                  <textarea
+                    id="id3-lyrics"
+                    class="toolbox-textarea"
+                    style="flex: 1; height: 80px"
+                  ></textarea>
+                </div>
+              </details>
+
+              <details class="toolbox-subpanel">
+                <summary><strong>詳細</strong></summary>
+                <div class="toolbox-grid-2col">
+                  <div>
+                    <label>Composer</label
+                    ><input id="id3-composer" type="text" />
+                  </div>
+                  <div>
+                    <label>Publisher</label
+                    ><input id="id3-publisher" type="text" />
+                  </div>
+                  <div>
+                    <label>BPM</label><input id="id3-bpm" type="number" />
+                  </div>
+                  <div>
+                    <label>Key</label><input id="id3-key" type="text" />
+                  </div>
+                  <div>
+                    <label>Language (3 char)</label
+                    ><input id="id3-lang" type="text" maxlength="3" />
+                  </div>
+                  <div>
+                    <label>ISRC</label><input id="id3-isrc" type="text" />
+                  </div>
+                  <div>
+                    <label>Encoded By</label
+                    ><input id="id3-encoded-by" type="text" />
+                  </div>
+                  <div>
+                    <label>Encoder Settings</label
+                    ><input id="id3-encoder-settings" type="text" />
+                  </div>
+                  <div>
+                    <label>Copyright</label
+                    ><input id="id3-copyright" type="text" />
+                  </div>
+                  <div>
+                    <label>Grouping</label
+                    ><input id="id3-grouping" type="text" />
+                  </div>
+                  <div>
+                    <label>Subtitle</label
+                    ><input id="id3-subtitle" type="text" />
+                  </div>
+                  <div>
+                    <label>Conductor</label
+                    ><input id="id3-conductor" type="text" />
+                  </div>
+                  <div>
+                    <label>Remixer</label><input id="id3-remixer" type="text" />
+                  </div>
+                  <div>
+                    <label>Original Artist</label
+                    ><input id="id3-orig-artist" type="text" />
+                  </div>
+                  <div>
+                    <label>Original Album</label
+                    ><input id="id3-orig-album" type="text" />
+                  </div>
+                  <div>
+                    <label>URL</label><input id="id3-url" type="text" />
+                  </div>
+                </div>
+              </details>
+
+              <details class="toolbox-subpanel">
+                <summary><strong>アルバムアート</strong></summary>
+                <div class="toolbox-row" style="align-items: flex-start">
                   <img
                     id="id3-art-preview"
                     alt="album art"
                     style="
-                      width: 128px;
-                      height: 128px;
+                      width: 96px;
+                      height: 96px;
                       object-fit: contain;
                       background: #1c1c1c;
                       border: 1px solid #444;
@@ -1569,13 +1590,14 @@
                   <pre
                     id="id3-art-info"
                     class="toolbox-output"
-                    style="flex: 1; margin: 0"
+                    style="flex: 1; margin: 0; font-size: 11px"
                   ></pre>
+                  <button id="id3-art-tagmp3" type="button">
+                    tagmp3.net で編集
+                  </button>
                 </div>
-                <button id="id3-art-tagmp3" type="button">
-                  tagmp3.net で編集
-                </button>
-              </div>
+              </details>
+
               <div class="toolbox-row toolbox-actions">
                 <button id="id3-save" class="toolbox-primary" type="button">
                   音声タグを書き込む
@@ -1585,10 +1607,35 @@
                 </button>
                 <span id="id3-status" class="toolbox-status"></span>
               </div>
-            </details>
+            </div>
 
-            <details id="fm-pngtext-panel" class="toolbox-subpanel">
-              <summary><strong>PNG テキストチャンク (.png)</strong></summary>
+            <!-- 画像メタ -->
+            <div class="fm-panel" data-fm-panel="image" hidden>
+              <p class="toolbox-note">
+                PNG / JPEG の埋め込みメタデータ (EXIF / tEXt / iTXt / zTXt)
+                を表示・除去します。
+              </p>
+              <div class="toolbox-row" style="align-items: flex-start">
+                <pre
+                  id="fm-image"
+                  class="toolbox-output"
+                  style="
+                    flex: 1;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-size: 11px;
+                  "
+                ></pre>
+              </div>
+              <div class="toolbox-row toolbox-actions">
+                <button id="fm-strip" class="toolbox-primary" type="button">
+                  画像メタを除去して保存
+                </button>
+              </div>
+            </div>
+
+            <!-- PNG tEXt -->
+            <div class="fm-panel" data-fm-panel="pngtext" hidden>
               <p class="toolbox-note">
                 PNG の tEXt チャンクをキー/値ペアで編集して保存します。保存先は
                 *_tagged.png となります。
@@ -1605,21 +1652,14 @@
                 </button>
                 <span id="png-text-status" class="toolbox-status"></span>
               </div>
-            </details>
+            </div>
 
-            <details id="fm-generic-panel" class="toolbox-subpanel" open>
-              <summary>
-                <strong
-                  >汎用メタデータ (PDF / DOCX / XLSX / PPTX / EPUB / HTML / EXE
-                  / 動画 ほか)</strong
-                >
-              </summary>
+            <!-- 汎用メタ -->
+            <div class="fm-panel" data-fm-panel="generic" hidden>
               <p class="toolbox-note">
-                ファイル種別を自動判定し、編集可能なフィールドを表示します。
-                対応: PDF (Info dict)、OOXML (docProps/core.xml)、EPUB (OPF
-                metadata)、HTML (&lt;meta&gt; タグ)。 読み取り表示:
-                MP4/MOV/MKV/WebM の概要、PE EXE/DLL の
-                VS_VERSION_INFO、ELF/Mach-O ヘッダ、APK/ISO 概要。
+                対応: PDF (Info dict) / OOXML (docProps/core.xml) / EPUB (OPF) /
+                HTML (&lt;meta&gt;)。 読み取り表示: MP4/MOV/MKV/WebM、PE
+                EXE/DLL、ELF/Mach-O、APK/ISO。
               </p>
               <div class="toolbox-row">
                 <span id="generic-kind" class="toolbox-status"></span>
@@ -1637,10 +1677,15 @@
                 <pre
                   id="generic-info"
                   class="toolbox-output"
-                  style="flex: 1; max-height: 240px; overflow: auto"
+                  style="
+                    flex: 1;
+                    max-height: 200px;
+                    overflow: auto;
+                    font-size: 11px;
+                  "
                 ></pre>
               </div>
-            </details>
+            </div>
           </section>
           <section class="toolbox-tool" data-tool="cps" hidden>
             <h3>🖱️ CPS テスト (クリック/秒)</h3>
@@ -2267,37 +2312,6 @@ document.title = '✨ ' + document.title;"
                 margin-top: 8px;
               "
             ></pre>
-          </section>
-
-          <section class="toolbox-tool" data-tool="techprofile" hidden>
-            <h3>🔬 技術プロファイラ (Wappalyzer 風)</h3>
-            <p class="toolbox-note">
-              ページの HTML / レスポンスヘッダ / Cookie 名 /
-              グローバル変数を解析して、 使用されている
-              CMS・フレームワーク・ライブラリ・解析ツールなどを推定します。
-            </p>
-            <div class="toolbox-row toolbox-actions" style="flex-wrap: wrap">
-              <button type="button" id="tech-scan" class="toolbox-primary">
-                🔍 現在のタブを解析
-              </button>
-              <input
-                id="tech-url"
-                type="text"
-                placeholder="または URL を直接入力"
-                style="flex: 1; min-width: 16em"
-              />
-              <button type="button" id="tech-scan-url">URL を解析</button>
-              <span id="tech-status" class="toolbox-status"></span>
-            </div>
-            <div
-              id="tech-result"
-              style="
-                margin-top: 8px;
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-              "
-            ></div>
           </section>
 
           <section class="toolbox-tool" data-tool="ogp" hidden>

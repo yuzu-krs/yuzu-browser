@@ -3411,7 +3411,9 @@ fn toolbox_save_page_html(url: String, dir: String) -> Result<String, String> {
         });
     let mut base_name = base_name;
     if base_name.len() > 80 {
-        base_name.truncate(80);
+        let mut cut = 80;
+        while cut > 0 && !base_name.is_char_boundary(cut) { cut -= 1; }
+        base_name.truncate(cut);
     }
 
     let mut path = dir_path.join(format!("{}.html", base_name));
@@ -4012,7 +4014,9 @@ async fn toolbox_save_active_page_html(
         });
     let mut base_name = base_name;
     if base_name.len() > 80 {
-        base_name.truncate(80);
+        let mut cut = 80;
+        while cut > 0 && !base_name.is_char_boundary(cut) { cut -= 1; }
+        base_name.truncate(cut);
     }
     let dir_path = std::path::PathBuf::from(&dir);
     std::fs::create_dir_all(&dir_path)
@@ -5092,7 +5096,7 @@ fn toolbox_get_audio_tags(path: String) -> Result<AudioTagData, String> {
     use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::tag::{Accessor, ItemKey};
     let p = std::path::PathBuf::from(path.trim());
-    let tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let tagged = lofty_read_relaxed(&p)?;
     let mut data = AudioTagData::default();
     data.format = format!("{:?}", tagged.file_type());
     let props = tagged.properties();
@@ -5170,6 +5174,20 @@ fn write_options_for(_p: &std::path::Path) -> lofty::config::WriteOptions {
     lofty::config::WriteOptions::default()
 }
 
+/// `lofty::read_from_path` は厳格モードで読むため、不正な TDRC 年フォーマット等で
+/// 既存ファイルが弾かれてしまう (例: tagmp3.net 由来の MP3 で
+/// "invalid year length" エラー)。Relaxed パースで読み直してユーザーの編集を許可する。
+fn lofty_read_relaxed(p: &std::path::Path) -> Result<lofty::file::TaggedFile, String> {
+    use lofty::config::{ParseOptions, ParsingMode};
+    use lofty::probe::Probe;
+    let opts = ParseOptions::new().parsing_mode(ParsingMode::Relaxed);
+    Probe::open(p)
+        .map_err(|e| format!("音声読込失敗: {}", e))?
+        .options(opts)
+        .read()
+        .map_err(|e| format!("音声読込失敗: {}", e))
+}
+
 /// 画像バイトを JPEG に再エンコードする。Windows Explorer の MP3 サムネイルシェルハンドラは
 /// PNG カバーを表示しないため、一律に JPEG に揃えておくと互換性が高い。
 fn reencode_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -5189,7 +5207,7 @@ fn toolbox_save_audio_tags(path: String, data: AudioTagData) -> Result<(), Strin
     use lofty::file::TaggedFileExt;
     use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
     let p = std::path::PathBuf::from(path.trim());
-    let mut tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let mut tagged = lofty_read_relaxed(&p)?;
     let primary_type = tagged.primary_tag_type();
     if tagged.primary_tag().is_none() {
         let _ = tagged.insert_tag(Tag::new(primary_type));
@@ -5291,7 +5309,7 @@ fn toolbox_clear_audio_tags(path: String) -> Result<(), String> {
     use lofty::file::TaggedFileExt;
     use lofty::tag::TagExt;
     let p = std::path::PathBuf::from(path.trim());
-    let mut tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let mut tagged = lofty_read_relaxed(&p)?;
     let types: Vec<_> = tagged.tags().iter().map(|t| t.tag_type()).collect();
     for t in types {
         let _ = tagged.remove(t);
@@ -5340,7 +5358,7 @@ fn toolbox_set_audio_picture(audio_path: String, image_path: String) -> Result<(
         (raw_bytes, m)
     };
     let pic = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, bytes);
-    let mut tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let mut tagged = lofty_read_relaxed(&p)?;
     let primary_type = tagged.primary_tag_type();
     if tagged.primary_tag().is_none() {
         let _ = tagged.insert_tag(Tag::new(primary_type));
@@ -5372,7 +5390,7 @@ fn toolbox_get_audio_picture(path: String) -> Result<Option<AudioPicture>, Strin
     use base64::Engine;
     use lofty::file::TaggedFileExt;
     let p = std::path::PathBuf::from(path.trim());
-    let tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let tagged = lofty_read_relaxed(&p)?;
     let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
         Some(t) => t,
         None => return Ok(None),
@@ -5396,7 +5414,7 @@ fn toolbox_remove_audio_picture(path: String) -> Result<(), String> {
     use lofty::file::TaggedFileExt;
     use lofty::tag::TagExt;
     let p = std::path::PathBuf::from(path.trim());
-    let mut tagged = lofty::read_from_path(&p).map_err(|e| format!("音声読込失敗: {}", e))?;
+    let mut tagged = lofty_read_relaxed(&p)?;
     if let Some(tag) = tagged.primary_tag_mut() {
         while !tag.pictures().is_empty() {
             let _ = tag.remove_picture(0);
@@ -6009,7 +6027,7 @@ fn read_video_meta(path: &std::path::Path, kind: &str) -> Result<GenericMeta, St
     let mut info = format!("Size: {} bytes\n", md.len());
     if kind == "mp4" {
         // lofty 試行
-        if let Ok(tagged) = lofty::read_from_path(path) {
+        if let Ok(tagged) = lofty_read_relaxed(path.as_ref()) {
             use lofty::file::{AudioFile, TaggedFileExt};
             let props = tagged.properties();
             info.push_str(&format!("Duration: {} sec\n", props.duration().as_secs()));

@@ -704,6 +704,59 @@ body {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* ファイルメタタブ */
+.fm-tabs {
+  display: flex;
+  gap: 2px;
+  margin-top: 12px;
+  border-bottom: 1px solid #2c2c34;
+  flex-wrap: wrap;
+}
+.fm-tab {
+  padding: 6px 14px;
+  background: transparent;
+  color: #aaa;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+.fm-tab:hover {
+  color: #ddd;
+  background: #1f1f24;
+}
+.fm-tab.active {
+  background: #1a1a1a;
+  color: #f0f0f0;
+  border-color: #2c2c34;
+  border-bottom-color: #1a1a1a;
+  margin-bottom: -1px;
+}
+.fm-tab.suggested::after {
+  content: "●";
+  color: #6aa9ff;
+  margin-left: 4px;
+  font-size: 9px;
+}
+.fm-panel {
+  padding: 12px 4px;
+}
+.fm-panel[hidden] {
+  display: none;
+}
+.fm-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #2a2a30;
+  border: 1px solid #3a3a44;
+  border-radius: 10px;
+  font-size: 11px;
+  color: #c0c0c0;
+  margin-left: 8px;
+}
 .png-text-row {
   display: flex;
   gap: 6px;
