@@ -231,6 +231,22 @@
     >
       <div id="bookmarks-bar-items" class="bookmarks-bar-items"></div>
       <button
+        id="downloads-btn"
+        class="chrome-actions-btn downloads-open-btn"
+        type="button"
+        title="ダウンロード"
+      >
+        📥
+        <span id="downloads-badge" class="downloads-badge" hidden></span>
+      </button>
+      <div
+        id="download-notice"
+        class="download-notice"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></div>
+      <button
         id="bookmarks-open"
         class="chrome-actions-btn bookmarks-open-btn"
         type="button"
@@ -306,6 +322,10 @@
           <button type="button" class="toolbox-nav-item" data-tool="screenshot">
             <span class="toolbox-nav-icon">📷</span>
             <span>スクリーンショット</span>
+          </button>
+          <button type="button" class="toolbox-nav-item" data-tool="history">
+            <span class="toolbox-nav-icon">🕒</span>
+            <span>閲覧履歴</span>
           </button>
           <button type="button" class="toolbox-nav-item" data-tool="userscript">
             <span class="toolbox-nav-icon">🐵</span>
@@ -757,9 +777,10 @@
           <section class="toolbox-tool" data-tool="savehtml" hidden>
             <h3>ページHTML保存</h3>
             <p class="toolbox-note">
-              指定 URL のページ HTML を取得して .html ファイルとして保存します。
-              「アクティブタブのDOMを保存」を選ぶと JavaScript 実行後の
-              DOM（描画済み HTML）を保存できます。
+              現在表示中の DOM を .html ファイルとして保存します。CSS や画像は
+              元サイトの URL
+              を参照するため、完全なオフライン保存ではありません。
+              見た目をそのまま残す用途ではスクリーンショットが確実です。
             </p>
             <div class="toolbox-row">
               <label for="savehtml-mode">モード</label>
@@ -768,8 +789,10 @@
                 class="zoom-display"
                 style="padding: 0 4px"
               >
-                <option value="fetch" selected>サーバから取得 (生 HTML)</option>
-                <option value="active">アクティブタブのDOMを保存</option>
+                <option value="active" selected>
+                  アクティブタブのDOMを保存
+                </option>
+                <option value="fetch">サーバから取得 (生 HTML)</option>
               </select>
             </div>
             <div class="toolbox-row">
@@ -835,8 +858,8 @@
                 class="zoom-display"
                 style="padding: 0 4px"
               >
-                <option value="full" selected>ページ全体</option>
-                <option value="viewport">表示領域のみ</option>
+                <option value="viewport" selected>表示領域のみ</option>
+                <option value="full">ページ全体 (縦長 PNG)</option>
               </select>
             </div>
             <div class="toolbox-row toolbox-actions">
@@ -2187,6 +2210,36 @@
                 にそのままインポート可能。
               </p>
             </details>
+          </section>
+
+          <section class="toolbox-tool" data-tool="history" hidden>
+            <h3>🕒 閲覧履歴</h3>
+            <p class="toolbox-note">
+              過去に訪れたページを検索・再訪問できます。最大 5000
+              件、新しい順に表示。
+            </p>
+            <div class="toolbox-row">
+              <input
+                id="history-search"
+                type="search"
+                placeholder="URL またはタイトルで検索..."
+                spellcheck="false"
+                style="flex: 1"
+              />
+              <button id="history-refresh" type="button" title="再読込">
+                🔄
+              </button>
+              <button id="history-clear" type="button" title="全削除">
+                🗑 全削除
+              </button>
+            </div>
+            <div
+              id="history-stat"
+              class="toolbox-note"
+              style="opacity: 0.7; font-size: 11px"
+            ></div>
+            <ul id="history-list" class="history-list"></ul>
+            <div id="history-empty" class="toolbox-empty">履歴がありません</div>
           </section>
 
           <section class="toolbox-tool" data-tool="userscript" hidden>

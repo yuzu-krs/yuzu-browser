@@ -744,6 +744,9 @@ window.addEventListener("DOMContentLoaded", () => {
   // ダウンロード UI を初期化（ツールボックスから開くパネル）
   void setupDownloadsUI();
 
+  // 履歴 UI を初期化
+  void setupHistoryUI();
+
   // ブックマーク UI を初期化
   void setupBookmarks();
 
@@ -782,6 +785,10 @@ let toolboxOpenBtn: HTMLButtonElement | null = null;
 let toolboxCloseBtn: HTMLButtonElement | null = null;
 let currentJobId: number | null = null;
 
+function requestDownloadsRefresh(): void {
+  window.dispatchEvent(new CustomEvent("yuzu-downloads-refresh"));
+}
+
 async function loadToolboxSettings(): Promise<void> {
   try {
     const s = await invoke<ToolboxSettings>("toolbox_settings_get");
@@ -813,6 +820,7 @@ async function openToolboxPanel(): Promise<void> {
   toolboxPanel.hidden = false;
   toolboxOpen = true;
   await loadToolboxSettings();
+  requestDownloadsRefresh();
   // 現在ページ URL を予め埋めない (ユーザー操作優先)
 }
 
@@ -896,6 +904,7 @@ async function setupToolbox(): Promise<void> {
     sections.forEach((s) => {
       s.hidden = s.dataset.tool !== name;
     });
+    if (name === "downloader") requestDownloadsRefresh();
   };
   navItems.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -12827,7 +12836,9 @@ function setupTodoTool(): void {
 
 // ===== 🖱️ CPS テスト (Clicks Per Second) =====
 function setupCpsTool(): void {
-  const targetMaybe = document.getElementById("cps-target") as HTMLDivElement | null;
+  const targetMaybe = document.getElementById(
+    "cps-target",
+  ) as HTMLDivElement | null;
   if (!targetMaybe) return;
   const target: HTMLDivElement = targetMaybe;
   const big = document.getElementById("cps-big") as HTMLDivElement | null;
@@ -14281,6 +14292,9 @@ async function setupDownloadsUI(): Promise<void> {
   const panel = document.getElementById(
     "downloads-panel",
   ) as HTMLDivElement | null;
+  const notice = document.getElementById(
+    "download-notice",
+  ) as HTMLDivElement | null;
   const backdrop = document.getElementById(
     "downloads-backdrop",
   ) as HTMLDivElement | null;
@@ -14367,13 +14381,15 @@ async function setupDownloadsUI(): Promise<void> {
 
   const updateBadge = (): void => {
     const inProg = items.filter((i) => i.status === "in-progress").length;
-    if (!badge) return;
-    if (inProg > 0) {
-      badge.hidden = false;
-      badge.textContent = String(inProg);
-    } else {
-      badge.hidden = true;
+    if (badge) {
+      if (inProg > 0) {
+        badge.hidden = false;
+        badge.textContent = String(inProg);
+      } else {
+        badge.hidden = true;
+      }
     }
+    updateDownloadingPulse();
   };
 
   // Toolbox 側ミラー要素
@@ -14654,6 +14670,16 @@ async function setupDownloadsUI(): Promise<void> {
     updateBadge();
   };
 
+  let renderQueued = false;
+  const scheduleRender = (): void => {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => {
+      renderQueued = false;
+      render();
+    });
+  };
+
   const refresh = async (): Promise<void> => {
     try {
       items = await invoke<DownloadItem[]>("downloads_list");
@@ -14663,6 +14689,9 @@ async function setupDownloadsUI(): Promise<void> {
     }
     render();
   };
+  window.addEventListener("yuzu-downloads-refresh", () => {
+    void refresh();
+  });
 
   const openDownloadsPanel = async (): Promise<void> => {
     try {
@@ -14829,84 +14858,84 @@ async function setupDownloadsUI(): Promise<void> {
     return `dl_${Date.now().toString(36)}_${rand}${ext}`;
   };
 
-  // ⬇ ボタンのパルス & トースト表示
+  // ⬇ ボタンの「ダウンロード中」継続発光。トースト通知は廃止し、
+  // 進行中の件数があるあいだは DL ボタンが脈打って光る。詳細はクリックで panel を開いて見る。
+  const updateDownloadingPulse = (): void => {
+    if (!btn) return;
+    const inProg = items.some((i) => i.status === "in-progress");
+    btn.classList.toggle("dl-active", inProg);
+  };
   const pulseDownloadBtn = (): void => {
     if (!btn) return;
+    // 短いきらめきを 1 回入れて視線誘導 (新規開始/完了時)
     btn.classList.remove("dl-pulse");
-    // reflow trigger
     void btn.offsetWidth;
     btn.classList.add("dl-pulse");
     window.setTimeout(() => btn.classList.remove("dl-pulse"), 1900);
   };
-  let toastHost: HTMLDivElement | null = null;
-  const ensureToastHost = (): HTMLDivElement => {
-    if (toastHost && document.body.contains(toastHost)) return toastHost;
-    toastHost = document.createElement("div");
-    toastHost.className = "dl-toast-host";
-    document.body.appendChild(toastHost);
-    return toastHost;
+
+  let noticeTimer: number | undefined;
+  const showDownloadNotice = (
+    message: string,
+    variant: "info" | "finished" | "failed" = "info",
+    durationMs = 3200,
+  ): void => {
+    if (!notice) return;
+    notice.textContent = message;
+    notice.dataset.variant = variant;
+    notice.hidden = false;
+    notice.classList.remove("show");
+    void notice.offsetWidth;
+    notice.classList.add("show");
+    if (noticeTimer !== undefined) window.clearTimeout(noticeTimer);
+    noticeTimer = window.setTimeout(() => {
+      notice.classList.remove("show");
+      window.setTimeout(() => {
+        if (!notice.classList.contains("show")) notice.hidden = true;
+      }, 180);
+    }, durationMs);
   };
+
+  // 旧トースト呼び出しは chrome 内の小さな通知チップへ集約する。
   const showToast = (
     title: string,
     body?: string,
     variant: "info" | "finished" | "failed" = "info",
     durationMs = 3500,
   ): void => {
-    const host = ensureToastHost();
-    const el = document.createElement("div");
-    el.className = `dl-toast dl-toast-${variant}`;
-    const t = document.createElement("div");
-    t.className = "dl-toast-title";
-    t.textContent = title;
-    el.appendChild(t);
-    if (body) {
-      const b = document.createElement("div");
-      b.className = "dl-toast-body";
-      b.textContent = body;
-      el.appendChild(b);
+    showDownloadNotice(body ? `${title}: ${body}` : title, variant, durationMs);
+  };
+  const ensureProgressToast = (id: number, filename: string): void => {
+    const it = items.find((x) => x.id === id);
+    const label = it?.filename || filename;
+    showDownloadNotice(`DL開始: ${label}`, "info", 2400);
+  };
+  const updateProgressToast = (
+    id: number,
+    bytes: number,
+    total: number | null,
+    speed: number,
+  ): void => {
+    const it = items.find((x) => x.id === id);
+    const label = it?.filename || it?.url || "ダウンロード";
+    const pct = total && total > 0 ? `${Math.floor((bytes / total) * 100)}%` : fmtBytes(bytes);
+    const speedText = speed > 0 ? ` ${fmtBytes(speed)}/s` : "";
+    showDownloadNotice(`DL中 ${pct}${speedText}: ${label}`, "info", 1800);
+  };
+  const finishProgressToast = (
+    _id: number,
+    status: string,
+    filename: string,
+    totalBytes?: number,
+  ): void => {
+    if (status === "completed") {
+      const size = totalBytes && totalBytes > 0 ? ` (${fmtBytes(totalBytes)})` : "";
+      showDownloadNotice(`DL完了: ${filename}${size}`, "finished", 4200);
+    } else {
+      showDownloadNotice(`DL失敗: ${filename}`, "failed", 5200);
     }
-    host.appendChild(el);
-    el.addEventListener("click", () => {
-      panel.hidden = false;
-      if (backdrop) backdrop.hidden = false;
-      void (async () => {
-        try {
-          await closeToolboxPanel();
-        } catch {
-          /* noop */
-        }
-        try {
-          await invoke("ui_set_expanded", { expanded: true });
-        } catch {
-          /* noop */
-        }
-        await refresh();
-      })();
-      el.remove();
-    });
-    window.setTimeout(() => {
-      el.classList.add("dl-toast-leave");
-      window.setTimeout(() => el.remove(), 260);
-    }, durationMs);
   };
 
-  // ---- 進捗付きトースト (ダウンロード単位で固定表示) ----
-  interface ProgressToast {
-    el: HTMLDivElement;
-    body: HTMLSpanElement;
-    bar: HTMLDivElement;
-    pct: HTMLSpanElement;
-    finished: boolean;
-  }
-  const progressToasts = new Map<number, ProgressToast>();
-  const fmtETA = (sec: number): string => {
-    if (!isFinite(sec) || sec < 0) return "--";
-    if (sec < 60) return `${Math.ceil(sec)}秒`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}分${Math.ceil(sec % 60)}秒`;
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return `${h}時間${m}分`;
-  };
   const openDownloadsPanelQuick = (): void => {
     panel.hidden = false;
     if (backdrop) backdrop.hidden = false;
@@ -14924,128 +14953,10 @@ async function setupDownloadsUI(): Promise<void> {
       await refresh();
     })();
   };
-  const ensureProgressToast = (id: number, filename: string): ProgressToast => {
-    const existing = progressToasts.get(id);
-    if (existing && document.body.contains(existing.el)) return existing;
-    const host = ensureToastHost();
-    const el = document.createElement("div");
-    el.className = "dl-toast dl-toast-info dl-toast-progress";
-    const t = document.createElement("div");
-    t.className = "dl-toast-title";
-    t.textContent = "⬇ ダウンロード中";
-    el.appendChild(t);
-    const fname = document.createElement("div");
-    fname.className = "dl-toast-body";
-    fname.textContent = filename;
-    el.appendChild(fname);
-    const barWrap = document.createElement("div");
-    barWrap.className = "dl-toast-barwrap";
-    const bar = document.createElement("div");
-    bar.className = "dl-toast-bar";
-    bar.style.width = "0%";
-    barWrap.appendChild(bar);
-    el.appendChild(barWrap);
-    const meta = document.createElement("div");
-    meta.className = "dl-toast-meta";
-    const pct = document.createElement("span");
-    pct.className = "dl-toast-pct";
-    pct.textContent = "0%";
-    const body = document.createElement("span");
-    body.className = "dl-toast-stats";
-    body.textContent = "計測中...";
-    meta.appendChild(pct);
-    meta.appendChild(body);
-    el.appendChild(meta);
-    el.addEventListener("click", () => openDownloadsPanelQuick());
-    host.appendChild(el);
-    const rec: ProgressToast = { el, body, bar, pct, finished: false };
-    progressToasts.set(id, rec);
-    return rec;
-  };
-  const updateProgressToast = (
-    id: number,
-    bytes: number,
-    total: number | null,
-    speed: number,
-  ): void => {
-    const rec = progressToasts.get(id);
-    if (!rec || rec.finished) return;
-    if (total && total > 0) {
-      const ratio = Math.min(1, bytes / total);
-      rec.bar.style.width = `${(ratio * 100).toFixed(1)}%`;
-      rec.pct.textContent = `${(ratio * 100).toFixed(1)}%`;
-      const remain = total - bytes;
-      const eta = speed > 0 ? remain / speed : Infinity;
-      rec.body.textContent = `${fmtBytes(bytes)} / ${fmtBytes(total)} · ${
-        speed > 0 ? `${fmtBytes(speed)}/s` : "--"
-      } · 残り ${fmtETA(eta)}`;
-    } else {
-      rec.bar.style.width = "100%";
-      rec.bar.classList.add("dl-toast-bar-indet");
-      rec.pct.textContent = "?%";
-      rec.body.textContent = `${fmtBytes(bytes)} · ${
-        speed > 0 ? `${fmtBytes(speed)}/s` : "--"
-      }`;
-    }
-  };
-  const finishProgressToast = (
-    id: number,
-    status: string,
-    filename: string,
-    totalBytes?: number,
-  ): void => {
-    const rec = progressToasts.get(id);
-    if (!rec) {
-      // 進捗トーストが無いケース (即終了など) はワンショットで通知
-      const lower = (status || "").toLowerCase();
-      if (lower === "failed") {
-        showToast("✗ ダウンロード失敗", filename, "failed", 5000);
-      } else if (lower === "cancelled" || lower === "canceled") {
-        showToast("⊘ キャンセルされました", filename, "failed", 4000);
-      } else {
-        showToast("✓ ダウンロード完了", filename, "finished", 4000);
-      }
-      return;
-    }
-    rec.finished = true;
-    const lower = (status || "").toLowerCase();
-    rec.el.classList.remove("dl-toast-info");
-    rec.bar.classList.remove("dl-toast-bar-indet");
-    if (lower === "failed") {
-      rec.el.classList.add("dl-toast-failed");
-      const t = rec.el.querySelector(".dl-toast-title");
-      if (t) t.textContent = "✗ ダウンロード失敗";
-      rec.body.textContent = filename;
-    } else if (lower === "cancelled" || lower === "canceled") {
-      rec.el.classList.add("dl-toast-failed");
-      const t = rec.el.querySelector(".dl-toast-title");
-      if (t) t.textContent = "⊘ キャンセルされました";
-      rec.body.textContent = filename;
-    } else {
-      rec.el.classList.add("dl-toast-finished");
-      const t = rec.el.querySelector(".dl-toast-title");
-      if (t) t.textContent = "✓ ダウンロード完了";
-      rec.bar.style.width = "100%";
-      rec.pct.textContent = "100%";
-      if (totalBytes && totalBytes > 0) {
-        rec.body.textContent = `${filename} · ${fmtBytes(totalBytes)}`;
-      } else {
-        rec.body.textContent = filename;
-      }
-    }
-    window.setTimeout(
-      () => {
-        rec.el.classList.add("dl-toast-leave");
-        window.setTimeout(() => {
-          rec.el.remove();
-          progressToasts.delete(id);
-        }, 260);
-      },
-      lower === "failed" || lower === "cancelled" || lower === "canceled"
-        ? 6000
-        : 4000,
-    );
-  };
+  // 旧 toast webview からのクリック互換 (現状 toast webview は無効化されている)。
+  void listen("open-downloads-panel", () => {
+    openDownloadsPanelQuick();
+  });
 
   const triggerSave = async (
     url: string,
@@ -15245,12 +15156,7 @@ async function setupDownloadsUI(): Promise<void> {
     if (idx >= 0) items[idx] = it;
     else items.push(it);
     progressMap.delete(it.id);
-    if (panel.hidden) {
-      updateBadge();
-    } else {
-      render();
-    }
-    updateBadge();
+    scheduleRender();
     if (isNew) {
       pulseDownloadBtn();
       const fname = it.filename || it.url || "(ファイル)";
@@ -15288,17 +15194,14 @@ async function setupDownloadsUI(): Promise<void> {
           ema: 0,
         });
       }
-      // 進捗トースト更新 (まだ無ければ作成)
-      const it = items.find((x) => x.id === ev.payload.id);
-      const fname = it?.filename || it?.url || "(ファイル)";
-      ensureProgressToast(ev.payload.id, fname);
+      // 進捗通知を更新する。
       updateProgressToast(
         ev.payload.id,
         ev.payload.bytes,
         ev.payload.total,
         ema,
       );
-      if (!panel.hidden) render();
+      scheduleRender();
     },
   );
   await listen<DownloadItem>("download-finished", (ev) => {
@@ -15307,8 +15210,7 @@ async function setupDownloadsUI(): Promise<void> {
     if (idx >= 0) items[idx] = it;
     else items.push(it);
     progressMap.delete(it.id);
-    if (!panel.hidden) render();
-    updateBadge();
+    scheduleRender();
     const fname = it.filename || it.url || "(ファイル)";
     finishProgressToast(it.id, it.status || "", fname, it.bytes ?? undefined);
   });
@@ -15796,6 +15698,181 @@ async function closeBookmarksPanel(): Promise<void> {
   } catch (e) {
     console.error("ui_set_expanded failed:", e);
   }
+}
+
+// ===== 閲覧履歴 (toolbox 内パネル) =====
+
+interface HistoryEntry {
+  id: number;
+  url: string;
+  title: string;
+  favicon: string;
+  visited_at: number; // unix seconds
+  visit_count: number;
+}
+
+async function setupHistoryUI(): Promise<void> {
+  const listEl = document.getElementById(
+    "history-list",
+  ) as HTMLUListElement | null;
+  const emptyEl = document.getElementById(
+    "history-empty",
+  ) as HTMLDivElement | null;
+  const statEl = document.getElementById(
+    "history-stat",
+  ) as HTMLDivElement | null;
+  const searchEl = document.getElementById(
+    "history-search",
+  ) as HTMLInputElement | null;
+  const refreshBtn = document.getElementById("history-refresh");
+  const clearBtn = document.getElementById("history-clear");
+  if (!listEl || !emptyEl) return;
+
+  let items: HistoryEntry[] = [];
+  let currentQuery = "";
+
+  const fmtAgo = (sec: number): string => {
+    const d = Math.floor(Date.now() / 1000) - sec;
+    if (d < 60) return "今";
+    if (d < 3600) return `${Math.floor(d / 60)}分前`;
+    if (d < 86400) return `${Math.floor(d / 3600)}時間前`;
+    if (d < 86400 * 7) return `${Math.floor(d / 86400)}日前`;
+    const dt = new Date(sec * 1000);
+    return `${dt.getFullYear()}/${dt.getMonth() + 1}/${dt.getDate()}`;
+  };
+
+  const render = (): void => {
+    listEl.innerHTML = "";
+    if (items.length === 0) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = currentQuery
+        ? "一致する履歴がありません"
+        : "履歴がありません";
+      if (statEl) statEl.textContent = "";
+      return;
+    }
+    emptyEl.hidden = true;
+    if (statEl) {
+      statEl.textContent = `${items.length} 件${currentQuery ? ` (検索: "${currentQuery}")` : ""}`;
+    }
+    for (const it of items) {
+      const li = document.createElement("li");
+      li.className = "history-item";
+      li.title = `${it.title || it.url}\n${it.url}`;
+      const fav = document.createElement("span");
+      if (it.favicon) {
+        const img = document.createElement("img");
+        img.className = "history-favicon";
+        img.src = it.favicon;
+        img.alt = "";
+        img.referrerPolicy = "no-referrer";
+        img.addEventListener("error", () => {
+          img.replaceWith(makeFallbackIcon());
+        });
+        fav.appendChild(img);
+      } else {
+        fav.appendChild(makeFallbackIcon());
+      }
+      const info = document.createElement("div");
+      info.className = "history-info";
+      const t = document.createElement("div");
+      t.className = "history-title";
+      t.textContent = it.title || it.url;
+      const u = document.createElement("div");
+      u.className = "history-url";
+      u.textContent = it.url;
+      info.appendChild(t);
+      info.appendChild(u);
+      const time = document.createElement("span");
+      time.className = "history-time";
+      time.textContent = fmtAgo(it.visited_at);
+      const del = document.createElement("button");
+      del.className = "history-delete";
+      del.type = "button";
+      del.textContent = "✕";
+      del.title = "この履歴を削除";
+      del.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        try {
+          await invoke("history_delete", { id: it.id });
+          items = items.filter((x) => x.id !== it.id);
+          render();
+        } catch (e) {
+          console.error("history_delete:", e);
+        }
+      });
+      li.addEventListener("click", () => {
+        void invoke("tab_new", { url: it.url });
+      });
+      li.appendChild(fav);
+      li.appendChild(info);
+      li.appendChild(time);
+      li.appendChild(del);
+      listEl.appendChild(li);
+    }
+  };
+
+  const makeFallbackIcon = (): HTMLSpanElement => {
+    const s = document.createElement("span");
+    s.className = "history-favicon-fallback";
+    s.textContent = "🌐";
+    return s;
+  };
+
+  const refresh = async (): Promise<void> => {
+    try {
+      const q = currentQuery.trim();
+      if (q) {
+        items = await invoke<HistoryEntry[]>("history_search", {
+          query: q,
+          limit: 500,
+        });
+      } else {
+        items = await invoke<HistoryEntry[]>("history_list", { limit: 500 });
+      }
+      render();
+    } catch (e) {
+      console.error("history refresh:", e);
+    }
+  };
+
+  if (searchEl) {
+    let timer: number | null = null;
+    searchEl.addEventListener("input", () => {
+      currentQuery = searchEl.value;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void refresh();
+      }, 200);
+    });
+  }
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => void refresh());
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener("click", async () => {
+      if (!confirm("すべての履歴を削除しますか? この操作は取り消せません。"))
+        return;
+      try {
+        await invoke("history_clear");
+        items = [];
+        render();
+      } catch (e) {
+        alert(`履歴削除失敗: ${e}`);
+      }
+    });
+  }
+
+  // toolbox で history タブを開いたら自動で更新できるよう、表示時に refresh する。
+  document.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement | null;
+    const btn = t?.closest('[data-tool="history"]');
+    if (btn) {
+      void refresh();
+    }
+  });
+
+  await refresh();
 }
 
 async function setupBookmarks(): Promise<void> {

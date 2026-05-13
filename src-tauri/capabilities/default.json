@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the UI webview",
-  "windows": ["main"],
-  "webviews": ["ui"],
+  "windows": ["main", "main-*"],
+  "webviews": ["ui", "ui-*", "toast", "toast-*"],
   "permissions": ["core:default", "core:event:default", "opener:default"]
 }

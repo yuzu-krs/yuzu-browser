@@ -116,14 +116,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pic_size = pic.map(|p| p.data().len());
         let pic_type = pic.map(|p| format!("{:?}", p.pic_type()));
         // Read the ID3v2 tag directly to check version.
-        let v2_version = tagged
-            .tag(lofty::tag::TagType::Id3v2)
-            .map(|t| {
-                // Try to downcast to Id3v2Tag to read original_version.
-                // Tag does not expose version directly, so we re-read via Id3v2Tag.
-                format!("{:?}", t.tag_type())
-            });
-        println!("[4] after:  title={:?} artist={:?} album={:?}", title, artist, album);
+        let v2_version = tagged.tag(lofty::tag::TagType::Id3v2).map(|t| {
+            // Try to downcast to Id3v2Tag to read original_version.
+            // Tag does not expose version directly, so we re-read via Id3v2Tag.
+            format!("{:?}", t.tag_type())
+        });
+        println!(
+            "[4] after:  title={:?} artist={:?} album={:?}",
+            title, artist, album
+        );
         println!(
             "[4] picture: mime={:?} size={:?} type={:?} tag_type={:?} v2={:?}",
             pic_mime,
